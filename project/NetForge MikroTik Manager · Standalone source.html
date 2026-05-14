@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>NetForge — MikroTik Manager · Direction A</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9;
+    font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #2a251f; -webkit-font-smoothing: antialiased; }
+  #root { width: 100%; height: 100%; }
+  .winshell { width: 100%; height: 100%; border-radius: 8px; overflow: hidden;
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,0.45), 0 6px 16px -4px rgba(0,0,0,0.25),
+                0 0 0 1px rgba(0,0,0,0.5); position: relative; }
+  *::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="direction-a-core.jsx"></script>
+<script type="text/babel" src="direction-a-screens.jsx"></script>
+<script type="text/babel" src="direction-a-network.jsx"></script>
+<script type="text/babel" src="direction-a-clients.jsx"></script>
+<script type="text/babel" src="direction-a-system.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+<template id="__bundler_thumbnail" data-bg-color="#0B1220">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#0B1220"/>
+    <g transform="translate(600 400)" fill="none" stroke="#3B82F6" stroke-width="8" stroke-linejoin="round">
+      <path d="M0 -180 L156 -90 L156 90 L0 180 L-156 90 L-156 -90 Z"/>
+    </g>
+    <circle cx="600" cy="400" r="40" fill="#3B82F6"/>
+    <text x="600" y="600" text-anchor="middle" fill="#E6EAF2"
+      font-family="Inter, system-ui, sans-serif" font-size="42" font-weight="600"
+      letter-spacing="-1">NetForge</text>
+    <text x="600" y="640" text-anchor="middle" fill="#3B82F6"
+      font-family="ui-monospace, monospace" font-size="18" letter-spacing="2">MIKROTIK MANAGER</text>
+  </svg>
+</template>
+<script type="text/babel" data-presets="react">
+const Win = ({ children }) => <div className="winshell">{children}</div>;
+const W = 1280, H = 800;
+
+const App = () => (
+  <DesignCanvas projectTitle="NetForge — MikroTik Manager"
+    projectSubtitle="Direction A · Bridge · 11 screens · Windows 11 · Mica navy + electric blue">
+
+    <DCSection id="dir-a-onboard" title="Onboard"
+      subtitle="Connecting to the router">
+      <DCArtboard id="a-login" label="Connect" width={W} height={H}>
+        <Win><ALogin /></Win>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="dir-a-overview" title="Overview"
+      subtitle="What you see after login">
+      <DCArtboard id="a-dash" label="Dashboard" width={W} height={H}>
+        <Win><ADashboard /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-iface" label="Interfaces" width={W} height={H}>
+        <Win><AInterfaces /></Win>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="dir-a-traffic" title="Traffic shaping"
+      subtitle="The big-feature screens you mentioned: load-balance, block, limit">
+      <DCArtboard id="a-wan" label="WAN & Load Balance" width={W} height={H}>
+        <Win><AWanLB /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-firewall" label="Firewall · Block sites" width={W} height={H}>
+        <Win><AFirewall /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-bw" label="Bandwidth · Simple Queue" width={W} height={H}>
+        <Win><ABandwidth /></Win>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="dir-a-clients" title="Clients & access"
+      subtitle="Who connects, how">
+      <DCArtboard id="a-dhcp" label="DHCP & Clients" width={W} height={H}>
+        <Win><AClients /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-hotspot" label="Hotspot / PPPoE" width={W} height={H}>
+        <Win><AHotspot /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-wifi" label="Wireless · CAPsMAN" width={W} height={H}>
+        <Win><AWireless /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-vpn" label="VPN" width={W} height={H}>
+        <Win><AVpn /></Win>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="dir-a-system" title="System"
+      subtitle="Operate, automate, recover">
+      <DCArtboard id="a-logs" label="Logs" width={W} height={H}>
+        <Win><ALogs /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-scripts" label="Scripts & Scheduler" width={W} height={H}>
+        <Win><AScripts /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-backup" label="Backup & Restore" width={W} height={H}>
+        <Win><ABackup /></Win>
+      </DCArtboard>
+      <DCArtboard id="a-settings" label="Settings" width={W} height={H}>
+        <Win><ASettings /></Win>
+      </DCArtboard>
+    </DCSection>
+
+    <DCPostIt x={40} y={40} width={280}>
+      <b>NetForge — Direction A</b><br/>
+      All 12 screens of the manager: Connect, Dashboard, Interfaces, WAN & Load Balance,
+      Firewall (block sites), Bandwidth (queues), DHCP & Clients, Hotspot/PPPoE, Wireless,
+      VPN, Logs, Scripts, Backup, Settings. Click any artboard's expand icon for fullscreen.
+    </DCPostIt>
+  </DesignCanvas>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
