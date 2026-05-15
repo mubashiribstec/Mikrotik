@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NetForge — MikroTik Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #070c18; overflow: hidden; font-family: Inter, system-ui, sans-serif; }
+    #root { width: 100%; height: 100%; }
+    *::-webkit-scrollbar { width: 0; height: 0; }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+
+// ========== CONTEXT ==========
+const NavCtx = React.createContext({ page: 'Login', setPage: () => {}, mode: 'Simple', setMode: () => {} });
+
+// ========== COLOR TOKENS ==========
+const A = {
+  bg: '#0B1220',
+  bgLayered: 'radial-gradient(120% 80% at 0% 0%, rgba(56,118,255,0.18), transparent 55%), radial-gradient(80% 60% at 100% 100%, rgba(99,102,241,0.10), transparent 60%), #0B1220',
+  surface: 'rgba(255,255,255,0.035)',
+  surfaceStrong: 'rgba(255,255,255,0.06)',
+  border: 'rgba(255,255,255,0.07)',
+  borderStrong: 'rgba(255,255,255,0.12)',
+  text: '#E6EAF2',
+  textDim: 'rgba(230,234,242,0.62)',
+  textFaint: 'rgba(230,234,242,0.42)',
+  accent: '#3B82F6',
+  accentSoft: 'rgba(59,130,246,0.16)',
+  accentLine: 'rgba(59,130,246,0.55)',
+  good: '#22C55E',
+  warn: '#F59E0B',
+  bad: '#EF4444',
+  mono: '"JetBrains Mono", ui-monospace, monospace',
+  ui: 'Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
+};
+
+// ========== ICON COMPONENT ==========
+const Icon = ({ d, size = 16, sw = 1.6, fill = 'none', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
+       strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" style={style}>
+    {typeof d === 'string' ? <path d={d} /> : d}
+  </svg>
+);
+
+const Icons = {
+  dashboard: <Icon d={<><rect x="3" y="3" width="7" height="9" rx="1.2"/><rect x="14" y="3" width="7" height="5" rx="1.2"/><rect x="14" y="12" width="7" height="9" rx="1.2"/><rect x="3" y="16" width="7" height="5" rx="1.2"/></>} />,
+  iface: <Icon d={<><rect x="3" y="8" width="18" height="10" rx="1.5"/><path d="M7 12v2M11 12v2M15 12v2M19 12v2"/></>} />,
+  wan: <Icon d={<><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></>} />,
+  shield: <Icon d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6l8-3z" />,
+  gauge: <Icon d={<><path d="M12 14l5-5"/><circle cx="12" cy="14" r="0.8" fill="currentColor"/><path d="M3 14a9 9 0 0 1 18 0"/></>} />,
+  users: <Icon d={<><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.4 2.7-6 6-6s6 2.6 6 6"/><circle cx="17" cy="9" r="2.6"/><path d="M21 19c0-2.7-1.7-5-4-5"/></>} />,
+  wifi: <Icon d={<><path d="M2 9c5.5-5 14.5-5 20 0"/><path d="M5 13c4-3.5 10-3.5 14 0"/><path d="M8.5 17c2-1.7 5-1.7 7 0"/><circle cx="12" cy="20" r="0.8" fill="currentColor"/></>} />,
+  vpn: <Icon d={<><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></>} />,
+  list: <Icon d={<><path d="M4 6h16M4 12h16M4 18h10"/></>} />,
+  terminal: <Icon d={<><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h5"/></>} />,
+  save: <Icon d={<><path d="M5 3h11l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></>} />,
+  cog: <Icon d={<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .4 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.4 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .4-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1A2 2 0 1 1 6.9 4.2l.1.1a1.7 1.7 0 0 0 1.9.4H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.4 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></>} />,
+  refresh: <Icon d={<><path d="M21 12a9 9 0 0 1-15.5 6.4L3 16"/><path d="M3 12a9 9 0 0 1 15.5-6.4L21 8"/><path d="M21 3v5h-5M3 21v-5h5"/></>} />,
+  power: <Icon d={<><path d="M12 3v9"/><path d="M5.6 7a8 8 0 1 0 12.8 0"/></>} />,
+  search: <Icon d={<><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></>} />,
+  bell: <Icon d={<><path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8z"/><path d="M10 21a2 2 0 0 0 4 0"/></>} />,
+  plus: <Icon d="M12 5v14M5 12h14" />,
+  check: <Icon d="M5 12l4 4 10-10" />,
+  chevRight: <Icon d="M9 6l6 6-6 6" />,
+  globe: <Icon d={<><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 4 6 4 9s-1.5 6-4 9c-2.5-3-4-6-4-9s1.5-6 4-9z"/></>} />,
+};
+
+// ========== BRAND MARK ==========
+const NetForgeMark = ({ size = 22, color = 'currentColor' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <path d="M12 2.5 21 7.5v9L12 21.5 3 16.5v-9z" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
+    <circle cx="12" cy="12" r="2.6" fill={color} />
+    <path d="M12 9.4V4M12 14.6V20M9.6 10.7 5 8.2M14.4 13.3 19 15.8M9.6 13.3 5 15.8M14.4 10.7 19 8.2" stroke={color} strokeWidth="1.4" strokeLinecap="round" opacity="0.65" />
+  </svg>
+);
+
+// ========== WIN CHROME ==========
+const WinChrome = ({ accent = '#3b82f6', tone = 'dark' }) => {
+  const fg = tone === 'dark' ? 'rgba(255,255,255,.78)' : 'rgba(0,0,0,.78)';
+  const hover = tone === 'dark' ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)';
+  return (
+    <div style={{ display: 'flex', height: '100%', WebkitAppRegion: 'no-drag' }}>
+      {[
+        <path key="m" d="M3 8h10" stroke={fg} strokeWidth="1" />,
+        <g key="x"><rect x="3" y="3" width="10" height="10" stroke={fg} strokeWidth="1" fill="none" /></g>,
+        <path key="c" d="M3 3l10 10M13 3 3 13" stroke={fg} strokeWidth="1" />,
+      ].map((g, i) => (
+        <div key={i} style={{ width: 46, display: 'grid', placeItems: 'center', cursor: 'default',
+            background: i === 2 ? undefined : 'transparent' }}
+            onMouseEnter={e => e.currentTarget.style.background = i === 2 ? '#e81123' : hover}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+          <svg width="16" height="16" viewBox="0 0 16 16">{g}</svg>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ========== ATOM COMPONENTS ==========
+
+const ABase = ({ children }) => (
+  <div style={{ width: '100%', height: '100%', background: A.bgLayered, color: A.text,
+    fontFamily: A.ui, fontSize: 13, lineHeight: 1.45, letterSpacing: '-0.005em',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    {children}
+  </div>
+);
+
+const ATitleBar = ({ title }) => (
+  <div style={{ height: 32, display: 'flex', alignItems: 'center', flex: '0 0 auto',
+    borderBottom: `1px solid ${A.border}`, background: 'rgba(7,11,20,0.5)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', color: A.textDim, fontSize: 12 }}>
+      <NetForgeMark size={14} color={A.accent} />
+      <span style={{ fontWeight: 500, color: A.text }}>NetForge</span>
+      <span style={{ color: A.textFaint }}>·</span>
+      <span>{title}</span>
+    </div>
+    <div style={{ flex: 1 }} />
+    <WinChrome accent={A.accent} />
+  </div>
+);
+
+const APill = ({ children, tone = 'dim', mono = false }) => {
+  const tones = {
+    dim: { bg: 'rgba(255,255,255,0.05)', fg: A.textDim, dot: A.textFaint },
+    good: { bg: 'rgba(34,197,94,0.12)', fg: '#86EFAC', dot: A.good },
+    warn: { bg: 'rgba(245,158,11,0.12)', fg: '#FCD34D', dot: A.warn },
+    bad: { bg: 'rgba(239,68,68,0.12)', fg: '#FCA5A5', dot: A.bad },
+    accent: { bg: A.accentSoft, fg: '#BFDBFE', dot: A.accent },
+  }[tone];
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '3px 9px 3px 8px', borderRadius: 999, background: tones.bg,
+      fontFamily: mono ? A.mono : A.ui, fontSize: 11, color: tones.fg, fontWeight: 500 }}>
+      <span style={{ width: 6, height: 6, borderRadius: 999, background: tones.dot }} />
+      {children}
+    </span>
+  );
+};
+
+const ABtn = ({ children, kind = 'ghost', icon, onClick, full = false, sub }) => {
+  const styles = {
+    primary: { bg: A.accent, fg: '#fff', border: 'transparent', shadow: '0 1px 0 rgba(255,255,255,0.15) inset, 0 4px 14px rgba(59,130,246,0.35)' },
+    secondary: { bg: A.surfaceStrong, fg: A.text, border: A.borderStrong, shadow: 'none' },
+    ghost: { bg: 'transparent', fg: A.textDim, border: 'transparent', shadow: 'none' },
+  }[kind];
+  return (
+    <button onClick={onClick} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 8, padding: sub ? '8px 14px' : '7px 12px',
+      borderRadius: 8, border: `1px solid ${styles.border}`, background: styles.bg, color: styles.fg,
+      fontFamily: A.ui, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+      boxShadow: styles.shadow, width: full ? '100%' : undefined, justifyContent: 'center',
+    }}>
+      {icon}
+      <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1 }}>
+        <span>{children}</span>
+        {sub && <span style={{ fontSize: 10.5, fontWeight: 400, opacity: 0.7, fontFamily: A.mono, marginTop: 2 }}>{sub}</span>}
+      </span>
+    </button>
+  );
+};
+
+const ACard = ({ children, pad = 16, style }) => (
+  <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12,
+    padding: pad, backdropFilter: 'blur(8px)', ...style }}>
+    {children}
+  </div>
+);
+
+const ALabeledField = ({ label, sub, value, type = 'text', mono = false }) => (
+  <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+      <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
+      <span style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{sub}</span>
+    </span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 11px',
+      background: A.surface, border: `1px solid ${A.borderStrong}`, borderRadius: 9 }}>
+      <span style={{ fontFamily: mono || type === 'password' ? A.mono : A.ui,
+        fontSize: 13, color: A.text }}>{value}</span>
+    </div>
+  </label>
+);
+
+const AToggleRow = ({ label, sub, on, onChange }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+    background: A.surface, border: `1px solid ${A.border}`, borderRadius: 9, cursor: 'pointer' }}
+    onClick={() => onChange && onChange(!on)}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{label}</div>
+      <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{sub}</div>
+    </div>
+    <div style={{ width: 32, height: 18, borderRadius: 999,
+      background: on ? A.accent : 'rgba(255,255,255,0.1)',
+      position: 'relative', flex: '0 0 auto' }}>
+      <div style={{ width: 14, height: 14, borderRadius: 999, background: '#fff',
+        position: 'absolute', top: 2, left: on ? 16 : 2, transition: 'left 0.2s' }} />
+    </div>
+  </div>
+);
+
+// ========== SIDEBAR (with navigation) ==========
+
+const ASidebar = ({ active = 'Dashboard' }) => {
+  const { setPage } = React.useContext(NavCtx);
+  const items = [
+    { label: 'Dashboard', sub: 'overview', icon: Icons.dashboard },
+    { label: 'Interfaces', sub: 'ethernet · sfp', icon: Icons.iface },
+    { label: 'WAN & Load Balance', sub: 'pcc · nth · failover', icon: Icons.wan },
+    { label: 'Firewall', sub: 'rules · L7 · NAT', icon: Icons.shield },
+    { label: 'Bandwidth', sub: 'simple queue · pcq', icon: Icons.gauge },
+    { label: 'DHCP & Clients', sub: 'leases · arp', icon: Icons.users },
+    { label: 'Hotspot / PPPoE', sub: 'users · profiles', icon: Icons.search },
+    { label: 'Wireless', sub: 'capsman · wifi', icon: Icons.wifi },
+    { label: 'VPN', sub: 'wg · l2tp · ovpn', icon: Icons.vpn },
+    { label: 'Logs', sub: 'system · firewall', icon: Icons.list },
+    { label: 'Scripts', sub: 'scheduler', icon: Icons.terminal },
+    { label: 'Backup', sub: 'export · restore', icon: Icons.save },
+  ];
+  return (
+    <aside style={{ width: 232, flex: '0 0 232px', borderRight: `1px solid ${A.border}`,
+      display: 'flex', flexDirection: 'column', background: 'rgba(7,11,20,0.35)' }}>
+      <div style={{ padding: '14px 14px 10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 8px',
+          borderRadius: 9, background: A.surface, border: `1px solid ${A.border}` }}>
+          <div style={{ width: 26, height: 26, borderRadius: 7,
+            background: 'linear-gradient(135deg, #3B82F6, #6366F1)',
+            display: 'grid', placeItems: 'center', boxShadow: '0 0 0 1px rgba(255,255,255,0.08) inset' }}>
+            <NetForgeMark size={15} color="#fff" />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em' }}>RB5009UG+S+IN</span>
+            <span style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>192.168.88.1 · v7.15</span>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: '0 8px 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.025)', border: `1px solid ${A.border}` }}>
+          <span style={{ color: A.textFaint }}>{Icons.search}</span>
+          <span style={{ fontSize: 12, color: A.textFaint }}>Search or run command</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono,
+            border: `1px solid ${A.border}`, borderRadius: 4, padding: '1px 5px' }}>Ctrl K</span>
+        </div>
+      </div>
+
+      <nav style={{ flex: 1, overflow: 'hidden', padding: '4px 8px' }}>
+        {items.map(item => {
+          const isActive = item.label === active;
+          return (
+            <div key={item.label} onClick={() => setPage(item.label)} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px',
+              borderRadius: 8, marginBottom: 1,
+              background: isActive ? A.accentSoft : 'transparent',
+              color: isActive ? '#DBEAFE' : A.textDim,
+              borderLeft: isActive ? `2px solid ${A.accent}` : '2px solid transparent',
+              cursor: 'pointer',
+            }}>
+              <span style={{ color: isActive ? A.accent : A.textFaint, display: 'flex' }}>{item.icon}</span>
+              <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
+                <span style={{ fontSize: 12.5, fontWeight: isActive ? 600 : 500, color: isActive ? '#fff' : A.text }}>{item.label}</span>
+                <span style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{item.sub}</span>
+              </span>
+            </div>
+          );
+        })}
+      </nav>
+
+      <div style={{ padding: '8px 10px', borderTop: `1px solid ${A.border}`,
+        display: 'flex', alignItems: 'center', gap: 9 }}>
+        <div style={{ width: 26, height: 26, borderRadius: 999, background: '#374151',
+          display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 600 }}>RZ</div>
+        <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 500 }}>admin</span>
+          <span style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>full access · 1h 24m</span>
+        </div>
+        <span style={{ color: A.textFaint, cursor: 'pointer' }} onClick={() => setPage('Settings')}>{Icons.cog}</span>
+      </div>
+    </aside>
+  );
+};
+
+// ========== LOGIN SCREEN ==========
+
+const ALogin = () => {
+  const { setPage } = React.useContext(NavCtx);
+  const recents = [
+    { name: 'Office · RB5009', host: '192.168.88.1', last: '2 min ago', tone: 'good' },
+    { name: 'Branch · hEX', host: '10.10.0.1', last: '3 days', tone: 'dim' },
+    { name: 'Lab · CHR', host: '172.16.4.1:8728', last: '5 days', tone: 'dim' },
+    { name: 'Datacenter · CCR2004', host: 'ccr.example.net', last: '2 weeks', tone: 'warn' },
+  ];
+  return (
+    <ABase>
+      <ATitleBar title="Connect" />
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', overflow: 'hidden' }}>
+        {/* Left — recent connections */}
+        <div style={{ padding: '32px 28px 24px 36px', borderRight: `1px solid ${A.border}`, overflow: 'hidden',
+          display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10,
+              background: 'linear-gradient(135deg, #3B82F6, #6366F1)', display: 'grid', placeItems: 'center',
+              boxShadow: '0 8px 24px rgba(59,130,246,0.4)' }}>
+              <NetForgeMark size={20} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em' }}>NetForge</div>
+              <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>mikrotik manager · v0.4.0</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 22, fontSize: 11, color: A.textFaint, textTransform: 'uppercase',
+            letterSpacing: '0.08em', fontWeight: 600 }}>Recent connections</div>
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, flex: 1, overflow: 'hidden' }}>
+            {recents.map((r, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px',
+                background: i === 0 ? A.surfaceStrong : A.surface,
+                border: `1px solid ${i === 0 ? A.borderStrong : A.border}`, borderRadius: 10, cursor: 'pointer',
+              }}>
+                <div style={{ width: 30, height: 30, borderRadius: 7,
+                  background: 'rgba(59,130,246,0.10)', border: `1px solid ${A.border}`,
+                  display: 'grid', placeItems: 'center', color: A.accent }}>
+                  {Icons.iface}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.2 }}>{r.name}</div>
+                  <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{r.host}</div>
+                </div>
+                <APill tone={r.tone}>{r.last}</APill>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+            <ABtn icon={Icons.refresh} kind="secondary">Discover on LAN</ABtn>
+            <ABtn icon={Icons.plus} kind="ghost">New profile</ABtn>
+          </div>
+        </div>
+
+        {/* Right — connection form */}
+        <div style={{ padding: '32px 36px 24px 28px', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ fontSize: 11, color: A.textFaint, textTransform: 'uppercase',
+            letterSpacing: '0.08em', fontWeight: 600 }}>Connect to</div>
+          <div style={{ fontSize: 22, fontWeight: 600, marginTop: 4, letterSpacing: '-0.02em' }}>Office · RB5009</div>
+          <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <ALabeledField label="Host" sub="ip address or hostname" value="192.168.88.1" mono />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 10 }}>
+              <ALabeledField label="Username" sub="api user" value="admin" />
+              <ALabeledField label="Port" sub="api / api-ssl" value="8728" mono />
+            </div>
+            <ALabeledField label="Password" sub="stored in windows credential manager" value="••••••••••••" type="password" />
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <AToggleRow label="Use TLS (api-ssl)" sub="recommended over WAN" on={true} />
+              <AToggleRow label="Save credentials" sub="encrypted with DPAPI" on={true} />
+            </div>
+          </div>
+          <div style={{ flex: 1 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16 }}>
+            <APill tone="good" mono>last online · 14:32</APill>
+            <span style={{ flex: 1 }} />
+            <ABtn kind="secondary">Test</ABtn>
+            <ABtn kind="primary" icon={Icons.power} onClick={() => setPage('Dashboard')}>Connect</ABtn>
+          </div>
+        </div>
+      </div>
+    </ABase>
+  );
+};
+
+// ========== APP ROUTER ==========
+
+const App = () => {
+  const [page, setPage] = React.useState('Login');
+  const [mode, setMode] = React.useState('Simple');
+
+  const screens = {
+    'Login': ALogin,
+  };
+
+  const Screen = screens[page] || ALogin;
+
+  return (
+    <NavCtx.Provider value={{ page, setPage, mode, setMode }}>
+      <div style={{ width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        <div style={{ width: 1280, height: 800, borderRadius: 8, overflow: 'hidden', boxShadow: '0 24px 60px -20px rgba(0,0,0,0.45)' }}>
+          <Screen />
+        </div>
+      </div>
+    </NavCtx.Provider>
+  );
+};
+
+// ========== RENDER ==========
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+
+  </script>
+</body>
+</html>
