@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetForge - MikroTik Router Manager</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0B1220; color: #E8EAED; overflow: hidden; }
+    html, body, #app { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="text/babel">
+const { useState, useContext, createContext, useMemo } = React;
+
+// ============ DESIGN TOKENS ============
+const A = {
+  // Colors - Direction A
+  bgDark: '#0B1220',
+  bgDarker: '#050814',
+  bgCard: '#0F1629',
+  bgSecondary: '#1A2640',
+  textPrimary: '#E8EAED',
+  textSecondary: '#9CA3AF',
+  accentBlue: '#3B82F6',
+  accentBlueDark: '#2563EB',
+  accentCyan: '#06B6D4',
+  accentGreen: '#10B981',
+  accentRed: '#EF4444',
+  accentOrange: '#F97316',
+  accentAmber: '#F59E0B',
+
+  // Spacing
+  sp4: 4, sp8: 8, sp12: 12, sp16: 16, sp20: 20, sp24: 24, sp32: 32, sp48: 48,
+
+  // Layout
+  sidebarW: 232,
+  topBarH: 56,
+
+  // Fonts
+  fontSmall: '12px', fontBase: '14px', fontMedium: '15px', fontLarge: '16px', fontXL: '18px',
+  fontBold: 600, fontSemiBold: 500, fontNormal: 400,
+};
+
+// ============ ICONS ============
+const Icons = {
+  Dashboard: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>,
+  Interface: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 9h8M8 13h8M12 3v18M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>,
+  Lan: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 8v4M16 8v4M12 10v8"/></svg>,
+  Firewall: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1l9 5v7c0 5.55-3.84 10.74-9 12-5.16-1.26-9-6.45-9-12V6l9-5z"/></svg>,
+  Speed: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="1"/><path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"/></svg>,
+  Users: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
+  Wifi: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12.55a11 11 0 0114.08 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.94 0"/></svg>,
+  Lock: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
+  List: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9h18M3 15h18"/></svg>,
+  Save: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>,
+  Settings: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6M4.22 4.22l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M4.22 19.78l4.24-4.24m4.24-4.24l4.24-4.24"/></svg>,
+  Bell: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+  ChevronDown: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>,
+  ChevronRight: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>,
+  Plus: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+  Search: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
+  Minimize: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+  Square: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18"/></svg>,
+  X: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  Play: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+  LogOut: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>,
+};
+
+const Icon = ({ name, size = 20, color = 'currentColor' }) => {
+  const Component = Icons[name];
+  return Component ? <div style={{ display: 'inline-flex', width: size, height: size, color }}><Component /></div> : null;
+};
+
+// ============ CONTEXT ============
+const NavCtx = createContext({ page: 'Login', setPage: () => {} });
+
+// ============ LOGO COMPONENT ============
+const NetForgeMark = () => (
+  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke={A.accentBlue} strokeWidth="1.5">
+    <circle cx="12" cy="12" r="8"/>
+    <circle cx="12" cy="4" r="2" fill={A.accentBlue}/>
+    <circle cx="18.63" cy="18.63" r="2" fill={A.accentBlue}/>
+    <circle cx="5.37" cy="18.63" r="2" fill={A.accentBlue}/>
+    <line x1="12" y1="12" x2="12" y2="4"/>
+    <line x1="12" y1="12" x2="18.63" y2="18.63"/>
+    <line x1="12" y1="12" x2="5.37" y2="18.63"/>
+  </svg>
+);
+
+// ============ REUSABLE COMPONENTS ============
+const ABase = ({ children, style = {}, ...props }) => (
+  <div style={{ backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 8, padding: A.sp16, ...style }} {...props}>{children}</div>
+);
+
+const ATitleBar = ({ title, children }) => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: A.sp20 }}>
+    <h1 style={{ fontSize: A.fontXL, fontWeight: A.fontBold, color: A.textPrimary }}>{title}</h1>
+    {children}
+  </div>
+);
+
+const ABtn = ({ label, onClick, variant = 'primary', icon, disabled = false }) => {
+  const bgColor = variant === 'primary' ? A.accentBlue : variant === 'secondary' ? A.bgSecondary : A.accentRed;
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      backgroundColor: disabled ? A.bgSecondary : bgColor, color: A.textPrimary, border: 'none', borderRadius: 6, padding: `${A.sp8}px ${A.sp16}px`, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: A.fontBase, display: 'flex', alignItems: 'center', gap: A.sp8, opacity: disabled ? 0.5 : 1,
+    }}>
+      {icon && <Icon name={icon} size={16} />}
+      {label}
+    </button>
+  );
+};
+
+const APill = ({ label, active = false, onClick }) => (
+  <button onClick={onClick} style={{
+    backgroundColor: active ? A.accentBlue : A.bgSecondary, color: A.textPrimary, border: 'none', borderRadius: 20, padding: `${A.sp8}px ${A.sp12}px`, cursor: 'pointer', fontSize: A.fontSmall, fontWeight: active ? A.fontSemiBold : A.fontNormal,
+  }}>
+    {label}
+  </button>
+);
+
+const ACard = ({ title, children, footer }) => (
+  <ABase style={{ marginBottom: A.sp16 }}>
+    {title && <h2 style={{ fontSize: A.fontMedium, fontWeight: A.fontSemiBold, marginBottom: A.sp12, color: A.textPrimary }}>{title}</h2>}
+    {children}
+    {footer && <div style={{ marginTop: A.sp12, paddingTop: A.sp12, borderTop: `1px solid ${A.bgSecondary}`, fontSize: A.fontSmall, color: A.textSecondary }}>{footer}</div>}
+  </ABase>
+);
+
+const ALabeledField = ({ label, children, help }) => (
+  <div style={{ marginBottom: A.sp16 }}>
+    <label style={{ display: 'block', fontSize: A.fontSmall, fontWeight: A.fontSemiBold, marginBottom: A.sp8, color: A.textSecondary }}>{label}</label>
+    {children}
+    {help && <div style={{ fontSize: A.fontSmall, color: A.textSecondary, marginTop: A.sp4 }}>{help}</div>}
+  </div>
+);
+
+const AToggleRow = ({ label, value, onChange, help }) => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: A.sp12, backgroundColor: A.bgSecondary, borderRadius: 6, marginBottom: A.sp8 }}>
+    <div>
+      <div style={{ fontSize: A.fontBase, color: A.textPrimary, fontWeight: A.fontSemiBold }}>{label}</div>
+      {help && <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>{help}</div>}
+    </div>
+    <button onClick={() => onChange(!value)} style={{ width: 44, height: 24, backgroundColor: value ? A.accentBlue : A.bgDark, borderRadius: 12, border: 'none', cursor: 'pointer', position: 'relative' }}>
+      <div style={{ width: 20, height: 20, backgroundColor: A.textPrimary, borderRadius: 10, position: 'absolute', top: 2, left: value ? 22 : 2, transition: 'left 0.2s' }} />
+    </button>
+  </div>
+);
+
+const LineChart = ({ data, height = 100, color = A.accentBlue }) => {
+  if (!data || data.length < 2) return null;
+  const max = Math.max(...data);
+  const points = data.map((v, i) => `${(i / (data.length - 1)) * 200},${100 - (v / max) * 80}`).join(' ');
+  return (
+    <svg viewBox="0 0 200 100" style={{ height, width: '100%' }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+    </svg>
+  );
+};
+
+const BarChart = ({ data, height = 80, color = A.accentBlue }) => {
+  if (!data || data.length === 0) return null;
+  const max = Math.max(...data);
+  const barWidth = 200 / data.length / 1.5;
+  const spacing = 200 / data.length;
+  return (
+    <svg viewBox="0 0 200 100" style={{ height, width: '100%' }}>
+      {data.map((v, i) => (
+        <rect key={i} x={i * spacing + spacing / 4} y={100 - (v / max) * 80} width={barWidth} height={(v / max) * 80} fill={color} opacity="0.7"/>
+      ))}
+    </svg>
+  );
+};
+
+// ============ SAMPLE DATA ============
+const SAMPLE_CPU = [15, 18, 22, 20, 25, 28, 22, 19, 23, 25, 22];
+const SAMPLE_MEM = [55, 60, 65, 62, 70, 74, 72, 68, 71, 74, 72];
+const SAMPLE_STORAGE = [8, 10, 12, 11, 13, 14, 13, 12, 14, 14, 14];
+const SAMPLE_TRAFFIC_RX = [120, 140, 150, 130, 160, 180, 170, 150, 175, 190, 180];
+const SAMPLE_TRAFFIC_TX = [80, 95, 110, 100, 120, 140, 130, 110, 130, 150, 140];
+
+// ============ TOP BAR ============
+const ATopBar = () => {
+  const [mode, setMode] = useState('Simple');
+  return (
+    <div style={{ height: A.topBarH, backgroundColor: A.bgDarker, borderBottom: `1px solid ${A.bgSecondary}`, display: 'flex', alignItems: 'center', paddingLeft: A.sp20, paddingRight: A.sp20, gap: A.sp16 }}>
+      <div style={{ flex: 1 }} />
+      <div style={{ display: 'flex', gap: A.sp8 }}>
+        <APill label="Simple" active={mode === 'Simple'} onClick={() => setMode('Simple')} />
+        <APill label="Advanced" active={mode === 'Advanced'} onClick={() => setMode('Advanced')} />
+      </div>
+      <ABtn icon="Bell" variant="secondary" onClick={() => {}} />
+      <ABtn icon="Settings" variant="secondary" onClick={() => {}} />
+    </div>
+  );
+};
+
+// ============ SIDEBAR ============
+const ASidebar = () => {
+  const { page, setPage } = useContext(NavCtx);
+  const items = [
+    { label: 'Dashboard', icon: 'Dashboard', page: 'Dashboard' },
+    { label: 'Interfaces', icon: 'Interface', page: 'Interfaces' },
+    { label: 'WAN / Load Balance', icon: 'Lan', page: 'WanLB' },
+    { label: 'Firewall', icon: 'Firewall', page: 'Firewall' },
+    { label: 'Bandwidth', icon: 'Speed', page: 'Bandwidth' },
+    { label: 'DHCP & Clients', icon: 'Users', page: 'Clients' },
+    { label: 'Hotspot / PPPoE', icon: 'Lock', page: 'Hotspot' },
+    { label: 'Wireless', icon: 'Wifi', page: 'Wireless' },
+    { label: 'VPN', icon: 'Lock', page: 'Vpn' },
+    { label: 'Logs', icon: 'List', page: 'Logs' },
+    { label: 'Scripts', icon: 'Play', page: 'Scripts' },
+    { label: 'Backup', icon: 'Save', page: 'Backup' },
+    { label: 'Settings', icon: 'Settings', page: 'Settings' },
+  ];
+  return (
+    <div style={{ width: A.sidebarW, height: '100vh', backgroundColor: A.bgDark, borderRight: `1px solid ${A.bgSecondary}`, display: 'flex', flexDirection: 'column', padding: A.sp16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: A.sp8, marginBottom: A.sp32, paddingBottom: A.sp16, borderBottom: `1px solid ${A.bgSecondary}` }}>
+        <NetForgeMark />
+        <span style={{ fontSize: A.fontMedium, fontWeight: A.fontBold, color: A.accentBlue }}>NetForge</span>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {items.map((item) => (
+          <button key={item.page} onClick={() => setPage(item.page)} style={{
+            width: '100%', padding: `${A.sp12}px ${A.sp8}px`, marginBottom: A.sp8, backgroundColor: page === item.page ? A.accentBlue : 'transparent', color: page === item.page ? A.bgDark : A.textPrimary, border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: A.fontBase, fontWeight: page === item.page ? A.fontSemiBold : A.fontNormal, display: 'flex', alignItems: 'center', gap: A.sp8,
+          }}>
+            <Icon name={item.icon} size={18} />
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <button onClick={() => setPage('Login')} style={{ width: '100%', padding: `${A.sp12}px ${A.sp8}px`, backgroundColor: A.bgSecondary, color: A.textPrimary, border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: A.fontBase, display: 'flex', alignItems: 'center', gap: A.sp8 }}>
+        <Icon name="LogOut" size={18} />
+        Logout
+      </button>
+    </div>
+  );
+};
+
+// ============ LOGIN SCREEN ============
+const ALogin = ({ onConnect }) => {
+  const { setPage } = useContext(NavCtx);
+  const [host, setHost] = useState('192.168.1.1');
+  const [user, setUser] = useState('admin');
+  const [pass, setPass] = useState('');
+  const recentConnections = [
+    { host: '192.168.1.1', user: 'admin', label: 'Main Router' },
+    { host: '192.168.2.1', user: 'admin', label: 'Branch Office' },
+  ];
+  return (
+    <div style={{ height: '100vh', display: 'flex', backgroundColor: A.bgDark }}>
+      <div style={{ flex: 1, padding: A.sp48, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <div style={{ marginBottom: A.sp48 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: A.sp16, marginBottom: A.sp16 }}>
+            <NetForgeMark />
+            <h1 style={{ fontSize: '32px', fontWeight: A.fontBold, color: A.accentBlue }}>NetForge</h1>
+          </div>
+          <p style={{ color: A.textSecondary, fontSize: A.fontLarge }}>MikroTik Router Manager</p>
+        </div>
+        <ALabeledField label="Host / IP Address">
+          <input type="text" value={host} onChange={(e) => setHost(e.target.value)} style={{ width: '100%', padding: A.sp12, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 6, color: A.textPrimary, fontSize: A.fontBase }} />
+        </ALabeledField>
+        <ALabeledField label="Username">
+          <input type="text" value={user} onChange={(e) => setUser(e.target.value)} style={{ width: '100%', padding: A.sp12, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 6, color: A.textPrimary, fontSize: A.fontBase }} />
+        </ALabeledField>
+        <ALabeledField label="Password">
+          <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} style={{ width: '100%', padding: A.sp12, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 6, color: A.textPrimary, fontSize: A.fontBase }} />
+        </ALabeledField>
+        <button onClick={() => setPage('Dashboard')} style={{ width: '100%', padding: A.sp12, backgroundColor: A.accentBlue, color: A.bgDark, border: 'none', borderRadius: 6, fontSize: A.fontBase, fontWeight: A.fontSemiBold, cursor: 'pointer', marginTop: A.sp24 }}>
+          Connect
+        </button>
+      </div>
+      <div style={{ width: '400px', padding: A.sp32, backgroundColor: A.bgCard, borderLeft: `1px solid ${A.bgSecondary}` }}>
+        <h2 style={{ fontSize: A.fontLarge, fontWeight: A.fontSemiBold, marginBottom: A.sp16, color: A.textPrimary }}>Recent Connections</h2>
+        {recentConnections.map((conn, i) => (
+          <button key={i} onClick={() => setPage('Dashboard')} style={{ width: '100%', padding: A.sp12, marginBottom: A.sp12, backgroundColor: A.bgSecondary, color: A.textPrimary, border: 'none', borderRadius: 6, cursor: 'pointer', textAlign: 'left' }}>
+            <div style={{ fontSize: A.fontBase, fontWeight: A.fontSemiBold }}>{conn.label}</div>
+            <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>{conn.host}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ============ DASHBOARD ============
+const AKpi = ({ label, value, unit, trend }) => (
+  <ABase style={{ marginBottom: A.sp12 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: A.sp12 }}>
+      <div>
+        <div style={{ fontSize: A.fontSmall, color: A.textSecondary, marginBottom: A.sp4 }}>{label}</div>
+        <div style={{ fontSize: '24px', fontWeight: A.fontBold, color: A.accentBlue }}>{value}{unit}</div>
+      </div>
+      <div style={{ width: 60, height: 40 }}>
+        <LineChart data={trend} color={A.accentGreen} />
+      </div>
+    </div>
+  </ABase>
+);
+
+const AAction = ({ label, active = false, onClick }) => (
+  <button onClick={onClick} style={{
+    padding: `${A.sp12}px ${A.sp16}px`, backgroundColor: active ? A.accentBlue : A.bgCard, color: A.textPrimary, border: `1px solid ${active ? A.accentBlue : A.bgSecondary}`, borderRadius: 6, cursor: 'pointer', fontSize: A.fontSmall, fontWeight: A.fontSemiBold, marginRight: A.sp8, marginBottom: A.sp8,
+  }}>
+    {label}
+  </button>
+);
+
+const ADashboard = () => (
+  <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+    <ATitleBar title="Dashboard">
+      <ABtn label="Refresh" icon="Search" variant="secondary" />
+    </ATitleBar>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: A.sp16, marginBottom: A.sp24 }}>
+      <AKpi label="CPU Usage" value="22" unit="%" trend={SAMPLE_CPU} />
+      <AKpi label="Memory" value="74" unit="%" trend={SAMPLE_MEM} />
+      <AKpi label="Storage" value="14" unit="%" trend={SAMPLE_STORAGE} />
+      <AKpi label="Active Clients" value="38" unit="" trend={[38, 36, 40, 38, 39]} />
+    </div>
+    <ACard title="Quick Actions">
+      <div>
+        <AAction label="Block YouTube" active={true} onClick={() => {}} />
+        <AAction label="Block Facebook" onClick={() => {}} />
+        <AAction label="Block TikTok" onClick={() => {}} />
+        <AAction label="Limit speed" onClick={() => {}} />
+        <AAction label="Add load balance" onClick={() => {}} />
+        <AAction label="Safe-search" onClick={() => {}} />
+        <AAction label="Speed test" onClick={() => {}} />
+        <AAction label="Custom rule" onClick={() => {}} />
+      </div>
+    </ACard>
+    <ACard title="Traffic Overview">
+      <svg viewBox="0 0 480 140" style={{ width: '100%', height: '140px', marginBottom: A.sp12 }}>
+        <defs><pattern id="grid" width="40" height="20" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 20" fill="none" stroke="#1a2640" strokeWidth="0.5"/></pattern></defs>
+        <rect width="480" height="140" fill="url(#grid)" />
+        <polyline points="0,80 20,75 40,70 60,75 80,65 100,60 120,75 140,70 160,65 180,70 200,60 220,70 240,65 260,75 280,70 300,75 320,65 340,60 360,70 380,65 400,60 420,70 440,65 460,70 480,75" fill="none" stroke={A.accentBlue} strokeWidth="2"/>
+        <polyline points="0,100 20,95 40,90 60,95 80,85 100,80 120,95 140,90 160,85 180,90 200,80 220,90 240,85 260,95 280,90 300,95 320,85 340,80 360,90 380,85 400,80 420,90 440,85 460,90 480,95" fill="none" stroke={A.accentCyan} strokeWidth="2"/>
+      </svg>
+      <div style={{ display: 'flex', gap: A.sp16, fontSize: A.fontSmall }}>
+        <div><span style={{ color: A.accentBlue }}>●</span> RX: 2.5 Mbps</div>
+        <div><span style={{ color: A.accentCyan }}>●</span> TX: 1.8 Mbps</div>
+      </div>
+    </ACard>
+    <ACard title="WAN Status">
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall, fontWeight: A.fontNormal }}>Interface</th>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall, fontWeight: A.fontNormal }}>Status</th>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall, fontWeight: A.fontNormal }}>Utilization</th>
+        </tr></thead>
+        <tbody>
+          {[{ name: 'ether2', status: 'up', util: 45 }, { name: 'ether3', status: 'up', util: 28 }, { name: 'ether4', status: 'down', util: 0 }].map((wan, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+              <td style={{ padding: A.sp8 }}>{wan.name}</td>
+              <td style={{ padding: A.sp8 }}><span style={{ color: wan.status === 'up' ? A.accentGreen : A.accentRed }}>● {wan.status}</span></td>
+              <td style={{ padding: A.sp8 }}><div style={{ width: 100, height: 20, backgroundColor: A.bgSecondary, borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${wan.util}%`, height: '100%', backgroundColor: A.accentBlue }} /></div></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </ACard>
+    <ACard title="Top Talkers">
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Host</th>
+          <th style={{ textAlign: 'right', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>→ TX</th>
+          <th style={{ textAlign: 'right', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>← RX</th>
+        </tr></thead>
+        <tbody>
+          {[{ host: '192.168.1.100', tx: '850 MB', rx: '340 MB' }, { host: '192.168.1.105', tx: '420 MB', rx: '680 MB' }, { host: '192.168.1.110', tx: '180 MB', rx: '220 MB' }, { host: '192.168.1.115', tx: '85 MB', rx: '105 MB' }].map((row, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+              <td style={{ padding: A.sp8 }}>{row.host}</td>
+              <td style={{ padding: A.sp8, textAlign: 'right', color: A.accentBlue }}>{row.tx}</td>
+              <td style={{ padding: A.sp8, textAlign: 'right', color: A.accentCyan }}>{row.rx}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </ACard>
+  </div>
+);
+
+// ============ INTERFACES ============
+const AInterfaces = () => (
+  <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+    <ATitleBar title="Interfaces" />
+    <ACard title="Port Status">
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Interface</th>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Status</th>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Speed</th>
+          <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>RX/TX</th>
+        </tr></thead>
+        <tbody>
+          {[{ name: 'ether1', status: 'up', speed: '1 Gbps', rx: '85 MB', tx: '42 MB' }, { name: 'ether2', status: 'up', speed: '1 Gbps', rx: '45 MB', tx: '28 MB' }, { name: 'ether3', status: 'down', speed: '0', rx: '0', tx: '0' }, { name: 'ether4', status: 'up', speed: '100 Mbps', rx: '12 MB', tx: '8 MB' }, { name: 'ether5', status: 'up', speed: '1 Gbps', rx: '120 MB', tx: '95 MB' }, { name: 'ether6', status: 'down', speed: '0', rx: '0', tx: '0' }, { name: 'ether7', status: 'up', speed: '100 Mbps', rx: '5 MB', tx: '3 MB' }, { name: 'ether8', status: 'up', speed: '1 Gbps', rx: '42 MB', tx: '28 MB' }].map((iface, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+              <td style={{ padding: A.sp8 }}>{iface.name}</td>
+              <td style={{ padding: A.sp8 }}><span style={{ color: iface.status === 'up' ? A.accentGreen : A.accentRed }}>● {iface.status}</span></td>
+              <td style={{ padding: A.sp8 }}>{iface.speed}</td>
+              <td style={{ padding: A.sp8 }}>{iface.rx} / {iface.tx}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </ACard>
+    <ACard title="CLI Command" footer="Run this command on the router to configure interfaces">
+      <code style={{ display: 'block', backgroundColor: A.bgDarker, padding: A.sp12, borderRadius: 4, fontSize: A.fontSmall, color: A.accentGreen, overflowX: 'auto', wordBreak: 'break-all' }}>/interface ethernet set ether1 disabled=no</code>
+    </ACard>
+  </div>
+);
+
+// ============ WAN LOAD BALANCE ============
+const AWanLB = () => {
+  const [selected, setSelected] = useState(['ether2', 'ether3']);
+  const [method, setMethod] = useState('PCC');
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="WAN / Load Balance" />
+      <ACard title="Select WAN Ports">
+        {['ether1', 'ether2', 'ether3', 'ether4'].map((port) => (
+          <div key={port} style={{ display: 'flex', alignItems: 'center', marginBottom: A.sp12 }}>
+            <input type="checkbox" checked={selected.includes(port)} onChange={() => setSelected(selected.includes(port) ? selected.filter(p => p !== port) : [...selected, port])} style={{ marginRight: A.sp12 }} />
+            <span style={{ flex: 1 }}>{port}</span>
+            {selected.includes(port) && <Icon name="ChevronRight" size={16} />}
+          </div>
+        ))}
+      </ACard>
+      <ACard title="Distribution Method">
+        {['PCC', 'NTH', 'Failover'].map((m) => (
+          <div key={m} style={{ marginBottom: A.sp12 }}>
+            <label style={{ display: 'flex', alignItems: 'center' }}>
+              <input type="radio" checked={method === m} onChange={() => setMethod(m)} style={{ marginRight: A.sp8 }} />
+              <span>{m}</span>
+            </label>
+          </div>
+        ))}
+      </ACard>
+      <ACard title="Distribution Ratio">
+        <div style={{ backgroundColor: A.bgSecondary, height: 40, borderRadius: 6, display: 'flex', overflow: 'hidden', marginBottom: A.sp12 }}>
+          <div style={{ flex: 0.66, backgroundColor: A.accentBlue, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: A.fontSmall, fontWeight: A.fontSemiBold }}>66%</div>
+          <div style={{ flex: 0.34, backgroundColor: A.accentCyan, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: A.fontSmall, fontWeight: A.fontSemiBold }}>34%</div>
+        </div>
+      </ACard>
+      <ACard title="CLI Command" footer="mangle rules and route balancing configuration">
+        <code style={{ display: 'block', backgroundColor: A.bgDarker, padding: A.sp12, borderRadius: 4, fontSize: A.fontSmall, color: A.accentGreen, overflowX: 'auto', wordBreak: 'break-all' }}>/ip firewall mangle add chain=prerouting dst-address-type=!local in-interface=ether1 action=mark-connection new-connection-mark=ether2 passthrough=yes</code>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ FIREWALL ============
+const AFirewall = () => {
+  const [blocked, setBlocked] = useState(['YouTube', 'Facebook']);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Firewall" />
+      <ACard title="Block Sites">
+        {['YouTube', 'Facebook', 'TikTok', 'Netflix', 'Adult', 'Torrents'].map((site) => (
+          <button key={site} onClick={() => setBlocked(blocked.includes(site) ? blocked.filter(s => s !== site) : [...blocked, site])} style={{
+            padding: `${A.sp8}px ${A.sp12}px`, marginRight: A.sp8, marginBottom: A.sp8, backgroundColor: blocked.includes(site) ? A.accentRed : A.bgCard, border: `1px solid ${blocked.includes(site) ? A.accentRed : A.bgSecondary}`, color: A.textPrimary, borderRadius: 6, cursor: 'pointer', fontSize: A.fontSmall,
+          }}>
+            {site}
+          </button>
+        ))}
+      </ACard>
+      <ACard title="Custom Rule">
+        <ALabeledField label="Domain">
+          <input type="text" placeholder="example.com" style={{ width: '100%', padding: A.sp8, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 4, color: A.textPrimary }} />
+        </ALabeledField>
+        <ALabeledField label="Apply To">
+          <div><label><input type="radio" name="applyto" defaultChecked /> All Clients</label></div>
+          <div><label><input type="radio" name="applyto" /> Specific IP</label></div>
+        </ALabeledField>
+        <ABtn label="Add Rule" variant="primary" />
+      </ACard>
+      <ACard title="CLI Command">
+        <code style={{ display: 'block', backgroundColor: A.bgDarker, padding: A.sp12, borderRadius: 4, fontSize: A.fontSmall, color: A.accentGreen, overflowX: 'auto', wordBreak: 'break-all' }}>/ip dns static add name=youtube.com address=127.0.0.1</code>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ BANDWIDTH ============
+const ABandwidth = () => {
+  const [queues] = useState([
+    { name: 'download_limit', target: '192.168.1.0/24', download: '10M', upload: '5M' },
+    { name: 'vod_stream', target: '192.168.1.50', download: '30M', upload: '10M' },
+    { name: 'voice_traffic', target: 'mark_voice', download: 'unlimited', upload: 'unlimited' },
+    { name: 'gaming', target: 'mark_gaming', download: '100M', upload: '20M' },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Bandwidth Management" />
+      <ACard title="Simple Queues">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Queue Name</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Target</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Download</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Upload</th>
+          </tr></thead>
+          <tbody>
+            {queues.map((q, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{q.name}</td>
+                <td style={{ padding: A.sp8 }}>{q.target}</td>
+                <td style={{ padding: A.sp8 }}>{q.download}</td>
+                <td style={{ padding: A.sp8 }}>{q.upload}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+      <ACard title="Add New Queue">
+        <ALabeledField label="Target (IP / Subnet)">
+          <input type="text" placeholder="192.168.1.100" style={{ width: '100%', padding: A.sp8, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 4, color: A.textPrimary }} />
+        </ALabeledField>
+        <ALabeledField label="Download Speed">
+          <div style={{ display: 'flex', gap: A.sp8, marginBottom: A.sp8 }}>
+            {['5M', '10M', '30M', '100M'].map((speed) => (
+              <button key={speed} style={{ padding: `${A.sp8}px ${A.sp12}px`, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, color: A.textPrimary, borderRadius: 4, cursor: 'pointer', fontSize: A.fontSmall }}>{speed}</button>
+            ))}
+          </div>
+        </ALabeledField>
+        <ABtn label="Create Queue" variant="primary" />
+      </ACard>
+    </div>
+  );
+};
+
+// ============ CLIENTS ============
+const AClients = () => {
+  const [clients] = useState([
+    { vendor: 'Apple', ip: '192.168.1.100', mac: '00:1A:2B:3C:4D:5E', iface: 'ether1', lease: '23h 45m', tx: '850 MB', rx: '340 MB' },
+    { vendor: 'Samsung', ip: '192.168.1.105', mac: '00:2A:3B:4C:5D:6E', iface: 'ether2', lease: '22h 10m', tx: '420 MB', rx: '680 MB' },
+    { vendor: 'Linux', ip: '192.168.1.110', mac: '00:3A:4B:5C:6D:7E', iface: 'ether1', lease: '15h 20m', tx: '180 MB', rx: '220 MB' },
+    { vendor: 'Unknown', ip: '192.168.1.115', mac: '00:4A:5B:6C:7D:8E', iface: 'wifi', lease: '8h 05m', tx: '85 MB', rx: '105 MB' },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="DHCP & Clients" />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: A.sp16, marginBottom: A.sp24 }}>
+        <ABase><div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>Active Leases</div><div style={{ fontSize: '24px', fontWeight: A.fontBold, color: A.accentBlue }}>38</div></ABase>
+        <ABase><div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>Pool Usage</div><div style={{ fontSize: '24px', fontWeight: A.fontBold, color: A.accentGreen }}>15%</div></ABase>
+        <ABase><div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>Reserved</div><div style={{ fontSize: '24px', fontWeight: A.fontBold, color: A.accentOrange }}>12</div></ABase>
+        <ABase><div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>Unknown</div><div style={{ fontSize: '24px', fontWeight: A.fontBold, color: A.accentRed }}>3</div></ABase>
+      </div>
+      <ACard title="Connected Devices">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Vendor</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>IP Address</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>MAC Address</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Interface</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Lease Time</th>
+          </tr></thead>
+          <tbody>
+            {clients.map((client, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{client.vendor}</td>
+                <td style={{ padding: A.sp8 }}>{client.ip}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{client.mac}</td>
+                <td style={{ padding: A.sp8 }}>{client.iface}</td>
+                <td style={{ padding: A.sp8 }}>{client.lease}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ HOTSPOT ============
+const AHotspot = () => {
+  const [users] = useState([
+    { name: 'user1@example.com', plan: 'Premium 10M', online: true, ip: '10.0.0.2', uptime: '8h 32m', dataUsed: '2.3 GB' },
+    { name: 'user2@example.com', plan: 'Basic 5M', online: true, ip: '10.0.0.3', uptime: '15h 20m', dataUsed: '4.1 GB' },
+    { name: 'user3@example.com', plan: 'Premium 10M', online: false, ip: '10.0.0.4', uptime: '0m', dataUsed: '1.8 GB' },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Hotspot / PPPoE" />
+      <ACard title="Active Users">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Name</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Plan</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Status</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>IP Address</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Uptime</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Data Used</th>
+          </tr></thead>
+          <tbody>
+            {users.map((user, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{user.name}</td>
+                <td style={{ padding: A.sp8 }}>{user.plan}</td>
+                <td style={{ padding: A.sp8 }}><span style={{ color: user.online ? A.accentGreen : A.textSecondary }}>● {user.online ? 'Online' : 'Offline'}</span></td>
+                <td style={{ padding: A.sp8 }}>{user.ip}</td>
+                <td style={{ padding: A.sp8 }}>{user.uptime}</td>
+                <td style={{ padding: A.sp8 }}>{user.dataUsed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ WIRELESS ============
+const AWireless = () => {
+  const [ssids] = useState([
+    { name: 'NetForge-Main', freq: '2.4 GHz', clients: 12, signal: 95 },
+    { name: 'NetForge-Guest', freq: '2.4 GHz', clients: 3, signal: 85 },
+    { name: 'NetForge-5G', freq: '5 GHz', clients: 8, signal: 98 },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Wireless / CAPsMAN" />
+      <div style={{ marginBottom: A.sp16 }}>
+        {ssids.map((ssid, i) => (
+          <ABase key={i} style={{ marginBottom: A.sp12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: A.fontBase, fontWeight: A.fontSemiBold, color: A.textPrimary }}>{ssid.name}</div>
+                <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>{ssid.freq} • {ssid.clients} clients</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: A.fontBase, fontWeight: A.fontSemiBold, color: A.accentBlue }}>{ssid.signal}%</div>
+              </div>
+            </div>
+          </ABase>
+        ))}
+      </div>
+      <ACard title="Access Points">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>AP Name</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Status</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Clients</th>
+          </tr></thead>
+          <tbody>
+            {[{ name: 'AP-1', status: 'online', clients: 8 }, { name: 'AP-2', status: 'online', clients: 5 }, { name: 'AP-3', status: 'online', clients: 7 }, { name: 'AP-4', status: 'offline', clients: 0 }].map((ap, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{ap.name}</td>
+                <td style={{ padding: A.sp8 }}><span style={{ color: ap.status === 'online' ? A.accentGreen : A.accentRed }}>● {ap.status}</span></td>
+                <td style={{ padding: A.sp8 }}>{ap.clients}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+      <ACard title="Channel Utilization">
+        {[1, 2, 3, 4, 5, 6, 7, 8].map((ch) => (
+          <div key={ch} style={{ marginBottom: A.sp8 }}>
+            <div style={{ fontSize: A.fontSmall, marginBottom: A.sp4, display: 'flex', justifyContent: 'space-between' }}>
+              <span>Channel {ch}</span>
+              <span>{Math.floor(Math.random() * 100)}%</span>
+            </div>
+            <div style={{ height: 8, backgroundColor: A.bgSecondary, borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${Math.floor(Math.random() * 100)}%`, backgroundColor: A.accentBlue }} />
+            </div>
+          </div>
+        ))}
+      </ACard>
+    </div>
+  );
+};
+
+// ============ VPN ============
+const AVpn = () => {
+  const [protocols] = useState([
+    { name: 'WireGuard', port: 51820, peers: 5, enabled: true },
+    { name: 'L2TP/IPsec', port: 1701, peers: 2, enabled: true },
+    { name: 'OpenVPN', port: 1194, peers: 3, enabled: false },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="VPN" />
+      <div>
+        {protocols.map((proto, i) => (
+          <ABase key={i} style={{ marginBottom: A.sp12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: A.fontBase, fontWeight: A.fontSemiBold, color: A.textPrimary }}>{proto.name}</div>
+                <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>Port {proto.port} • {proto.peers} peers</div>
+              </div>
+              <button onClick={() => {}} style={{ width: 44, height: 24, backgroundColor: proto.enabled ? A.accentBlue : A.bgDark, borderRadius: 12, border: 'none', cursor: 'pointer' }}>
+                <div style={{ width: 20, height: 20, backgroundColor: A.textPrimary, borderRadius: 10, position: 'absolute', right: proto.enabled ? '2px' : '22px', transition: 'right 0.2s' }} />
+              </button>
+            </div>
+          </ABase>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ============ LOGS ============
+const ALogs = () => {
+  const [logs] = useState([
+    { timestamp: '14:32:15', topic: 'interface', source: 'ether2', message: 'interface went up' },
+    { timestamp: '14:28:42', topic: 'system', source: 'system', message: 'Reboot completed' },
+    { timestamp: '14:22:08', topic: 'firewall', source: 'filter', message: 'dropped packet from 10.0.0.5' },
+    { timestamp: '14:15:33', topic: 'dhcp', source: 'DHCP', message: 'lease 192.168.1.100 assigned to 00:1A:2B:3C:4D:5E' },
+    { timestamp: '14:10:21', topic: 'interface', source: 'ether4', message: 'interface went down' },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Logs" />
+      <ACard title="System Logs">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Time</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Topic</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Source</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Message</th>
+          </tr></thead>
+          <tbody>
+            {logs.map((log, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{log.timestamp}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}><span style={{ color: A.accentOrange }}>{log.topic}</span></td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{log.source}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{log.message}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ SCRIPTS ============
+const AScripts = () => {
+  const [scripts] = useState([
+    { name: 'backup_daily', lastRun: '2024-01-15 02:00', schedule: '0 2 * * *' },
+    { name: 'health_check', lastRun: '2024-01-15 14:32', schedule: '*/5 * * * *' },
+    { name: 'cleanup_logs', lastRun: '2024-01-14 03:00', schedule: '0 3 * * 0' },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Scripts" />
+      <ACard title="Scheduled Scripts">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Name</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Last Run</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Schedule (Cron)</th>
+          </tr></thead>
+          <tbody>
+            {scripts.map((script, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{script.name}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{script.lastRun}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{script.schedule}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ BACKUP ============
+const ABackup = () => {
+  const [backups] = useState([
+    { filename: 'backup-2024-01-15-full.backup', size: '12.4 MB', timestamp: '2024-01-15 03:00', trigger: 'Scheduled' },
+    { filename: 'backup-2024-01-14-full.backup', size: '11.8 MB', timestamp: '2024-01-14 03:00', trigger: 'Scheduled' },
+    { filename: 'backup-2024-01-13-manual.backup', size: '12.1 MB', timestamp: '2024-01-13 14:32', trigger: 'Manual' },
+  ]);
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Backup">
+        <ABtn label="Create Backup" icon="Plus" variant="primary" />
+      </ATitleBar>
+      <ACard title="Backup Files">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Filename</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Size</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Timestamp</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Trigger</th>
+          </tr></thead>
+          <tbody>
+            {backups.map((backup, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{backup.filename}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{backup.size}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{backup.timestamp}</td>
+                <td style={{ padding: A.sp8, fontSize: A.fontSmall }}>{backup.trigger}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ SETTINGS ============
+const ASettings = () => {
+  const [mode, setMode] = useState('Remember');
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Settings" />
+      <ACard title="Default Mode">
+        <div style={{ marginBottom: A.sp16 }}>
+          <label style={{ display: 'flex', alignItems: 'center', marginBottom: A.sp12 }}>
+            <input type="radio" checked={mode === 'Simple'} onChange={() => setMode('Simple')} style={{ marginRight: A.sp8 }} />
+            <span>Simple Mode (Default)</span>
+          </label>
+        </div>
+        <div style={{ marginBottom: A.sp16 }}>
+          <label style={{ display: 'flex', alignItems: 'center', marginBottom: A.sp12 }}>
+            <input type="radio" checked={mode === 'Advanced'} onChange={() => setMode('Advanced')} style={{ marginRight: A.sp8 }} />
+            <span>Advanced Mode (Default)</span>
+          </label>
+        </div>
+        <div>
+          <label style={{ display: 'flex', alignItems: 'center' }}>
+            <input type="radio" checked={mode === 'Remember'} onChange={() => setMode('Remember')} style={{ marginRight: A.sp8 }} />
+            <span>Remember Last Used</span>
+          </label>
+        </div>
+      </ACard>
+      <ACard title="System">
+        <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>NetForge v1.0.0</div>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ MAIN APP ============
+const App = () => {
+  const [page, setPage] = useState('Login');
+
+  const renderPage = () => {
+    switch(page) {
+      case 'Dashboard': return <ADashboard />;
+      case 'Interfaces': return <AInterfaces />;
+      case 'WanLB': return <AWanLB />;
+      case 'Firewall': return <AFirewall />;
+      case 'Bandwidth': return <ABandwidth />;
+      case 'Clients': return <AClients />;
+      case 'Hotspot': return <AHotspot />;
+      case 'Wireless': return <AWireless />;
+      case 'Vpn': return <AVpn />;
+      case 'Logs': return <ALogs />;
+      case 'Scripts': return <AScripts />;
+      case 'Backup': return <ABackup />;
+      case 'Settings': return <ASettings />;
+      case 'Login': return <ALogin />;
+      default: return <ALogin />;
+    }
+  };
+
+  return (
+    <NavCtx.Provider value={{ page, setPage }}>
+      {page === 'Login' ? (
+        <ALogin />
+      ) : (
+        <div style={{ display: 'flex', height: '100vh' }}>
+          <ASidebar />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <ATopBar />
+            {renderPage()}
+          </div>
+        </div>
+      )}
+    </NavCtx.Provider>
+  );
+};
+
+ReactDOM.render(<App />, document.getElementById('app'));
+  </script>
+</body>
+</html>
