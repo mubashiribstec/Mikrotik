@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NetForge — MikroTik Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #070c18; overflow: hidden; font-family: Inter, sans-serif; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const A = { bg: '#0B1220', surface: 'rgba(255,255,255,0.035)', border: 'rgba(255,255,255,0.07)', text: '#E6EAF2', textDim: 'rgba(230,234,242,0.62)', textFaint: 'rgba(230,234,242,0.42)', accent: '#3B82F6', good: '#22C55E', warn: '#F59E0B', bad: '#EF4444', mono: '"JetBrains Mono"', ui: 'Inter, sans-serif' };
+
+const ACard = ({ children, pad = 12 }) => <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, padding: pad, animation: 'slideIn 0.4s ease-out' }}>{children}</div>;
+
+const APill = ({ children, tone = 'dim' }) => {
+  const tones = { dim: { bg: 'rgba(255,255,255,0.05)', fg: A.textDim }, good: { bg: 'rgba(34,197,94,0.12)', fg: '#86EFAC' }, warn: { bg: 'rgba(245,158,11,0.12)', fg: '#FCD34D' } }[tone];
+  return <span style={{ display: 'inline-flex', gap: 6, padding: '3px 8px', borderRadius: 999, background: tones.bg, fontSize: 11, color: tones.fg, fontWeight: 500 }}>{children}</span>;
+};
+
+const LogsScreen = () => (
+  <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+    <h2 style={{ color: A.text, marginBottom: 16 }}>System Logs</h2>
+    {[
+      { time: '14:32:18', topic: 'interface', source: 'ether1', msg: 'went up', tone: 'good' },
+      { time: '14:31:45', topic: 'dhcp', source: 'DHCP', msg: 'lease assigned', tone: 'good' },
+      { time: '14:30:22', topic: 'firewall', source: 'firewall', msg: 'rule applied', tone: 'warn' },
+      { time: '14:29:10', topic: 'wireless', source: 'wlan0', msg: 'client connected', tone: 'good' },
+      { time: '14:28:55', topic: 'system', source: 'system', msg: 'configuration changed', tone: 'dim' },
+      { time: '14:27:30', topic: 'vpn', source: 'wg0', msg: 'peer authenticated', tone: 'good' },
+    ].map((log, i) => (
+      <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
+          <div style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{log.time}</div>
+          <APill tone={log.tone}>{log.topic}</APill>
+        </div>
+        <div style={{ fontSize: 12, color: A.text, marginBottom: 4 }}>{log.msg}</div>
+        <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>Source: {log.source}</div>
+      </ACard>
+    ))}
+  </div>
+);
+
+const ScriptsScreen = () => (
+  <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+    <h2 style={{ color: A.text, marginBottom: 16 }}>Scheduled Scripts</h2>
+    {[
+      { name: 'backup_daily', schedule: '0 2 * * *', lastRun: '2h ago', status: 'success' },
+      { name: 'health_check', schedule: '*/5 * * * *', lastRun: '2m ago', status: 'success' },
+      { name: 'cleanup_logs', schedule: '0 3 * * 0', lastRun: '2d ago', status: 'success' },
+      { name: 'update_dns', schedule: '0 * * * *', lastRun: '1h ago', status: 'success' },
+    ].map(s => (
+      <ACard key={s.name} pad={12} style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{s.name}</div>
+            <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>{s.schedule}</div>
+          </div>
+          <APill tone="good">{s.status}</APill>
+        </div>
+        <div style={{ fontSize: 10, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
+          Last run: {s.lastRun}
+        </div>
+      </ACard>
+    ))}
+  </div>
+);
+
+const BackupScreen = () => (
+  <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+    <h2 style={{ color: A.text, marginBottom: 16 }}>Backups</h2>
+    {[
+      { name: 'backup-2024-01-15-full.backup', size: '12.5 MB', date: 'Today 14:32', trigger: 'Scheduled' },
+      { name: 'backup-2024-01-14-full.backup', size: '12.3 MB', date: 'Yesterday 02:00', trigger: 'Scheduled' },
+      { name: 'backup-2024-01-13-manual.backup', size: '12.1 MB', date: '2 days ago', trigger: 'Manual' },
+      { name: 'backup-2024-01-12-full.backup', size: '11.9 MB', date: '3 days ago', trigger: 'Scheduled' },
+    ].map(b => (
+      <ACard key={b.name} pad={12} style={{ marginBottom: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500, fontFamily: A.mono, color: A.text }}>{b.name}</div>
+          </div>
+          <APill tone="good">{b.trigger}</APill>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: A.textDim }}>
+          <span>{b.size}</span>
+          <span>{b.date}</span>
+        </div>
+      </ACard>
+    ))}
+  </div>
+);
+
+const SettingsScreen = () => (
+  <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
+    <h2 style={{ color: A.text, marginBottom: 24 }}>Settings</h2>
+
+    <div style={{ marginBottom: 24 }}>
+      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>General</h3>
+      <ACard pad={16}>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 8 }}>Default Mode</label>
+          <select style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }}>
+            <option>Simple</option>
+            <option>Advanced</option>
+          </select>
+        </div>
+      </ACard>
+    </div>
+
+    <div style={{ marginBottom: 24 }}>
+      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Behavior</h3>
+      <ACard pad={16}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 12 }}>
+          <input type="checkbox" defaultChecked style={{ cursor: 'pointer' }} />
+          <span style={{ fontSize: 12 }}>Ask before destructive actions</span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+          <input type="checkbox" style={{ cursor: 'pointer' }} />
+          <span style={{ fontSize: 12 }}>Send usage analytics</span>
+        </label>
+      </ACard>
+    </div>
+
+    <div>
+      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>System Info</h3>
+      <ACard pad={16}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+          <div><span style={{ color: A.textFaint }}>Version:</span> <span style={{ color: A.text, float: 'right' }}>1.0.0</span></div>
+          <div><span style={{ color: A.textFaint }}>Backend:</span> <span style={{ color: A.text, float: 'right' }}>Node.js</span></div>
+          <div><span style={{ color: A.textFaint }}>API:</span> <span style={{ color: A.text, float: 'right' }}>Real MikroTik (SSH)</span></div>
+        </div>
+      </ACard>
+    </div>
+  </div>
+);
+
+const PlaceholderScreen = ({ name }) => (
+  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <ACard pad={32} style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 13, color: A.textFaint }}>{name}</div>
+      <div style={{ fontSize: 12, color: A.textFaint, marginTop: 8 }}>Coming soon</div>
+    </ACard>
+  </div>
+);
+
+const Icon = ({ d }) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>;
+
+const App = () => {
+  const [page, setPage] = React.useState('Logs');
+  const [sessionId] = React.useState('demo-session');
+
+  const navItems = [
+    { name: 'Logs', icon: '📋' },
+    { name: 'Scripts', icon: '⚙️' },
+    { name: 'Backup', icon: '💾' },
+    { name: 'Settings', icon: '⚡' },
+  ];
+
+  const renderScreen = () => {
+    switch(page) {
+      case 'Logs': return <LogsScreen />;
+      case 'Scripts': return <ScriptsScreen />;
+      case 'Backup': return <BackupScreen />;
+      case 'Settings': return <SettingsScreen />;
+      default: return <PlaceholderScreen name={page} />;
+    }
+  };
+
+  return (
+    <div style={{ width: '100%', height: '100%', background: A.bg, color: A.text, display: 'flex', flexDirection: 'column', fontFamily: A.ui, fontSize: 13 }}>
+      {/* Title Bar */}
+      <div style={{ height: 32, display: 'flex', alignItems: 'center', borderBottom: `1px solid ${A.border}`, padding: '0 12px', background: 'rgba(7,11,20,0.5)' }}>
+        <div style={{ fontSize: 12, color: A.textDim }}>NetForge · {page}</div>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: A.textFaint }}>@ 192.168.1.1:22</span>
+      </div>
+
+      {/* Main Layout */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {/* Sidebar */}
+        <div style={{ width: 180, borderRight: `1px solid ${A.border}`, padding: 8, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {navItems.map(item => (
+            <button key={item.name} onClick={() => setPage(item.name)} style={{
+              flex: '0 0 auto', padding: 10, marginBottom: 4, border: 'none', background: page === item.name ? A.accent : 'transparent',
+              color: page === item.name ? '#fff' : A.textDim, cursor: 'pointer', borderRadius: 6, fontFamily: A.ui, fontSize: 12,
+              transition: 'all 0.2s', fontWeight: page === item.name ? 500 : 400
+            }}>
+              <span style={{ marginRight: 6 }}>{item.icon}</span>
+              {item.name}
+            </button>
+          ))}
+          <div style={{ flex: 1 }} />
+          <button onClick={() => alert('Logout')} style={{
+            width: '100%', padding: 10, border: 'none', background: 'transparent', color: A.textDim,
+            cursor: 'pointer', borderRadius: 6, fontFamily: A.ui, fontSize: 12, borderTop: `1px solid ${A.border}`,
+            transition: 'color 0.2s'
+          }} onMouseEnter={e => e.target.style.color = A.text} onMouseLeave={e => e.target.style.color = A.textDim}>
+            🚪 Logout
+          </button>
+        </div>
+
+        {/* Content */}
+        {renderScreen()}
+      </div>
+    </div>
+  );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+  </script>
+</body>
+</html>
