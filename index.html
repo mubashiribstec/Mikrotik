@@ -108,6 +108,31 @@ const MockAPI = {
     { name: 'gaming', target: 'mark_gaming', down: '100M', up: '20M', util: Math.floor(Math.random() * 50) + 15 },
   ],
 
+  getClients: () => [
+    { vendor: 'Apple', ip: '192.168.1.100', mac: '00:1A:2B:3C:4D:5E', iface: 'ether1', lease: Math.floor(Math.random() * 20) + 'h', tx: Math.floor(Math.random() * 1000) + 500, rx: Math.floor(Math.random() * 600) + 200 },
+    { vendor: 'Samsung', ip: '192.168.1.105', mac: '00:2A:3B:4C:5D:6E', iface: 'ether2', lease: Math.floor(Math.random() * 18) + 'h', tx: Math.floor(Math.random() * 800) + 300, rx: Math.floor(Math.random() * 900) + 400 },
+    { vendor: 'Linux', ip: '192.168.1.110', mac: '00:3A:4B:5C:6D:7E', iface: 'ether1', lease: Math.floor(Math.random() * 15) + 'h', tx: Math.floor(Math.random() * 400) + 150, rx: Math.floor(Math.random() * 500) + 250 },
+    { vendor: 'Windows', ip: '192.168.1.115', mac: '00:4A:5B:6C:7D:8E', iface: 'wifi', lease: Math.floor(Math.random() * 12) + 'h', tx: Math.floor(Math.random() * 300) + 100, rx: Math.floor(Math.random() * 400) + 180 },
+  ],
+
+  getHotspotUsers: () => [
+    { name: 'user1@example.com', plan: 'Premium 10M', online: Math.random() > 0.3, ip: '10.0.0.2', uptime: Math.floor(Math.random() * 20) + 'h', dataUsed: (Math.random() * 3 + 1).toFixed(1) + ' GB' },
+    { name: 'user2@example.com', plan: 'Basic 5M', online: Math.random() > 0.2, ip: '10.0.0.3', uptime: Math.floor(Math.random() * 24) + 'h', dataUsed: (Math.random() * 5 + 2).toFixed(1) + ' GB' },
+    { name: 'user3@example.com', plan: 'Premium 10M', online: false, ip: '10.0.0.4', uptime: '0m', dataUsed: (Math.random() * 2 + 0.5).toFixed(1) + ' GB' },
+  ],
+
+  getWirelessSSIDs: () => [
+    { name: 'NetForge-Main', freq: '2.4 GHz', clients: Math.floor(Math.random() * 15) + 5, signal: Math.floor(Math.random() * 20) + 85 },
+    { name: 'NetForge-Guest', freq: '2.4 GHz', clients: Math.floor(Math.random() * 8) + 1, signal: Math.floor(Math.random() * 20) + 75 },
+    { name: 'NetForge-5G', freq: '5 GHz', clients: Math.floor(Math.random() * 12) + 3, signal: Math.floor(Math.random() * 15) + 90 },
+  ],
+
+  getVPNStatus: () => [
+    { name: 'WireGuard', port: 51820, peers: Math.floor(Math.random() * 8) + 2, enabled: true, traffic: Math.floor(Math.random() * 500) + 100 },
+    { name: 'L2TP/IPsec', port: 1701, peers: Math.floor(Math.random() * 4) + 1, enabled: true, traffic: Math.floor(Math.random() * 300) + 50 },
+    { name: 'OpenVPN', port: 1194, peers: Math.floor(Math.random() * 5) + 1, enabled: Math.random() > 0.5, traffic: Math.floor(Math.random() * 400) + 80 },
+  ],
+
   getLogs: () => {
     const topics = ['interface', 'system', 'firewall', 'dhcp'];
     const messages = ['went up', 'went down', 'changed', 'lease assigned'];
@@ -485,6 +510,143 @@ const BandwidthScreen = () => {
   );
 };
 
+const ClientsScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const clients = data.clients || [];
+  const activeLease = Math.floor(Math.random() * 10) + 38;
+  const poolUsage = Math.floor(Math.random() * 30) + 5;
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>DHCP Stats (Live)</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+        <ACard animated={true} style={{ padding: 12 }}>
+          <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 6 }}>Active Leases</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: A.accent, animation: 'pulse 2s ease-in-out infinite' }}>{activeLease}</div>
+        </ACard>
+        <ACard animated={true} style={{ padding: 12 }}>
+          <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 6 }}>Pool Usage</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: A.accent }}>{poolUsage}%</div>
+        </ACard>
+        <ACard animated={true} style={{ padding: 12 }}>
+          <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 6 }}>Reserved</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: A.warn }}>12</div>
+        </ACard>
+        <ACard animated={true} style={{ padding: 12 }}>
+          <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 6 }}>Unknown</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: A.bad }}>3</div>
+        </ACard>
+      </div>
+
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>Connected Devices (Live)</h3>
+      {clients.map((c, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 8, padding: 12 }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{c.vendor}</div>
+                <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{c.ip}</div>
+              </div>
+              <APill tone="good">{c.iface}</APill>
+            </div>
+            <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, marginBottom: 6 }}>{c.mac}</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: A.textDim }}>
+              <span>Lease: {c.lease}</span>
+              <span>↓{c.rx}MB / ↑{c.tx}MB</span>
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const HotspotScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const users = data.hotspotUsers || [];
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>Hotspot Users (Live)</h3>
+      {users.map((u, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 12, padding: 12 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</div>
+                <div style={{ fontSize: 11, color: A.textFaint }}>{u.plan}</div>
+              </div>
+              <APill tone={u.online ? 'good' : 'bad'}>{u.online ? 'Online' : 'Offline'}</APill>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
+              <span>{u.ip} • {u.uptime}</span>
+              <span style={{ color: A.accent, fontWeight: 600 }}>{u.dataUsed}</span>
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const WirelessScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const ssids = data.wireless || [];
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>SSIDs (Live)</h3>
+      {ssids.map((s, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 12, padding: 12 }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{s.name}</div>
+                <div style={{ fontSize: 11, color: A.textFaint }}>{s.freq}</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: A.accent }}>{s.signal}%</div>
+                <div style={{ fontSize: 11, color: A.textDim }}>{s.clients} clients</div>
+              </div>
+            </div>
+            <div style={{ height: 6, backgroundColor: A.border, borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ width: `${s.signal}%`, height: '100%', backgroundColor: A.accent, transition: 'width 0.3s ease-out' }} />
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const VPNScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const vpns = data.vpn || [];
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>VPN Protocols (Live)</h3>
+      {vpns.map((v, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 12, padding: 12 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{v.name}</div>
+                <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>Port {v.port}</div>
+              </div>
+              <APill tone={v.enabled ? 'good' : 'dim'}>{v.enabled ? 'Enabled' : 'Disabled'}</APill>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
+              <span>{v.peers} peers active</span>
+              <span style={{ color: A.accent, fontWeight: 600, animation: 'pulse 2s ease-in-out infinite' }}>{v.traffic} Mbps</span>
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
 const LoginScreen = () => {
   const { setPage } = React.useContext(NavCtx);
   const [host, setHost] = React.useState('192.168.1.1');
@@ -534,6 +696,10 @@ const App = () => {
       interfaces: MockAPI.getInterfaces(),
       firewall: MockAPI.getFirewallRules(),
       bandwidth: MockAPI.getBandwidthQueues(),
+      clients: MockAPI.getClients(),
+      hotspotUsers: MockAPI.getHotspotUsers(),
+      wireless: MockAPI.getWirelessSSIDs(),
+      vpn: MockAPI.getVPNStatus(),
       topTalkers: MockAPI.getTopTalkers(),
       logs: MockAPI.getLogs(),
     });
@@ -554,10 +720,10 @@ const App = () => {
       case 'WAN': return <WANScreen />;
       case 'Firewall': return <FirewallScreen />;
       case 'Bandwidth': return <BandwidthScreen />;
-      case 'Clients': return <PlaceholderScreen name="DHCP & Clients" />;
-      case 'Hotspot': return <PlaceholderScreen name="Hotspot / PPPoE" />;
-      case 'Wireless': return <PlaceholderScreen name="Wireless" />;
-      case 'VPN': return <PlaceholderScreen name="VPN" />;
+      case 'Clients': return <ClientsScreen />;
+      case 'Hotspot': return <HotspotScreen />;
+      case 'Wireless': return <WirelessScreen />;
+      case 'VPN': return <VPNScreen />;
       case 'Logs': return <PlaceholderScreen name="Logs" />;
       case 'Scripts': return <PlaceholderScreen name="Scripts" />;
       case 'Backup': return <PlaceholderScreen name="Backup" />;
