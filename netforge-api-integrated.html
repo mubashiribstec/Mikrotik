@@ -293,6 +293,73 @@ const API = {
       throw err;
     }
   },
+
+  // IP Addresses
+  async getIpAddresses(sessionId) {
+    return this.call(sessionId, '/api/ip-addresses');
+  },
+
+  async addIpAddress(sessionId, address, iface, comment) {
+    return this.call(sessionId, '/api/ip-addresses/add', {
+      method: 'POST',
+      body: JSON.stringify({ address, interface: iface, comment }),
+    });
+  },
+
+  async removeIpAddress(sessionId, id) {
+    return this.call(sessionId, '/api/ip-addresses/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  },
+
+  // Routes
+  async getRoutes(sessionId) {
+    return this.call(sessionId, '/api/routes');
+  },
+
+  async addRoute(sessionId, destination, gateway, distance, comment) {
+    return this.call(sessionId, '/api/routes/add', {
+      method: 'POST',
+      body: JSON.stringify({ destination, gateway, distance, comment }),
+    });
+  },
+
+  // DNS
+  async getDns(sessionId) {
+    return this.call(sessionId, '/api/dns');
+  },
+
+  async updateDns(sessionId, servers, allowRemoteRequests) {
+    return this.call(sessionId, '/api/dns/update', {
+      method: 'POST',
+      body: JSON.stringify({ servers, allowRemoteRequests }),
+    });
+  },
+
+  // NAT
+  async getNat(sessionId) {
+    return this.call(sessionId, '/api/nat');
+  },
+
+  async addNat(sessionId, chain, srcAddress, dstAddress, action, protocol, comment) {
+    return this.call(sessionId, '/api/nat/add', {
+      method: 'POST',
+      body: JSON.stringify({ chain, srcAddress, dstAddress, action, protocol, comment }),
+    });
+  },
+
+  // Masquerade
+  async getMasquerade(sessionId) {
+    return this.call(sessionId, '/api/masquerade');
+  },
+
+  async toggleMasquerade(sessionId, enabled) {
+    return this.call(sessionId, '/api/masquerade/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
+  },
 };
 
 // ========== ATOMS ==========
@@ -1423,6 +1490,397 @@ const SettingsScreen = ({ sessionId, router }) => (
   </div>
 );
 
+// ========== NEW CONFIG SCREENS ==========
+
+const IpAddressesScreen = ({ sessionId }) => {
+  const [ips, setIps] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [showForm, setShowForm] = React.useState(false);
+  const [newIp, setNewIp] = React.useState('');
+  const [newIface, setNewIface] = React.useState('ether1');
+  const [newComment, setNewComment] = React.useState('');
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetch = async () => {
+      setLoading(true);
+      try {
+        const data = await API.getIpAddresses(sessionId);
+        setIps(data);
+        setError(null);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetch();
+  }, [sessionId]);
+
+  const handleAdd = async () => {
+    if (!newIp || !newIface) {
+      setError('Address and interface required');
+      return;
+    }
+    try {
+      await API.addIpAddress(sessionId, newIp, newIface, newComment);
+      setNewIp('');
+      setNewIface('ether1');
+      setNewComment('');
+      setShowForm(false);
+      const data = await API.getIpAddresses(sessionId);
+      setIps(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleRemove = async (id) => {
+    try {
+      await API.removeIpAddress(sessionId, id);
+      const data = await API.getIpAddresses(sessionId);
+      setIps(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ color: A.text }}>IP Addresses</h2>
+        <ABtn variant="primary" onClick={() => setShowForm(!showForm)}>+ Add Address</ABtn>
+      </div>
+
+      {error && <AAlert>{error}</AAlert>}
+
+      {showForm && (
+        <ACard pad={16} style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>IP Address (with CIDR)</label>
+            <input type="text" placeholder="192.168.1.1/24" value={newIp} onChange={e => setNewIp(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Interface</label>
+            <select value={newIface} onChange={e => setNewIface(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }}>
+              <option>ether1</option>
+              <option>ether2</option>
+              <option>ether3</option>
+              <option>ether4</option>
+              <option>ether5</option>
+            </select>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Comment</label>
+            <input type="text" placeholder="Optional comment" value={newComment} onChange={e => setNewComment(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }} />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <ABtn variant="primary" onClick={handleAdd} style={{ flex: 1 }}>Add</ABtn>
+            <ABtn variant="secondary" onClick={() => setShowForm(false)} style={{ flex: 1 }}>Cancel</ABtn>
+          </div>
+        </ACard>
+      )}
+
+      {ips.map(ip => (
+        <ACard key={ip.id} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{ip.address}</div>
+              <div style={{ fontSize: 10, color: A.textDim }}>{ip.interface} {ip.comment && `• ${ip.comment}`}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {ip.disabled && <APill tone="dim">Disabled</APill>}
+              <button onClick={() => handleRemove(ip.id)} style={{
+                background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500
+              }}>Remove</button>
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const RoutesScreen = ({ sessionId }) => {
+  const [routes, setRoutes] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [showForm, setShowForm] = React.useState(false);
+  const [dest, setDest] = React.useState('');
+  const [gw, setGw] = React.useState('');
+  const [dist, setDist] = React.useState('0');
+  const [comment, setComment] = React.useState('');
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetch = async () => {
+      setLoading(true);
+      try {
+        const data = await API.getRoutes(sessionId);
+        setRoutes(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetch();
+  }, [sessionId]);
+
+  const handleAdd = async () => {
+    if (!dest || !gw) {
+      setError('Destination and gateway required');
+      return;
+    }
+    try {
+      await API.addRoute(sessionId, dest, gw, dist, comment);
+      setDest('');
+      setGw('');
+      setDist('0');
+      setComment('');
+      setShowForm(false);
+      const data = await API.getRoutes(sessionId);
+      setRoutes(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ color: A.text }}>Routes</h2>
+        <ABtn variant="primary" onClick={() => setShowForm(!showForm)}>+ Add Route</ABtn>
+      </div>
+
+      {error && <AAlert>{error}</AAlert>}
+
+      {showForm && (
+        <ACard pad={16} style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Destination</label>
+            <input type="text" placeholder="0.0.0.0/0" value={dest} onChange={e => setDest(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Gateway</label>
+            <input type="text" placeholder="192.168.1.1" value={gw} onChange={e => setGw(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Distance (metric)</label>
+            <input type="number" value={dist} onChange={e => setDist(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Comment</label>
+            <input type="text" placeholder="Optional comment" value={comment} onChange={e => setComment(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }} />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <ABtn variant="primary" onClick={handleAdd} style={{ flex: 1 }}>Add</ABtn>
+            <ABtn variant="secondary" onClick={() => setShowForm(false)} style={{ flex: 1 }}>Cancel</ABtn>
+          </div>
+        </ACard>
+      )}
+
+      {routes.map(route => (
+        <ACard key={route.id} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{route.destination}</div>
+              <div style={{ fontSize: 10, color: A.textDim }}>via {route.gateway}</div>
+            </div>
+            <APill tone={route.disabled ? 'dim' : 'good'}>{route.distance}</APill>
+          </div>
+          {route.comment && <div style={{ fontSize: 10, color: A.textFaint }}>• {route.comment}</div>}
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const DnsScreen = ({ sessionId }) => {
+  const [dns, setDns] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [servers, setServers] = React.useState([]);
+  const [newServer, setNewServer] = React.useState('');
+  const [allowRemote, setAllowRemote] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetch = async () => {
+      setLoading(true);
+      try {
+        const data = await API.getDns(sessionId);
+        setDns(data);
+        setServers(data.servers || []);
+        setAllowRemote(data.allowRemoteRequests || false);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetch();
+  }, [sessionId]);
+
+  const handleAddServer = () => {
+    if (newServer && /^\d+\.\d+\.\d+\.\d+$/.test(newServer)) {
+      setServers([...servers, newServer]);
+      setNewServer('');
+    }
+  };
+
+  const handleRemoveServer = (ip) => {
+    setServers(servers.filter(s => s !== ip));
+  };
+
+  const handleSave = async () => {
+    try {
+      await API.updateDns(sessionId, servers, allowRemote);
+      alert('DNS settings updated');
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>DNS Settings</h2>
+
+      <ACard pad={16} style={{ marginBottom: 16 }}>
+        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Servers</h3>
+
+        <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
+          <input type="text" placeholder="DNS server IP" value={newServer} onChange={e => setNewServer(e.target.value)}
+            style={{ flex: 1, padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }} />
+          <ABtn variant="primary" onClick={handleAddServer}>Add</ABtn>
+        </div>
+
+        {servers.map(ip => (
+          <div key={ip} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, background: A.surface, borderRadius: 6, marginBottom: 6 }}>
+            <span style={{ color: A.text, fontFamily: A.mono }}>{ip}</span>
+            <button onClick={() => handleRemoveServer(ip)} style={{ background: 'none', border: 'none', color: A.bad, cursor: 'pointer', fontSize: 14 }}>×</button>
+          </div>
+        ))}
+      </ACard>
+
+      <ACard pad={16} style={{ marginBottom: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+          <input type="checkbox" checked={allowRemote} onChange={e => setAllowRemote(e.target.checked)} style={{ cursor: 'pointer' }} />
+          <span style={{ color: A.text, fontSize: 12 }}>Allow remote requests</span>
+        </label>
+      </ACard>
+
+      <ABtn variant="primary" onClick={handleSave} style={{ width: '100%' }}>Save DNS Settings</ABtn>
+    </div>
+  );
+};
+
+const NatScreen = ({ sessionId }) => {
+  const [rules, setRules] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [showForm, setShowForm] = React.useState(false);
+  const [chain, setChain] = React.useState('srcnat');
+  const [srcAddr, setSrcAddr] = React.useState('');
+  const [action, setAction] = React.useState('masquerade');
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetch = async () => {
+      setLoading(true);
+      try {
+        const data = await API.getNat(sessionId);
+        setRules(data);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetch();
+  }, [sessionId]);
+
+  const handleAdd = async () => {
+    try {
+      await API.addNat(sessionId, chain, srcAddr, '', action, '', '');
+      setChain('srcnat');
+      setSrcAddr('');
+      setAction('masquerade');
+      setShowForm(false);
+      const data = await API.getNat(sessionId);
+      setRules(data);
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ color: A.text }}>NAT Rules</h2>
+        <ABtn variant="primary" onClick={() => setShowForm(!showForm)}>+ Add Rule</ABtn>
+      </div>
+
+      {showForm && (
+        <ACard pad={16} style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Chain</label>
+            <select value={chain} onChange={e => setChain(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }}>
+              <option>srcnat</option>
+              <option>dstnat</option>
+            </select>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Source Address</label>
+            <input type="text" placeholder="192.168.1.0/24" value={srcAddr} onChange={e => setSrcAddr(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Action</label>
+            <select value={action} onChange={e => setAction(e.target.value)}
+              style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }}>
+              <option>masquerade</option>
+              <option>redirect</option>
+              <option>dst-nat</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <ABtn variant="primary" onClick={handleAdd} style={{ flex: 1 }}>Add</ABtn>
+            <ABtn variant="secondary" onClick={() => setShowForm(false)} style={{ flex: 1 }}>Cancel</ABtn>
+          </div>
+        </ACard>
+      )}
+
+      {rules.map(rule => (
+        <ACard key={rule.id} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{rule.action}</div>
+              <div style={{ fontSize: 10, color: A.textDim }}>{rule.chain}</div>
+            </div>
+            <APill tone={rule.disabled ? 'dim' : 'good'}>{rule.srcAddress || 'all'}</APill>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
 // ========== MAIN APP ==========
 
 const App = () => {
@@ -1473,6 +1931,10 @@ const App = () => {
   const navItems = [
     { name: 'Dashboard', icon: '📊' },
     { name: 'Interfaces', icon: '🔗' },
+    { name: 'IP Addresses', icon: '🏷️' },
+    { name: 'Routes', icon: '🛣️' },
+    { name: 'DNS', icon: '🔍' },
+    { name: 'NAT', icon: '🔄' },
     { name: 'WAN', icon: '🌐' },
     { name: 'Firewall', icon: '🛡️' },
     { name: 'Bandwidth', icon: '📈' },
@@ -1516,6 +1978,10 @@ const App = () => {
       case 'Login': return <LoginScreen setPage={setPage} setSessionId={setSessionId} setRouter={setRouter} />;
       case 'Dashboard': return <DashboardScreen sessionId={sessionId} />;
       case 'Interfaces': return <InterfacesScreen sessionId={sessionId} />;
+      case 'IP Addresses': return <IpAddressesScreen sessionId={sessionId} />;
+      case 'Routes': return <RoutesScreen sessionId={sessionId} />;
+      case 'DNS': return <DnsScreen sessionId={sessionId} />;
+      case 'NAT': return <NatScreen sessionId={sessionId} />;
       case 'WAN': return <WANScreen sessionId={sessionId} />;
       case 'Firewall': return <FirewallScreen sessionId={sessionId} />;
       case 'Bandwidth': return <BandwidthScreen sessionId={sessionId} />;

@@ -459,6 +459,267 @@ app.get('/api/backups', async (req, res) => {
   }
 });
 
+// ========== IP ADDRESSES ==========
+
+app.get('/api/ip-addresses', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip address print');
+    const addresses = parseRouterOSOutput(output);
+
+    const data = addresses.map(addr => ({
+      id: addr.numbers || '',
+      address: addr.address || '',
+      interface: addr.interface || '',
+      disabled: addr.disabled === 'true',
+      comment: addr.comment || ''
+    }));
+
+    res.json(data.length > 0 ? data : [
+      { id: '0', address: '192.168.1.1/24', interface: 'ether1', disabled: false, comment: 'LAN' },
+      { id: '1', address: '203.0.113.1/32', interface: 'ether2', disabled: false, comment: 'WAN' }
+    ]);
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/ip-addresses/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { address, interface: iface, comment } = req.body;
+
+    if (!address || !iface) {
+      return res.status(400).json({ error: 'Address and interface required' });
+    }
+
+    // Validate IP/CIDR format
+    if (!/^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(address)) {
+      return res.status(400).json({ error: 'Invalid IP address format' });
+    }
+
+    const conn = getConnection(sessionId);
+    const cmd = `/ip address add address=${address} interface=${iface}${comment ? ` comment=${comment}` : ''}`;
+    await conn.execute(cmd);
+
+    res.json({ success: true, message: 'IP address added' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/ip-addresses/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID required' });
+
+    const conn = getConnection(sessionId);
+    await conn.execute(`/ip address remove numbers=${id}`);
+
+    res.json({ success: true, message: 'IP address removed' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+// ========== ROUTES ==========
+
+app.get('/api/routes', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip route print');
+    const routes = parseRouterOSOutput(output);
+
+    const data = routes.map(route => ({
+      id: route.numbers || '',
+      destination: route.dst_address || '',
+      gateway: route.gateway || '',
+      distance: route.distance || '0',
+      disabled: route.disabled === 'true',
+      comment: route.comment || ''
+    }));
+
+    res.json(data.length > 0 ? data : [
+      { id: '0', destination: '0.0.0.0/0', gateway: '203.0.113.254', distance: '0', disabled: false, comment: 'Default route' }
+    ]);
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/routes/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { destination, gateway, distance, comment } = req.body;
+
+    if (!destination || !gateway) {
+      return res.status(400).json({ error: 'Destination and gateway required' });
+    }
+
+    if (!/^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(destination)) {
+      return res.status(400).json({ error: 'Invalid destination format' });
+    }
+
+    const conn = getConnection(sessionId);
+    const cmd = `/ip route add dst-address=${destination} gateway=${gateway}${distance ? ` distance=${distance}` : ''}${comment ? ` comment=${comment}` : ''}`;
+    await conn.execute(cmd);
+
+    res.json({ success: true, message: 'Route added' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+// ========== DNS ==========
+
+app.get('/api/dns', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip dns print');
+
+    // Mock DNS response
+    res.json({
+      servers: ['8.8.8.8', '8.8.4.4'],
+      allowRemoteRequests: false,
+      cacheSize: 2048,
+      cacheMaxTtl: 86400,
+      comment: ''
+    });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/dns/update', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { servers, allowRemoteRequests } = req.body;
+
+    if (!Array.isArray(servers) || servers.length === 0) {
+      return res.status(400).json({ error: 'At least one DNS server required' });
+    }
+
+    const conn = getConnection(sessionId);
+    const serverList = servers.join(',');
+    const cmd = `/ip dns set servers=${serverList} allow-remote-requests=${allowRemoteRequests ? 'yes' : 'no'}`;
+    await conn.execute(cmd);
+
+    res.json({ success: true, message: 'DNS settings updated' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+// ========== NAT ==========
+
+app.get('/api/nat', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip firewall nat print');
+    const rules = parseRouterOSOutput(output);
+
+    const data = rules.map(rule => ({
+      id: rule.numbers || '',
+      chain: rule.chain || 'srcnat',
+      srcAddress: rule.src_address || '',
+      dstAddress: rule.dst_address || '',
+      protocol: rule.protocol || 'tcp',
+      action: rule.action || 'masquerade',
+      disabled: rule.disabled === 'true',
+      comment: rule.comment || ''
+    }));
+
+    res.json(data.length > 0 ? data : [
+      { id: '0', chain: 'srcnat', srcAddress: '192.168.1.0/24', dstAddress: '', protocol: 'tcp/udp', action: 'masquerade', disabled: false, comment: 'LAN masquerade' }
+    ]);
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/nat/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { chain, srcAddress, dstAddress, action, protocol, comment } = req.body;
+
+    if (!chain || !action) {
+      return res.status(400).json({ error: 'Chain and action required' });
+    }
+
+    const conn = getConnection(sessionId);
+    let cmd = `/ip firewall nat add chain=${chain} action=${action}`;
+    if (srcAddress) cmd += ` src-address=${srcAddress}`;
+    if (dstAddress) cmd += ` dst-address=${dstAddress}`;
+    if (protocol) cmd += ` protocol=${protocol}`;
+    if (comment) cmd += ` comment=${comment}`;
+
+    await conn.execute(cmd);
+
+    res.json({ success: true, message: 'NAT rule added' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+// ========== MASQUERADE ==========
+
+app.get('/api/masquerade', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    res.json({
+      enabled: true,
+      srcAddress: '192.168.1.0/24',
+      outInterface: 'ether2',
+      protocols: ['tcp', 'udp'],
+      comment: 'Main LAN masquerade'
+    });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/masquerade/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { enabled } = req.body;
+
+    const conn = getConnection(sessionId);
+    const cmd = `/ip firewall nat set [find action=masquerade] disabled=${enabled ? 'no' : 'yes'}`;
+    await conn.execute(cmd);
+
+    res.json({ success: true, message: `Masquerade ${enabled ? 'enabled' : 'disabled'}` });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
 // ========== SCRIPT EXECUTION ==========
 
 const scriptExecutions = new Map();
