@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NetForge — MikroTik Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #070c18; overflow: hidden; font-family: Inter, system-ui, sans-serif; }
+    #root { width: 100%; height: 100%; }
+    *::-webkit-scrollbar { width: 0; height: 0; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+
+// ========== CONTEXT ==========
+const NavCtx = React.createContext({ page: 'Login', setPage: () => {} });
+const AuthCtx = React.createContext({ sessionId: null, setSessionId: () => {}, router: null, logout: () => {} });
+const DataCtx = React.createContext({ data: {}, loading: false, error: null });
+
+// ========== DESIGN TOKENS ==========
+const A = {
+  bg: '#0B1220',
+  bgLayered: 'radial-gradient(120% 80% at 0% 0%, rgba(56,118,255,0.18), transparent 55%), radial-gradient(80% 60% at 100% 100%, rgba(99,102,241,0.10), transparent 60%), #0B1220',
+  surface: 'rgba(255,255,255,0.035)',
+  surfaceStrong: 'rgba(255,255,255,0.06)',
+  border: 'rgba(255,255,255,0.07)',
+  borderStrong: 'rgba(255,255,255,0.12)',
+  text: '#E6EAF2',
+  textDim: 'rgba(230,234,242,0.62)',
+  textFaint: 'rgba(230,234,242,0.42)',
+  accent: '#3B82F6',
+  accentSoft: 'rgba(59,130,246,0.16)',
+  good: '#22C55E',
+  warn: '#F59E0B',
+  bad: '#EF4444',
+  mono: '"JetBrains Mono", ui-monospace, monospace',
+  ui: 'Inter, system-ui, sans-serif',
+};
+
+// ========== ICONS ==========
+const Icon = ({ d, size = 16, sw = 1.6, fill = 'none', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
+       strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" style={style}>
+    {typeof d === 'string' ? <path d={d} /> : d}
+  </svg>
+);
+
+const Icons = {
+  dashboard: <Icon d={<><rect x="3" y="3" width="7" height="9" rx="1.2"/><rect x="14" y="3" width="7" height="5" rx="1.2"/><rect x="14" y="12" width="7" height="9" rx="1.2"/><rect x="3" y="16" width="7" height="5" rx="1.2"/></>} />,
+  iface: <Icon d={<><rect x="3" y="8" width="18" height="10" rx="1.5"/><path d="M7 12v2M11 12v2M15 12v2M19 12v2"/></>} />,
+  wan: <Icon d={<><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></>} />,
+  shield: <Icon d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6l8-3z" />,
+  gauge: <Icon d={<><path d="M12 14l5-5"/><circle cx="12" cy="14" r="0.8" fill="currentColor"/><path d="M3 14a9 9 0 0 1 18 0"/></>} />,
+  users: <Icon d={<><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.4 2.7-6 6-6s6 2.6 6 6"/><circle cx="17" cy="9" r="2.6"/><path d="M21 19c0-2.7-1.7-5-4-5"/></>} />,
+  wifi: <Icon d={<><path d="M2 9c5.5-5 14.5-5 20 0"/><path d="M5 13c4-3.5 10-3.5 14 0"/><path d="M8.5 17c2-1.7 5-1.7 7 0"/><circle cx="12" cy="20" r="0.8" fill="currentColor"/></>} />,
+  vpn: <Icon d={<><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></>} />,
+  list: <Icon d={<><path d="M4 6h16M4 12h16M4 18h10"/></>} />,
+  terminal: <Icon d={<><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h5"/></>} />,
+  save: <Icon d={<><path d="M5 3h11l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></>} />,
+  cog: <Icon d={<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .4 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.4 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .4-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1A2 2 0 1 1 6.9 4.2l.1.1a1.7 1.7 0 0 0 1.9.4H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.4 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></>} />,
+  power: <Icon d={<><path d="M12 3v9"/><path d="M5.6 7a8 8 0 1 0 12.8 0"/></>} />,
+  alert: <Icon d={<><path d="M12 2L2 20h20L12 2z"/><path d="M12 9v4M12 17h.01"/></>} />,
+};
+
+const NetForgeMark = ({ size = 22, color = 'currentColor' }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <path d="M12 2.5 21 7.5v9L12 21.5 3 16.5v-9z" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
+    <circle cx="12" cy="12" r="2.6" fill={color} />
+    <path d="M12 9.4V4M12 14.6V20M9.6 10.7 5 8.2M14.4 13.3 19 15.8M9.6 13.3 5 15.8M14.4 10.7 19 8.2" stroke={color} strokeWidth="1.4" strokeLinecap="round" opacity="0.65" />
+  </svg>
+);
+
+// ========== ATOM COMPONENTS ==========
+
+const ABase = ({ children }) => (
+  <div style={{ width: '100%', height: '100%', background: A.bgLayered, color: A.text,
+    fontFamily: A.ui, fontSize: 13, lineHeight: 1.45, letterSpacing: '-0.005em',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    {children}
+  </div>
+);
+
+const ATitleBar = ({ title, router, onLogout }) => (
+  <div style={{ height: 32, display: 'flex', alignItems: 'center', flex: '0 0 auto',
+    borderBottom: `1px solid ${A.border}`, background: 'rgba(7,11,20,0.5)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', color: A.textDim, fontSize: 12 }}>
+      <NetForgeMark size={14} color={A.accent} />
+      <span style={{ fontWeight: 500, color: A.text }}>NetForge</span>
+      <span style={{ color: A.textFaint }}>·</span>
+      <span>{title}</span>
+      {router && <span style={{ color: A.textFaint, marginLeft: 8 }}>@ {router}</span>}
+    </div>
+    <div style={{ flex: 1 }} />
+    {onLogout && (
+      <button onClick={onLogout} style={{
+        padding: '6px 12px', marginRight: 12, border: 'none', background: 'transparent',
+        color: A.textDim, cursor: 'pointer', fontFamily: A.ui, fontSize: 12, display: 'flex',
+        alignItems: 'center', gap: 6, transition: 'color 0.2s'
+      }} onMouseEnter={e => e.target.style.color = A.text}
+         onMouseLeave={e => e.target.style.color = A.textDim}>
+        {Icons.power}
+        Logout
+      </button>
+    )}
+  </div>
+);
+
+const APill = ({ children, tone = 'dim' }) => {
+  const tones = {
+    dim: { bg: 'rgba(255,255,255,0.05)', fg: A.textDim, dot: A.textFaint },
+    good: { bg: 'rgba(34,197,94,0.12)', fg: '#86EFAC', dot: A.good },
+    warn: { bg: 'rgba(245,158,11,0.12)', fg: '#FCD34D', dot: A.warn },
+    bad: { bg: 'rgba(239,68,68,0.12)', fg: '#FCA5A5', dot: A.bad },
+    accent: { bg: A.accentSoft, fg: '#BFDBFE', dot: A.accent },
+  }[tone];
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '3px 9px 3px 8px', borderRadius: 999, background: tones.bg,
+      fontFamily: A.ui, fontSize: 11, color: tones.fg, fontWeight: 500 }}>
+      <span style={{ width: 6, height: 6, borderRadius: 999, background: tones.dot }} />
+      {children}
+    </span>
+  );
+};
+
+const ABtn = ({ children, kind = 'ghost', onClick, full = false, disabled = false }) => {
+  const styles = {
+    primary: { bg: A.accent, fg: '#fff', border: 'transparent', shadow: '0 1px 0 rgba(255,255,255,0.15) inset, 0 4px 14px rgba(59,130,246,0.35)' },
+    secondary: { bg: A.surfaceStrong, fg: A.text, border: A.borderStrong, shadow: 'none' },
+    ghost: { bg: 'transparent', fg: A.textDim, border: 'transparent', shadow: 'none' },
+  }[kind];
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 8, padding: '7px 12px',
+      borderRadius: 8, border: `1px solid ${styles.border}`, background: styles.bg, color: styles.fg,
+      fontFamily: A.ui, fontSize: 13, fontWeight: 500, cursor: disabled ? 'not-allowed' : 'pointer',
+      boxShadow: styles.shadow, width: full ? '100%' : undefined, justifyContent: 'center',
+      opacity: disabled ? 0.5 : 1, transition: 'all 0.2s'
+    }}>
+      {children}
+    </button>
+  );
+};
+
+const ACard = ({ children, pad = 16, style, animated = true }) => (
+  <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12,
+    padding: pad, backdropFilter: 'blur(8px)', animation: animated ? 'slideIn 0.4s ease-out' : 'none', ...style }}>
+    {children}
+  </div>
+);
+
+const AInput = ({ label, value, onChange, type = 'text', placeholder }) => (
+  <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
+    <input
+      type={type}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      style={{
+        padding: '9px 11px', background: A.surface, border: `1px solid ${A.borderStrong}`,
+        borderRadius: 9, color: A.text, fontFamily: A.ui, fontSize: 13, outline: 'none',
+      }}
+    />
+  </label>
+);
+
+const ALabeledField = ({ label, value }) => (
+  <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 11px',
+      background: A.surface, border: `1px solid ${A.borderStrong}`, borderRadius: 9 }}>
+      <span style={{ fontFamily: A.ui, fontSize: 13, color: A.text }}>{value}</span>
+    </div>
+  </label>
+);
+
+const AToggleRow = ({ label, checked, onChange }) => (
+  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+    <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)}
+      style={{ cursor: 'pointer', width: 18, height: 18 }} />
+    <span style={{ fontSize: 12, color: A.text }}>{label}</span>
+  </label>
+);
+
+const AlertBox = ({ type = 'error', children }) => {
+  const colors = {
+    error: { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)', fg: '#FCA5A5', icon: Icons.alert },
+    success: { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.3)', fg: '#86EFAC' },
+  };
+  const c = colors[type] || colors.error;
+  return (
+    <div style={{
+      background: c.bg, border: `1px solid ${c.border}`, borderRadius: 8, padding: 12,
+      display: 'flex', gap: 8, alignItems: 'flex-start', color: c.fg, fontSize: 12,
+      marginBottom: 12,
+    }}>
+      {c.icon && <div style={{ flex: '0 0 auto', marginTop: 2 }}>{c.icon}</div>}
+      <div>{children}</div>
+    </div>
+  );
+};
+
+// ========== SIDEBAR COMPONENT ==========
+const ASidebar = ({ page, onPageChange, onLogout }) => {
+  const navItems = [
+    { name: 'Dashboard', icon: Icons.dashboard },
+    { name: 'Interfaces', icon: Icons.iface },
+    { name: 'WAN', icon: Icons.wan },
+    { name: 'Firewall', icon: Icons.shield },
+    { name: 'Bandwidth', icon: Icons.gauge },
+    { name: 'Clients', icon: Icons.users },
+    { name: 'Hotspot', icon: Icons.wifi },
+    { name: 'Wireless', icon: Icons.wifi },
+    { name: 'VPN', icon: Icons.vpn },
+    { name: 'Logs', icon: Icons.list },
+    { name: 'Scripts', icon: Icons.terminal },
+    { name: 'Backup', icon: Icons.save },
+    { name: 'Settings', icon: Icons.cog },
+  ];
+
+  return (
+    <div style={{ width: 180, borderRight: `1px solid ${A.border}`, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+      {navItems.map((item) => (
+        <button key={item.name} onClick={() => onPageChange(item.name)} style={{
+          flex: '0 0 auto', padding: '10px 12px', border: 'none', background: page === item.name ? A.accentSoft : 'transparent',
+          color: page === item.name ? A.accent : A.textDim, cursor: 'pointer',
+          fontFamily: A.ui, fontSize: 12, fontWeight: page === item.name ? 500 : 400,
+          display: 'flex', alignItems: 'center', gap: 8, borderLeft: page === item.name ? `2px solid ${A.accent}` : '2px solid transparent',
+          transition: 'all 0.2s ease-out',
+        }}>
+          <div style={{ color: 'currentColor' }}>{item.icon}</div>
+          <span>{item.name}</span>
+        </button>
+      ))}
+      <div style={{ flex: 1 }} />
+      <button onClick={onLogout} style={{
+        flex: '0 0 auto', padding: '10px 12px', border: 'none', background: 'transparent',
+        color: A.textDim, cursor: 'pointer', fontFamily: A.ui, fontSize: 12,
+        display: 'flex', alignItems: 'center', gap: 8, borderTop: `1px solid ${A.border}`,
+        transition: 'color 0.2s'
+      }} onMouseEnter={e => e.target.style.color = A.text}
+         onMouseLeave={e => e.target.style.color = A.textDim}>
+        {Icons.power}
+        <span>Logout</span>
+      </button>
+    </div>
+  );
+};
+
+// ========== LOGIN SCREEN ==========
+const ALogin = ({ onConnect }) => {
+  const [host, setHost] = React.useState('192.168.1.1');
+  const [port, setPort] = React.useState('22');
+  const [username, setUsername] = React.useState('admin');
+  const [password, setPassword] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  const handleConnect = async () => {
+    if (!password) {
+      setError('Password is required');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await onConnect({ host, port, username, password });
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <ABase>
+      <ATitleBar title="Login" />
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
+        <div style={{ width: 400 }}>
+          <div style={{ marginBottom: 32, textAlign: 'center' }}>
+            <NetForgeMark size={48} color={A.accent} />
+            <h1 style={{ fontSize: 24, fontWeight: 700, marginTop: 12, color: A.text }}>NetForge</h1>
+            <p style={{ fontSize: 13, color: A.textDim, marginTop: 6 }}>MikroTik Router Manager</p>
+          </div>
+
+          {error && <AlertBox type="error">{error}</AlertBox>}
+
+          <div style={{ marginBottom: 12 }}>
+            <AInput label="Router IP" value={host} onChange={setHost} placeholder="192.168.1.1" />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <AInput label="SSH Port" value={port} onChange={setPort} type="number" placeholder="22" />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <AInput label="Username" value={username} onChange={setUsername} placeholder="admin" />
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <AInput label="Password" value={password} onChange={setPassword} type="password" placeholder="••••••••" />
+          </div>
+
+          <ABtn kind="primary" full onClick={handleConnect} disabled={loading}>
+            {loading ? 'Connecting...' : 'Connect'}
+          </ABtn>
+
+          <div style={{ marginTop: 16, fontSize: 11, color: A.textFaint, textAlign: 'center' }}>
+            Uses SSH to connect to your MikroTik router
+          </div>
+        </div>
+      </div>
+    </ABase>
+  );
+};
+
+// ========== PLACEHOLDER SCREENS ==========
+const PlaceholderScreen = ({ name }) => (
+  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    <ACard animated={true} style={{ textAlign: 'center', padding: 32 }}>
+      <div style={{ fontSize: 13, color: A.textFaint }}>{name}</div>
+      <div style={{ fontSize: 12, color: A.textFaint, marginTop: 8 }}>Coming in Part 3+</div>
+    </ACard>
+  </div>
+);
+
+// ========== MAIN APP ==========
+const App = () => {
+  const [page, setPage] = React.useState('Login');
+  const [sessionId, setSessionId] = React.useState(null);
+  const [router, setRouter] = React.useState(null);
+
+  const handleLogin = async (creds) => {
+    const API_BASE = 'http://localhost:3001';
+    const res = await fetch(`${API_BASE}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: creds.host,
+        port: parseInt(creds.port),
+        username: creds.username,
+        password: creds.password,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+
+    setSessionId(data.sessionId);
+    setRouter(`${creds.host}:${creds.port}`);
+    setPage('Dashboard');
+  };
+
+  const handleLogout = async () => {
+    if (sessionId) {
+      try {
+        await fetch('http://localhost:3001/api/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+        });
+      } catch (err) {
+        console.error('Logout error:', err);
+      }
+    }
+    setSessionId(null);
+    setRouter(null);
+    setPage('Login');
+  };
+
+  if (!sessionId) {
+    return (
+      <NavCtx.Provider value={{ page, setPage }}>
+        <AuthCtx.Provider value={{ sessionId, setSessionId, router, logout: handleLogout }}>
+          <ALogin onConnect={handleLogin} />
+        </AuthCtx.Provider>
+      </NavCtx.Provider>
+    );
+  }
+
+  return (
+    <NavCtx.Provider value={{ page, setPage }}>
+      <AuthCtx.Provider value={{ sessionId, setSessionId, router, logout: handleLogout }}>
+        <ABase>
+          <ATitleBar title={page} router={router} onLogout={handleLogout} />
+          <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+            <ASidebar page={page} onPageChange={setPage} onLogout={handleLogout} />
+            <PlaceholderScreen name={page} />
+          </div>
+        </ABase>
+      </AuthCtx.Provider>
+    </NavCtx.Provider>
+  );
+};
+
+// ========== RENDER ==========
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+
+  </script>
+</body>
+</html>
