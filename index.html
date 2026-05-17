@@ -134,13 +134,33 @@ const MockAPI = {
   ],
 
   getLogs: () => {
-    const topics = ['interface', 'system', 'firewall', 'dhcp'];
-    const messages = ['went up', 'went down', 'changed', 'lease assigned'];
-    return Array.from({ length: 5 }, (_, i) => ({
-      time: new Date(Date.now() - i * 10000).toLocaleTimeString(),
+    const topics = ['interface', 'system', 'firewall', 'dhcp', 'wireless', 'script', 'certificate'];
+    const sources = ['ether1', 'ether2', 'system', 'DHCP', 'wireless', 'scheduler', 'ca'];
+    const messages = ['went up', 'went down', 'configuration changed', 'lease assigned', 'connection established', 'executed successfully', 'error occurred', 'status update'];
+    return Array.from({ length: 8 }, (_, i) => ({
+      time: new Date(Date.now() - i * 30000).toLocaleTimeString(),
       topic: topics[Math.floor(Math.random() * topics.length)],
+      source: sources[Math.floor(Math.random() * sources.length)],
       msg: messages[Math.floor(Math.random() * messages.length)],
     }));
+  },
+
+  getScripts: () => [
+    { name: 'backup_daily', lastRun: new Date(Date.now() - 86400000).toLocaleString(), schedule: '0 2 * * *', status: 'success' },
+    { name: 'health_check', lastRun: new Date(Date.now() - 300000).toLocaleString(), schedule: '*/5 * * * *', status: 'success' },
+    { name: 'cleanup_logs', lastRun: new Date(Date.now() - 604800000).toLocaleString(), schedule: '0 3 * * 0', status: 'success' },
+    { name: 'update_dns', lastRun: new Date(Date.now() - 3600000).toLocaleString(), schedule: '0 * * * *', status: 'success' },
+  ],
+
+  getBackups: () => {
+    const today = new Date().toISOString().split('T')[0];
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const twoDaysAgo = new Date(Date.now() - 172800000).toISOString().split('T')[0];
+    return [
+      { filename: `backup-${today}-full.backup`, size: (Math.random() * 3 + 10).toFixed(1) + ' MB', timestamp: new Date().toLocaleString(), trigger: 'Scheduled' },
+      { filename: `backup-${yesterday}-full.backup`, size: (Math.random() * 2 + 11).toFixed(1) + ' MB', timestamp: new Date(Date.now() - 86400000).toLocaleString(), trigger: 'Scheduled' },
+      { filename: `backup-${twoDaysAgo}-manual.backup`, size: (Math.random() * 2.5 + 10).toFixed(1) + ' MB', timestamp: new Date(Date.now() - 172800000).toLocaleString(), trigger: 'Manual' },
+    ];
   },
 };
 
@@ -647,6 +667,120 @@ const VPNScreen = () => {
   );
 };
 
+const LogsScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const logs = data.logs || [];
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>System Logs (Live)</h3>
+      {logs.map((log, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 8, padding: 12 }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
+              <div style={{ fontSize: 12, fontFamily: A.mono, color: A.textDim }}>{log.time}</div>
+              <APill tone="good">{log.topic}</APill>
+            </div>
+            <div style={{ fontSize: 13, color: A.text, marginBottom: 4 }}>{log.msg}</div>
+            <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>Source: {log.source}</div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const ScriptsScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const scripts = data.scripts || [];
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: A.text }}>Scheduled Scripts (Live)</h3>
+      {scripts.map((s, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 12, padding: 12 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{s.name}</div>
+                <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{s.schedule}</div>
+              </div>
+              <APill tone="good">{s.status}</APill>
+            </div>
+            <div style={{ fontSize: 11, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
+              Last run: {s.lastRun}
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const BackupScreen = () => {
+  const { data } = React.useContext(DataCtx);
+  const backups = data.backups || [];
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: A.text }}>Backup Files (Live)</h3>
+      {backups.map((b, i) => (
+        <ACard key={i} animated={true} style={{ marginBottom: 12, padding: 12 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, fontFamily: A.mono }}>{b.filename}</div>
+              </div>
+              <APill tone="good">{b.trigger}</APill>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
+              <span>{b.size}</span>
+              <span>{b.timestamp}</span>
+            </div>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const SettingsScreen = () => {
+  const [mode, setMode] = React.useState('Simple');
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', padding: 16 }}>
+      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: A.text }}>Settings</h3>
+
+      <ACard animated={true} style={{ marginBottom: 16, padding: 12 }}>
+        <h4 style={{ fontSize: 12, fontWeight: 600, marginBottom: 12, color: A.text }}>Default Mode</h4>
+        {['Simple', 'Advanced', 'Remember'].map((m) => (
+          <label key={m} style={{ display: 'flex', alignItems: 'center', marginBottom: 10, cursor: 'pointer' }}>
+            <input type="radio" checked={mode === m} onChange={() => setMode(m)} style={{ marginRight: 8, cursor: 'pointer' }} />
+            <span style={{ fontSize: 12, color: A.text }}>{m === 'Remember' ? 'Remember Last Used' : m + ' Mode (Default)'}</span>
+          </label>
+        ))}
+      </ACard>
+
+      <ACard animated={true} style={{ marginBottom: 16, padding: 12 }}>
+        <h4 style={{ fontSize: 12, fontWeight: 600, marginBottom: 12, color: A.text }}>Notifications</h4>
+        {['Log errors', 'Warn on high CPU', 'Alert on disconnect'].map((opt) => (
+          <label key={opt} style={{ display: 'flex', alignItems: 'center', marginBottom: 10, cursor: 'pointer' }}>
+            <input type="checkbox" defaultChecked={true} style={{ marginRight: 8, cursor: 'pointer' }} />
+            <span style={{ fontSize: 12, color: A.text }}>{opt}</span>
+          </label>
+        ))}
+      </ACard>
+
+      <ACard animated={true} style={{ padding: 12 }}>
+        <h4 style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: A.text }}>System</h4>
+        <div style={{ fontSize: 11, color: A.textFaint }}>NetForge v1.0.0</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginTop: 4 }}>API: Mock Data Service</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginTop: 4 }}>Connected: Yes</div>
+      </ACard>
+    </div>
+  );
+};
+
 const LoginScreen = () => {
   const { setPage } = React.useContext(NavCtx);
   const [host, setHost] = React.useState('192.168.1.1');
@@ -702,6 +836,8 @@ const App = () => {
       vpn: MockAPI.getVPNStatus(),
       topTalkers: MockAPI.getTopTalkers(),
       logs: MockAPI.getLogs(),
+      scripts: MockAPI.getScripts(),
+      backups: MockAPI.getBackups(),
     });
   };
 
@@ -724,10 +860,10 @@ const App = () => {
       case 'Hotspot': return <HotspotScreen />;
       case 'Wireless': return <WirelessScreen />;
       case 'VPN': return <VPNScreen />;
-      case 'Logs': return <PlaceholderScreen name="Logs" />;
-      case 'Scripts': return <PlaceholderScreen name="Scripts" />;
-      case 'Backup': return <PlaceholderScreen name="Backup" />;
-      case 'Settings': return <PlaceholderScreen name="Settings" />;
+      case 'Logs': return <LogsScreen />;
+      case 'Scripts': return <ScriptsScreen />;
+      case 'Backup': return <BackupScreen />;
+      case 'Settings': return <SettingsScreen />;
       default: return <LoginScreen />;
     }
   };
