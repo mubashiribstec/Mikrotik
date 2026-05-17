@@ -360,6 +360,45 @@ const API = {
       body: JSON.stringify({ enabled }),
     });
   },
+
+  // Routes - Delete
+  async removeRoute(sessionId, id) {
+    return this.call(sessionId, '/api/routes/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  },
+
+  // NAT - Delete
+  async removeNat(sessionId, id) {
+    return this.call(sessionId, '/api/nat/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  },
+
+  // Hotspot
+  async getHotspot(sessionId) {
+    return this.call(sessionId, '/api/hotspot');
+  },
+
+  async getHotspotUsers(sessionId) {
+    return this.call(sessionId, '/api/hotspot/users');
+  },
+
+  async addHotspotUser(sessionId, username, password, profile, comment) {
+    return this.call(sessionId, '/api/hotspot/user/add', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, profile, comment }),
+    });
+  },
+
+  async removeHotspotUser(sessionId, id) {
+    return this.call(sessionId, '/api/hotspot/user/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  },
 };
 
 // ========== ATOMS ==========
@@ -639,6 +678,83 @@ const SCRIPT_TEMPLATES = {
     description: 'Remove logs older than 30 days',
     schedule: '0 3 * * 0',
     icon: '🗑️'
+  },
+  interface_monitor: {
+    name: 'interface_monitor',
+    label: 'Interface Monitor',
+    description: 'Monitor all interface statistics',
+    schedule: '*/10 * * * *',
+    icon: '🔗'
+  },
+  bandwidth_report: {
+    name: 'bandwidth_report',
+    label: 'Bandwidth Report',
+    description: 'Generate bandwidth usage report',
+    schedule: '0 * * * *',
+    icon: '📈'
+  },
+  firewall_stats: {
+    name: 'firewall_stats',
+    label: 'Firewall Stats',
+    description: 'Show firewall rule statistics',
+    schedule: 'manual',
+    icon: '🛡️'
+  },
+  dhcp_status: {
+    name: 'dhcp_status',
+    label: 'DHCP Status',
+    description: 'Check DHCP server status and leases',
+    schedule: 'manual',
+    icon: '📍'
+  },
+  wireless_monitor: {
+    name: 'wireless_monitor',
+    label: 'Wireless Monitor',
+    description: 'Monitor wireless network activity',
+    schedule: '*/5 * * * *',
+    icon: '📶'
+  },
+  vpn_check: {
+    name: 'vpn_check',
+    label: 'VPN Check',
+    description: 'Check VPN connection status',
+    schedule: 'manual',
+    icon: '🔐'
+  },
+  system_update_check: {
+    name: 'system_update_check',
+    label: 'Update Check',
+    description: 'Check for system updates',
+    schedule: '0 6 * * *',
+    icon: '⬆️'
+  },
+  backup_restore: {
+    name: 'backup_restore',
+    label: 'Backup Restore',
+    description: 'Restore from backup file',
+    schedule: 'manual',
+    icon: '⏮️'
+  },
+  reset_interface: {
+    name: 'reset_interface',
+    label: 'Reset Interface',
+    description: 'Reset network interface settings',
+    schedule: 'manual',
+    icon: '🔄'
+  },
+  restart_service: {
+    name: 'restart_service',
+    label: 'Restart Service',
+    description: 'Restart system services',
+    schedule: 'manual',
+    icon: '♻️'
+  },
+  check_dns: {
+    name: 'check_dns',
+    label: 'DNS Check',
+    description: 'Verify DNS resolution',
+    schedule: '*/15 * * * *',
+    icon: '🔍'
   }
 };
 
@@ -1124,14 +1240,137 @@ const ClientsScreen = ({ sessionId }) => {
   );
 };
 
-const HotspotScreen = ({ sessionId }) => (
-  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-    <ACard pad={32} style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 13, color: A.text }}>Hotspot</div>
-      <div style={{ fontSize: 12, color: A.textFaint, marginTop: 8 }}>Coming soon</div>
-    </ACard>
-  </div>
-);
+const HotspotScreen = ({ sessionId }) => {
+  const [hotspot, setHotspot] = React.useState(null);
+  const [users, setUsers] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [showForm, setShowForm] = React.useState(false);
+  const [username, setUsername] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [profile, setProfile] = React.useState('default');
+  const [comment, setComment] = React.useState('');
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetch = async () => {
+      setLoading(true);
+      try {
+        const hsData = await API.getHotspot(sessionId);
+        setHotspot(hsData);
+        const usersData = await API.getHotspotUsers(sessionId);
+        setUsers(usersData);
+        setError(null);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetch();
+  }, [sessionId]);
+
+  const handleAddUser = async () => {
+    if (!username || !password) {
+      setError('Username and password required');
+      return;
+    }
+    try {
+      await API.addHotspotUser(sessionId, username, password, profile, comment);
+      setUsername('');
+      setPassword('');
+      setProfile('default');
+      setComment('');
+      setShowForm(false);
+      const usersData = await API.getHotspotUsers(sessionId);
+      setUsers(usersData);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleRemoveUser = async (id) => {
+    try {
+      await API.removeHotspotUser(sessionId, id);
+      const usersData = await API.getHotspotUsers(sessionId);
+      setUsers(usersData);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ color: A.text }}>Hotspot</h2>
+        <APill tone={hotspot?.enabled ? 'good' : 'dim'}>{hotspot?.activeUsers || 0} active users</APill>
+      </div>
+
+      {error && <AAlert>{error}</AAlert>}
+
+      <div style={{ marginBottom: 24 }}>
+        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Hotspot Users</h3>
+
+        <div style={{ marginBottom: 12 }}>
+          <ABtn variant="primary" onClick={() => setShowForm(!showForm)}>+ Add User</ABtn>
+        </div>
+
+        {showForm && (
+          <ACard pad={16} style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Username</label>
+              <input type="text" placeholder="username" value={username} onChange={e => setUsername(e.target.value)}
+                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Password</label>
+              <input type="password" placeholder="password" value={password} onChange={e => setPassword(e.target.value)}
+                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Profile</label>
+              <select value={profile} onChange={e => setProfile(e.target.value)}
+                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }}>
+                <option>default</option>
+                <option>premium</option>
+                <option>basic</option>
+              </select>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Comment</label>
+              <input type="text" placeholder="Optional comment" value={comment} onChange={e => setComment(e.target.value)}
+                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }} />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <ABtn variant="primary" onClick={handleAddUser} style={{ flex: 1 }}>Add User</ABtn>
+              <ABtn variant="secondary" onClick={() => setShowForm(false)} style={{ flex: 1 }}>Cancel</ABtn>
+            </div>
+          </ACard>
+        )}
+
+        {users.map(user => (
+          <ACard key={user.id} pad={12} style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{user.name}</div>
+                <div style={{ fontSize: 10, color: A.textDim }}>Profile: {user.profile}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {user.disabled && <APill tone="dim">Disabled</APill>}
+                <button onClick={() => handleRemoveUser(user.id)} style={{
+                  background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500
+                }}>Remove</button>
+              </div>
+            </div>
+            {user.comment && <div style={{ fontSize: 10, color: A.textFaint }}>• {user.comment}</div>}
+          </ACard>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const WirelessScreen = ({ sessionId }) => {
   const [wireless, setWireless] = React.useState([]);
@@ -1652,6 +1891,17 @@ const RoutesScreen = ({ sessionId }) => {
     }
   };
 
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete this route?')) return;
+    try {
+      await API.removeRoute(sessionId, id);
+      const data = await API.getRoutes(sessionId);
+      setRoutes(data);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
 
   return (
@@ -1694,12 +1944,17 @@ const RoutesScreen = ({ sessionId }) => {
 
       {routes.map(route => (
         <ACard key={route.id} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{route.destination}</div>
               <div style={{ fontSize: 10, color: A.textDim }}>via {route.gateway}</div>
             </div>
-            <APill tone={route.disabled ? 'dim' : 'good'}>{route.distance}</APill>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <APill tone={route.disabled ? 'dim' : 'good'}>{route.distance}</APill>
+              <button onClick={() => handleDelete(route.id)} style={{
+                background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500, minWidth: 60
+              }}>Delete</button>
+            </div>
           </div>
           {route.comment && <div style={{ fontSize: 10, color: A.textFaint }}>• {route.comment}</div>}
         </ACard>
@@ -1826,6 +2081,17 @@ const NatScreen = ({ sessionId }) => {
     }
   };
 
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete this NAT rule?')) return;
+    try {
+      await API.removeNat(sessionId, id);
+      const data = await API.getNat(sessionId);
+      setRules(data);
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
   if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
 
   return (
@@ -1869,11 +2135,16 @@ const NatScreen = ({ sessionId }) => {
       {rules.map(rule => (
         <ACard key={rule.id} pad={12} style={{ marginBottom: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div>
+            <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{rule.action}</div>
               <div style={{ fontSize: 10, color: A.textDim }}>{rule.chain}</div>
             </div>
-            <APill tone={rule.disabled ? 'dim' : 'good'}>{rule.srcAddress || 'all'}</APill>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <APill tone={rule.disabled ? 'dim' : 'good'}>{rule.srcAddress || 'all'}</APill>
+              <button onClick={() => handleDelete(rule.id)} style={{
+                background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500, minWidth: 60
+              }}>Delete</button>
+            </div>
           </div>
         </ACard>
       ))}

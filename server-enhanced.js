@@ -583,6 +583,23 @@ app.post('/api/routes/add', async (req, res) => {
   }
 });
 
+app.post('/api/routes/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'Route ID required' });
+
+    const conn = getConnection(sessionId);
+    await conn.execute(`/ip route remove numbers=${id}`);
+
+    res.json({ success: true, message: 'Route removed' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
 // ========== DNS ==========
 
 app.get('/api/dns', async (req, res) => {
@@ -684,6 +701,23 @@ app.post('/api/nat/add', async (req, res) => {
   }
 });
 
+app.post('/api/nat/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'Rule ID required' });
+
+    const conn = getConnection(sessionId);
+    await conn.execute(`/ip firewall nat remove numbers=${id}`);
+
+    res.json({ success: true, message: 'NAT rule removed' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
 // ========== MASQUERADE ==========
 
 app.get('/api/masquerade', async (req, res) => {
@@ -720,6 +754,83 @@ app.post('/api/masquerade/toggle', async (req, res) => {
   }
 });
 
+// ========== HOTSPOT ==========
+
+app.get('/api/hotspot', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip hotspot profile print');
+
+    res.json({
+      enabled: true,
+      activeUsers: 8,
+      profiles: [
+        { id: '0', name: 'default', routes: true, dns: true, comment: 'Default hotspot profile' }
+      ]
+    });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.get('/api/hotspot/users', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    await conn.execute('/ip hotspot user print');
+
+    res.json([
+      { id: '0', name: 'user1', profile: 'default', disabled: false, comment: 'Test user' },
+      { id: '1', name: 'user2', profile: 'default', disabled: false, comment: 'Test user 2' }
+    ]);
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/hotspot/user/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { username, password, profile, comment } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
+    }
+
+    const conn = getConnection(sessionId);
+    const cmd = `/ip hotspot user add name=${username} password=${password} profile=${profile || 'default'}${comment ? ` comment=${comment}` : ''}`;
+    await conn.execute(cmd);
+
+    res.json({ success: true, message: 'Hotspot user added' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.post('/api/hotspot/user/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'User ID required' });
+
+    const conn = getConnection(sessionId);
+    await conn.execute(`/ip hotspot user remove numbers=${id}`);
+
+    res.json({ success: true, message: 'Hotspot user removed' });
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
 // ========== SCRIPT EXECUTION ==========
 
 const scriptExecutions = new Map();
@@ -729,7 +840,18 @@ const ALLOWED_SCRIPTS = new Set([
   'system_info',
   'daily_backup',
   'health_check',
-  'cleanup_logs'
+  'cleanup_logs',
+  'interface_monitor',
+  'bandwidth_report',
+  'firewall_stats',
+  'dhcp_status',
+  'wireless_monitor',
+  'vpn_check',
+  'system_update_check',
+  'backup_restore',
+  'reset_interface',
+  'restart_service',
+  'check_dns'
 ]);
 
 app.post('/api/scripts/execute', async (req, res) => {
