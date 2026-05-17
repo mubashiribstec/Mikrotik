@@ -65,9 +65,120 @@ const A = {
   ui: 'Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
 };
 
+// ========== WEBSOCKET MANAGER ==========
+
+class WebSocketManagerClass {
+  constructor(sessionId) {
+    this.sessionId = sessionId;
+    this.ws = null;
+    this.subscriptions = new Map();
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 1000;
+    this.connect();
+  }
+
+  connect() {
+    try {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${protocol}//${window.location.host}/ws?sessionId=${this.sessionId}`;
+
+      this.ws = new WebSocket(url);
+      this.ws.onopen = () => {
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+        for (const endpoint of this.subscriptions.keys()) {
+          this.sendSubscribe(endpoint);
+        }
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const callbacks = this.subscriptions.get(msg.type);
+          if (callbacks) {
+            callbacks.forEach(cb => cb(msg.data));
+          }
+        } catch (err) {
+          console.error('WS parse:', err);
+        }
+      };
+
+      this.ws.onerror = () => {
+        this.isConnected = false;
+      };
+
+      this.ws.onclose = () => {
+        this.isConnected = false;
+        this.attemptReconnect();
+      };
+    } catch (err) {
+      this.isConnected = false;
+      this.attemptReconnect();
+    }
+  }
+
+  attemptReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+    setTimeout(() => this.connect(), delay);
+  }
+
+  sendSubscribe(endpoint) {
+    if (this.isConnected && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ action: 'subscribe', endpoint }));
+    }
+  }
+
+  subscribe(endpoint, callback) {
+    if (!this.subscriptions.has(endpoint)) {
+      this.subscriptions.set(endpoint, new Set());
+      this.sendSubscribe(endpoint);
+    }
+    this.subscriptions.get(endpoint).add(callback);
+  }
+
+  unsubscribe(endpoint, callback) {
+    const callbacks = this.subscriptions.get(endpoint);
+    if (callbacks) {
+      callbacks.delete(callback);
+      if (callbacks.size === 0) {
+        this.subscriptions.delete(endpoint);
+      }
+    }
+  }
+
+  close() {
+    if (this.ws) {
+      this.ws.close();
+    }
+  }
+}
+
 // ========== API HELPER ==========
 const API = {
   baseUrl: 'http://localhost:3001',
+  wsManager: null,
+
+  initWebSocket(sessionId) {
+    if (!this.wsManager) {
+      this.wsManager = new WebSocketManagerClass(sessionId);
+    }
+  },
+
+  subscribe(endpoint, callback) {
+    if (this.wsManager && this.wsManager.isConnected) {
+      this.wsManager.subscribe(endpoint, callback);
+    }
+  },
+
+  unsubscribe(endpoint, callback) {
+    if (this.wsManager) {
+      this.wsManager.unsubscribe(endpoint, callback);
+    }
+  },
 
   async call(sessionId, endpoint, options = {}) {
     if (!sessionId && endpoint !== '/api/login') {
@@ -491,6 +602,7 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
       const result = await API.login(host, port, username, password);
       setSessionId(result.sessionId);
       setRouter({ host, port: parseInt(port), username });
+      API.initWebSocket(result.sessionId);
       setPage('Dashboard');
     } catch (err) {
       setError(err.message || 'Login failed');
@@ -539,7 +651,6 @@ const DashboardScreen = ({ sessionId }) => {
   const checkThresholds = (data) => {
     if (!data) return;
 
-    // Check CPU
     if (data.cpu > ALERT_THRESHOLDS.cpu.critical) {
       if (AlertUtils.shouldAlert(alertCache, 'cpu', 'critical')) {
         alertCtx.addAlert('cpu', data.cpu, ALERT_THRESHOLDS.cpu.critical, 'critical');
@@ -550,7 +661,6 @@ const DashboardScreen = ({ sessionId }) => {
       }
     }
 
-    // Check Memory
     if (data.memory > ALERT_THRESHOLDS.memory.critical) {
       if (AlertUtils.shouldAlert(alertCache, 'memory', 'critical')) {
         alertCtx.addAlert('memory', data.memory, ALERT_THRESHOLDS.memory.critical, 'critical');
@@ -561,7 +671,6 @@ const DashboardScreen = ({ sessionId }) => {
       }
     }
 
-    // Check Storage
     if (data.storage > ALERT_THRESHOLDS.storage.critical) {
       if (AlertUtils.shouldAlert(alertCache, 'storage', 'critical')) {
         alertCtx.addAlert('storage', data.storage, ALERT_THRESHOLDS.storage.critical, 'critical');
@@ -575,19 +684,32 @@ const DashboardScreen = ({ sessionId }) => {
 
   React.useEffect(() => {
     if (!sessionId) return;
+
+    const handleData = (data) => {
+      setStats(data);
+      setLoading(false);
+      setError(null);
+      checkThresholds(data);
+    };
+
+    // Try WebSocket first
+    if (API.wsManager && API.wsManager.isConnected) {
+      API.subscribe('/api/system-stats', handleData);
+      return () => API.unsubscribe('/api/system-stats', handleData);
+    }
+
+    // Fallback to polling
     const fetchStats = async () => {
       setLoading(true);
-      setError(null);
       try {
         const data = await API.getSystemStats(sessionId);
-        setStats(data);
-        checkThresholds(data);
+        handleData(data);
       } catch (err) {
         setError(err.message);
-      } finally {
         setLoading(false);
       }
     };
+
     fetchStats();
     const interval = setInterval(fetchStats, 5000);
     return () => clearInterval(interval);

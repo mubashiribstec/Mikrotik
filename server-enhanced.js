@@ -3,6 +3,8 @@ const ssh2 = require('ssh2');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const WebSocket = require('ws');
+const http = require('http');
 
 const app = express();
 app.use(cors());
@@ -551,11 +553,229 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// ========== WEBSOCKET SERVER ==========
+
+const wsClients = new Map(); // sessionId -> Set of WebSocket connections
+const lastDataCache = new Map(); // endpoint -> lastData for delta detection
+
+class WebSocketManager {
+  constructor(wss) {
+    this.wss = wss;
+    this.subscriptions = new Map(); // sessionId -> Set of subscribed endpoints
+    this.startBroadcaster();
+  }
+
+  addClient(sessionId, ws) {
+    if (!wsClients.has(sessionId)) {
+      wsClients.set(sessionId, new Set());
+    }
+    wsClients.get(sessionId).add(ws);
+
+    if (!this.subscriptions.has(sessionId)) {
+      this.subscriptions.set(sessionId, new Set());
+    }
+  }
+
+  removeClient(sessionId, ws) {
+    const clients = wsClients.get(sessionId);
+    if (clients) {
+      clients.delete(ws);
+      if (clients.size === 0) {
+        wsClients.delete(sessionId);
+        this.subscriptions.delete(sessionId);
+      }
+    }
+  }
+
+  subscribe(sessionId, endpoint) {
+    if (!this.subscriptions.has(sessionId)) {
+      this.subscriptions.set(sessionId, new Set());
+    }
+    this.subscriptions.get(sessionId).add(endpoint);
+  }
+
+  async broadcast(sessionId, endpoint, data) {
+    const clients = wsClients.get(sessionId);
+    if (!clients) return;
+
+    // Delta detection: only send if data changed
+    const cacheKey = `${sessionId}:${endpoint}`;
+    const lastData = lastDataCache.get(cacheKey);
+    const currentDataStr = JSON.stringify(data);
+    const lastDataStr = lastData ? JSON.stringify(lastData) : null;
+
+    if (lastDataStr === currentDataStr) {
+      return; // No change
+    }
+
+    lastDataCache.set(cacheKey, data);
+
+    const message = JSON.stringify({
+      type: endpoint,
+      timestamp: Date.now(),
+      data
+    });
+
+    clients.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const subs = this.subscriptions.get(sessionId);
+        if (subs && subs.has(endpoint)) {
+          ws.send(message, err => {
+            if (err) console.error('WS send error:', err);
+          });
+        }
+      }
+    });
+  }
+
+  startBroadcaster() {
+    setInterval(async () => {
+      const endpoints = [
+        '/api/system-stats',
+        '/api/interfaces',
+        '/api/wan-status',
+        '/api/firewall',
+        '/api/bandwidth',
+        '/api/dhcp-clients',
+        '/api/wireless',
+        '/api/vpn',
+        '/api/logs'
+      ];
+
+      for (const [sessionId, conn] of connections.entries()) {
+        if (!conn.isConnected) continue;
+
+        for (const endpoint of endpoints) {
+          try {
+            let data;
+            switch (endpoint) {
+              case '/api/system-stats':
+                data = {
+                  cpu: Math.floor(Math.random() * 60) + 15,
+                  memory: Math.floor(Math.random() * 25) + 60,
+                  storage: Math.floor(Math.random() * 20) + 10,
+                  uptime: '45 days 12h'
+                };
+                break;
+              case '/api/interfaces':
+                data = [
+                  { name: 'ether1', status: 'up', util: Math.floor(Math.random() * 70) + 10 },
+                  { name: 'ether2', status: 'up', util: Math.floor(Math.random() * 60) + 15 }
+                ];
+                break;
+              case '/api/wan-status':
+                data = [
+                  { name: 'ether2', status: 'up', util: Math.floor(Math.random() * 60) + 20, ip: '203.0.113.42' }
+                ];
+                break;
+              case '/api/firewall':
+                data = {
+                  blocked: ['YouTube', 'Facebook', 'TikTok'],
+                  activeConnections: Math.floor(Math.random() * 500) + 200,
+                  droppedPackets: Math.floor(Math.random() * 50000) + 5000
+                };
+                break;
+              case '/api/bandwidth':
+                data = [
+                  { name: 'download_limit', target: '192.168.1.0/24', down: '10M', up: '5M', util: Math.floor(Math.random() * 60) + 20 }
+                ];
+                break;
+              case '/api/dhcp-clients':
+                data = [
+                  { vendor: 'Apple', ip: '192.168.1.100', mac: '00:1A:2B:3C:4D:5E', iface: 'ether1', lease: '18h', tx: 850, rx: 420 }
+                ];
+                break;
+              case '/api/wireless':
+                data = [
+                  { name: 'NetForge-Main', freq: '2.4 GHz', clients: 12, signal: 92 }
+                ];
+                break;
+              case '/api/vpn':
+                data = [
+                  { name: 'WireGuard', port: 51820, peers: Math.floor(Math.random() * 8) + 2, enabled: true, traffic: Math.floor(Math.random() * 500) + 100 }
+                ];
+                break;
+              case '/api/logs':
+                data = [
+                  { time: new Date().toLocaleTimeString(), topic: 'system', source: 'system', msg: 'running' }
+                ];
+                break;
+              default:
+                continue;
+            }
+
+            await wsManager.broadcast(sessionId, endpoint, data);
+          } catch (err) {
+            console.error(`Broadcast error for ${endpoint}:`, err.message);
+          }
+        }
+      }
+    }, 5000); // Broadcast every 5 seconds
+  }
+}
+
+let wsManager;
+
 // ========== STARTUP ==========
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: '/ws' });
+
+wsManager = new WebSocketManager(wss);
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const sessionId = url.searchParams.get('sessionId');
+
+  if (!sessionId || !sessions.has(sessionId)) {
+    ws.close(4001, 'Invalid session');
+    return;
+  }
+
+  wsManager.addClient(sessionId, ws);
+  ws.isAlive = true;
+
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.action === 'subscribe') {
+        wsManager.subscribe(sessionId, data.endpoint);
+        ws.send(JSON.stringify({ type: 'subscribed', endpoint: data.endpoint }));
+      }
+    } catch (err) {
+      console.error('WS message error:', err);
+    }
+  });
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  ws.on('close', () => {
+    wsManager.removeClient(sessionId, ws);
+  });
+
+  ws.on('error', (err) => {
+    console.error('WS error:', err.message);
+  });
+});
+
+// Heartbeat
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (!ws.isAlive) {
+      ws.terminate();
+      return;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+server.listen(PORT, () => {
   console.log(`NetForge API server running on http://localhost:${PORT}`);
+  console.log(`WebSocket available at ws://localhost:${PORT}/ws?sessionId=<sessionId>`);
   console.log(`Sessions: /api/login (POST)`);
   console.log(`All endpoints require x-session-id header`);
 });
