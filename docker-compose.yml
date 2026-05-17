@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  netforge:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      # MikroTik router credentials - change these!
+      ROUTER_IP: ${ROUTER_IP:-192.168.1.1}
+      ROUTER_PORT: ${ROUTER_PORT:-22}
+      ROUTER_USER: ${ROUTER_USER:-admin}
+      ROUTER_PASS: ${ROUTER_PASS:-admin}
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - netforge-network
+
+networks:
+  netforge-network:
+    driver: bridge
