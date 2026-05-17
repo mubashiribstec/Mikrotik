@@ -377,21 +377,40 @@ const ALERT_THRESHOLDS = {
 };
 
 const AlertUtils = {
+  MAX_HISTORY: 50,
+  MAX_STORAGE_SIZE: 100000, // ~100KB limit
+
   loadHistory: () => {
     try {
       const stored = localStorage.getItem('netforge_alert_history');
       return stored ? JSON.parse(stored) : [];
-    } catch {
+    } catch (err) {
+      console.error('Failed to load alert history:', err);
       return [];
     }
   },
 
   saveHistory: (history) => {
     try {
-      const limited = history.slice(0, 100);
-      localStorage.setItem('netforge_alert_history', JSON.stringify(limited));
+      const limited = history.slice(0, AlertUtils.MAX_HISTORY);
+      const serialized = JSON.stringify(limited);
+
+      // Check size before saving
+      if (serialized.length > AlertUtils.MAX_STORAGE_SIZE) {
+        console.warn('Alert history too large, trimming');
+        limited.splice(0, Math.floor(limited.length / 2));
+        AlertUtils.saveHistory(limited);
+        return;
+      }
+
+      localStorage.setItem('netforge_alert_history', serialized);
     } catch (err) {
       console.error('Failed to save alert history:', err);
+      // If storage is full, clear and try again
+      if (err.name === 'QuotaExceededError') {
+        localStorage.removeItem('netforge_alert_history');
+        console.warn('Alert history cleared due to storage limit');
+      }
     }
   },
 
@@ -600,9 +619,27 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
     setLoading(true);
     try {
       const result = await API.login(host, port, username, password);
-      setSessionId(result.sessionId);
+      const sessionId = result.sessionId;
+
+      // Initialize WebSocket BEFORE changing page
+      API.initWebSocket(sessionId);
+
+      // Wait for WebSocket to be ready or timeout
+      await new Promise((resolve) => {
+        const checkReady = () => {
+          if (API.wsManager?.isConnected) {
+            resolve();
+          } else {
+            setTimeout(checkReady, 100);
+          }
+        };
+        // Timeout after 2 seconds, then continue with polling fallback
+        setTimeout(() => resolve(), 2000);
+        checkReady();
+      });
+
+      setSessionId(sessionId);
       setRouter({ host, port: parseInt(port), username });
-      API.initWebSocket(result.sessionId);
       setPage('Dashboard');
     } catch (err) {
       setError(err.message || 'Login failed');
@@ -646,40 +683,38 @@ const DashboardScreen = ({ sessionId }) => {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const alertCtx = React.useContext(AlertCtx);
-  const alertCache = React.useRef(new Map());
+  const alertStateCache = React.useRef(new Map()); // Track alert state, not just timing
 
   const checkThresholds = (data) => {
     if (!data) return;
 
-    if (data.cpu > ALERT_THRESHOLDS.cpu.critical) {
-      if (AlertUtils.shouldAlert(alertCache, 'cpu', 'critical')) {
-        alertCtx.addAlert('cpu', data.cpu, ALERT_THRESHOLDS.cpu.critical, 'critical');
-      }
-    } else if (data.cpu > ALERT_THRESHOLDS.cpu.warn) {
-      if (AlertUtils.shouldAlert(alertCache, 'cpu', 'warn')) {
-        alertCtx.addAlert('cpu', data.cpu, ALERT_THRESHOLDS.cpu.warn, 'warn');
-      }
-    }
+    const checkMetric = (metric, value, thresholds) => {
+      const stateKey = `${metric}-state`;
+      const prevLevel = alertStateCache.current.get(stateKey) || 'ok';
 
-    if (data.memory > ALERT_THRESHOLDS.memory.critical) {
-      if (AlertUtils.shouldAlert(alertCache, 'memory', 'critical')) {
-        alertCtx.addAlert('memory', data.memory, ALERT_THRESHOLDS.memory.critical, 'critical');
+      let currentLevel = 'ok';
+      if (value > thresholds.critical) {
+        currentLevel = 'critical';
+      } else if (value > thresholds.warn) {
+        currentLevel = 'warn';
       }
-    } else if (data.memory > ALERT_THRESHOLDS.memory.warn) {
-      if (AlertUtils.shouldAlert(alertCache, 'memory', 'warn')) {
-        alertCtx.addAlert('memory', data.memory, ALERT_THRESHOLDS.memory.warn, 'warn');
-      }
-    }
 
-    if (data.storage > ALERT_THRESHOLDS.storage.critical) {
-      if (AlertUtils.shouldAlert(alertCache, 'storage', 'critical')) {
-        alertCtx.addAlert('storage', data.storage, ALERT_THRESHOLDS.storage.critical, 'critical');
+      // Only alert on TRANSITION to warn/critical (not every poll)
+      if (currentLevel !== prevLevel && currentLevel !== 'ok') {
+        alertCtx.addAlert(
+          metric,
+          value,
+          currentLevel === 'critical' ? thresholds.critical : thresholds.warn,
+          currentLevel
+        );
       }
-    } else if (data.storage > ALERT_THRESHOLDS.storage.warn) {
-      if (AlertUtils.shouldAlert(alertCache, 'storage', 'warn')) {
-        alertCtx.addAlert('storage', data.storage, ALERT_THRESHOLDS.storage.warn, 'warn');
-      }
-    }
+
+      alertStateCache.current.set(stateKey, currentLevel);
+    };
+
+    checkMetric('cpu', data.cpu, ALERT_THRESHOLDS.cpu);
+    checkMetric('memory', data.memory, ALERT_THRESHOLDS.memory);
+    checkMetric('storage', data.storage, ALERT_THRESHOLDS.storage);
   };
 
   React.useEffect(() => {
@@ -692,27 +727,38 @@ const DashboardScreen = ({ sessionId }) => {
       checkThresholds(data);
     };
 
-    // Try WebSocket first
-    if (API.wsManager && API.wsManager.isConnected) {
+    let unsubscribe;
+    let interval;
+
+    // Check if WebSocket is available
+    const useWS = API.wsManager?.isConnected;
+
+    if (useWS) {
+      // Use WebSocket subscription
       API.subscribe('/api/system-stats', handleData);
-      return () => API.unsubscribe('/api/system-stats', handleData);
+      unsubscribe = () => API.unsubscribe('/api/system-stats', handleData);
+    } else {
+      // Fallback to REST polling
+      const fetchStats = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+          const data = await API.getSystemStats(sessionId);
+          handleData(data);
+        } catch (err) {
+          setError(err.message);
+          setLoading(false);
+        }
+      };
+
+      fetchStats();
+      interval = setInterval(fetchStats, 5000);
     }
 
-    // Fallback to polling
-    const fetchStats = async () => {
-      setLoading(true);
-      try {
-        const data = await API.getSystemStats(sessionId);
-        handleData(data);
-      } catch (err) {
-        setError(err.message);
-        setLoading(false);
-      }
+    return () => {
+      if (unsubscribe) unsubscribe();
+      if (interval) clearInterval(interval);
     };
-
-    fetchStats();
-    const interval = setInterval(fetchStats, 5000);
-    return () => clearInterval(interval);
   }, [sessionId]);
 
   if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
@@ -791,39 +837,62 @@ const WANScreen = ({ sessionId }) => {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const alertCtx = React.useContext(AlertCtx);
-  const alertCache = React.useRef(new Map());
+  const wanAlertState = React.useRef(new Map());
 
   const checkWanStatus = (data) => {
     if (!data) return;
     data.forEach(wan => {
-      if (wan.status === 'down') {
-        const key = `${wan.name}-down`;
-        if (!alertCache.current.has(key) || Date.now() - alertCache.current.get(key) > 30000) {
-          alertCache.current.set(key, Date.now());
-          alertCtx.addAlert('wan', 0, 0, 'critical');
-        }
+      const key = `wan-${wan.name}`;
+      const prevState = wanAlertState.current.get(key) || 'up';
+
+      // Only alert on transition from up to down
+      if (wan.status === 'down' && prevState === 'up') {
+        alertCtx.addAlert('wan', 0, 0, 'critical');
       }
+
+      wanAlertState.current.set(key, wan.status);
     });
   };
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchWans = async () => {
-      setLoading(true);
+
+    const handleData = (data) => {
+      setWans(data);
+      setLoading(false);
       setError(null);
-      try {
-        const data = await API.getWanStatus(sessionId);
-        setWans(data);
-        checkWanStatus(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      checkWanStatus(data);
     };
-    fetchWans();
-    const interval = setInterval(fetchWans, 5000);
-    return () => clearInterval(interval);
+
+    let unsubscribe;
+    let interval;
+
+    const useWS = API.wsManager?.isConnected;
+
+    if (useWS) {
+      API.subscribe('/api/wan-status', handleData);
+      unsubscribe = () => API.unsubscribe('/api/wan-status', handleData);
+    } else {
+      const fetchWans = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+          const data = await API.getWanStatus(sessionId);
+          handleData(data);
+        } catch (err) {
+          setError(err.message);
+          setLoading(false);
+        }
+      };
+
+      fetchWans();
+      interval = setInterval(fetchWans, 5000);
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+      if (interval) clearInterval(interval);
+    };
   }, [sessionId]);
 
   if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
@@ -1204,7 +1273,6 @@ const ScriptsScreen = ({ sessionId }) => {
 
   const handleExecute = async (scriptName) => {
     try {
-      setExecuting(null);
       setExecOutput('Starting...\n');
       setExecStatus('running');
       setExecElapsed(0);
@@ -1214,6 +1282,7 @@ const ScriptsScreen = ({ sessionId }) => {
     } catch (err) {
       setExecOutput(`Error: ${err.message}`);
       setExecStatus('error');
+      setExecuting(null);
     }
   };
 
@@ -1418,6 +1487,12 @@ const App = () => {
   ];
 
   const handleLogout = async () => {
+    // Close WebSocket connection first
+    if (API.wsManager) {
+      API.wsManager.close();
+      API.wsManager = null;
+    }
+
     try {
       if (sessionId) {
         await API.logout(sessionId);
@@ -1425,6 +1500,7 @@ const App = () => {
     } catch (err) {
       console.error('Logout error:', err);
     }
+
     setSessionId(null);
     setRouter(null);
     setPage('Login');

@@ -5,10 +5,30 @@ const path = require('path');
 const fs = require('fs');
 const WebSocket = require('ws');
 const http = require('http');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Rate limiting for login (prevent brute force)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per window
+  message: 'Too many login attempts, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method !== 'POST', // Only rate limit POST requests
+});
+
+// Rate limiting for all API calls
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute
+  message: 'Too many requests, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ========== SESSION & CONNECTION POOL ==========
 const sessions = new Map();
@@ -130,7 +150,7 @@ function parseRouterOSOutput(output) {
 
 // ========== AUTH ENDPOINTS ==========
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', loginLimiter, async (req, res) => {
   try {
     const { host, port = 22, username, password } = req.body;
 
@@ -213,6 +233,8 @@ app.post('/api/logout', (req, res) => {
 });
 
 // ========== PROTECTED API ENDPOINTS ==========
+
+app.use('/api/', apiLimiter);
 
 app.get('/api/system-stats', async (req, res) => {
   try {
@@ -441,13 +463,28 @@ app.get('/api/backups', async (req, res) => {
 
 const scriptExecutions = new Map();
 
+// Whitelist of allowed scripts (prevent command injection)
+const ALLOWED_SCRIPTS = new Set([
+  'system_info',
+  'daily_backup',
+  'health_check',
+  'cleanup_logs'
+]);
+
 app.post('/api/scripts/execute', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { scriptName } = req.body;
-    if (!scriptName) return res.status(400).json({ error: 'Script name required' });
+    if (!scriptName || typeof scriptName !== 'string') {
+      return res.status(400).json({ error: 'Invalid script name format' });
+    }
+
+    // Validate script is in whitelist
+    if (!ALLOWED_SCRIPTS.has(scriptName)) {
+      return res.status(403).json({ error: 'Script not allowed' });
+    }
 
     const executionId = Math.random().toString(36).substring(7);
     const execution = {
@@ -543,7 +580,7 @@ app.get('/api/health', (req, res) => {
 app.use(express.static(path.join(__dirname)));
 
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'netforge-3b.html'));
+  res.sendFile(path.join(__dirname, 'netforge-api-integrated.html'));
 });
 
 // ========== ERROR HANDLING ==========
@@ -557,6 +594,8 @@ app.use((err, req, res, next) => {
 
 const wsClients = new Map(); // sessionId -> Set of WebSocket connections
 const lastDataCache = new Map(); // endpoint -> lastData for delta detection
+const MAX_CACHE_SIZE = 1000;
+let cacheSize = 0;
 
 class WebSocketManager {
   constructor(wss) {
@@ -596,19 +635,31 @@ class WebSocketManager {
 
   async broadcast(sessionId, endpoint, data) {
     const clients = wsClients.get(sessionId);
-    if (!clients) return;
+    if (!clients || !data) return;
 
     // Delta detection: only send if data changed
     const cacheKey = `${sessionId}:${endpoint}`;
-    const lastData = lastDataCache.get(cacheKey);
+    const cached = lastDataCache.get(cacheKey);
     const currentDataStr = JSON.stringify(data);
-    const lastDataStr = lastData ? JSON.stringify(lastData) : null;
 
-    if (lastDataStr === currentDataStr) {
-      return; // No change
+    // Compare with cached string (not object, to avoid reference issues)
+    if (cached && cached.str === currentDataStr) {
+      return; // No change, skip broadcast
     }
 
-    lastDataCache.set(cacheKey, data);
+    // Store stringified version + deep clone to prevent reference mutations
+    lastDataCache.set(cacheKey, {
+      str: currentDataStr,
+      data: JSON.parse(currentDataStr)
+    });
+
+    // Implement cache size eviction (FIFO)
+    cacheSize++;
+    if (cacheSize > MAX_CACHE_SIZE) {
+      const firstKey = lastDataCache.keys().next().value;
+      lastDataCache.delete(firstKey);
+      cacheSize--;
+    }
 
     const message = JSON.stringify({
       type: endpoint,
