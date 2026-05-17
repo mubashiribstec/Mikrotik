@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NetForge — MikroTik Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #070c18; overflow: hidden; font-family: Inter, system-ui, sans-serif; }
+    #root { width: 100%; height: 100%; }
+    *::-webkit-scrollbar { width: 0; height: 0; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+    @keyframes shimmer { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+  </style>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+
+// ========== CONTEXT ==========
+const NavCtx = React.createContext({ page: 'Login', setPage: () => {} });
+const AuthCtx = React.createContext({
+  sessionId: null,
+  setSessionId: () => {},
+  router: null,
+  setRouter: () => {},
+  logout: () => {},
+  apiBaseUrl: 'http://localhost:3001'
+});
+
+// ========== DESIGN TOKENS ==========
+const A = {
+  bg: '#0B1220',
+  bgLayered: 'radial-gradient(120% 80% at 0% 0%, rgba(56,118,255,0.18), transparent 55%), radial-gradient(80% 60% at 100% 100%, rgba(99,102,241,0.10), transparent 60%), #0B1220',
+  surface: 'rgba(255,255,255,0.035)',
+  surfaceStrong: 'rgba(255,255,255,0.06)',
+  border: 'rgba(255,255,255,0.07)',
+  borderStrong: 'rgba(255,255,255,0.12)',
+  text: '#E6EAF2',
+  textDim: 'rgba(230,234,242,0.62)',
+  textFaint: 'rgba(230,234,242,0.42)',
+  accent: '#3B82F6',
+  accentSoft: 'rgba(59,130,246,0.16)',
+  good: '#22C55E',
+  warn: '#F59E0B',
+  bad: '#EF4444',
+  mono: '"JetBrains Mono", ui-monospace, monospace',
+  ui: 'Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
+};
+
+// ========== API HELPER ==========
+const API = {
+  baseUrl: 'http://localhost:3001',
+
+  async call(sessionId, endpoint, options = {}) {
+    if (!sessionId && endpoint !== '/api/login') {
+      throw new Error('No session. Please login first.');
+    }
+
+    const url = `${this.baseUrl}${endpoint}`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+
+    if (sessionId) {
+      headers['x-session-id'] = sessionId;
+    }
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers,
+      });
+
+      if (response.status === 401) {
+        throw new Error('Session expired. Please login again.');
+      }
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(error.error || response.statusText);
+      }
+
+      return await response.json();
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  async login(host, port, username, password) {
+    return this.call(null, '/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ host, port: parseInt(port) || 22, username, password }),
+    });
+  },
+
+  async logout(sessionId) {
+    return this.call(sessionId, '/api/logout', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId }),
+    });
+  },
+
+  async getSystemStats(sessionId) {
+    return this.call(sessionId, '/api/system-stats');
+  },
+
+  async getInterfaces(sessionId) {
+    return this.call(sessionId, '/api/interfaces');
+  },
+
+  async getWanStatus(sessionId) {
+    return this.call(sessionId, '/api/wan-status');
+  },
+
+  async getFirewall(sessionId) {
+    return this.call(sessionId, '/api/firewall');
+  },
+
+  async getBandwidth(sessionId) {
+    return this.call(sessionId, '/api/bandwidth');
+  },
+
+  async getDhcpClients(sessionId) {
+    return this.call(sessionId, '/api/dhcp-clients');
+  },
+
+  async getWireless(sessionId) {
+    return this.call(sessionId, '/api/wireless');
+  },
+
+  async getVpn(sessionId) {
+    return this.call(sessionId, '/api/vpn');
+  },
+
+  async getLogs(sessionId) {
+    return this.call(sessionId, '/api/logs');
+  },
+
+  async getScripts(sessionId) {
+    return this.call(sessionId, '/api/scripts');
+  },
+
+  async getBackups(sessionId) {
+    return this.call(sessionId, '/api/backups');
+  },
+};
+
+// ========== ATOMS ==========
+
+const ABase = ({ children }) => (
+  <div style={{ width: '100%', height: '100%', background: A.bg, color: A.text, fontFamily: A.ui }}>
+    {children}
+  </div>
+);
+
+const APill = ({ children, tone = 'dim' }) => {
+  const tones = {
+    dim: { bg: 'rgba(255,255,255,0.05)', fg: A.textDim },
+    good: { bg: 'rgba(34,197,94,0.12)', fg: '#86EFAC' },
+    warn: { bg: 'rgba(245,158,11,0.12)', fg: '#FCD34D' },
+    bad: { bg: 'rgba(239,68,68,0.12)', fg: '#FCA5A5' },
+  }[tone];
+  return <span style={{ display: 'inline-flex', gap: 6, padding: '3px 8px', borderRadius: 999, background: tones.bg, fontSize: 11, color: tones.fg, fontWeight: 500 }}>{children}</span>;
+};
+
+const ACard = ({ children, pad = 12 }) => (
+  <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, padding: pad, animation: 'slideIn 0.4s ease-out' }}>
+    {children}
+  </div>
+);
+
+const ABtn = ({ children, variant = 'primary', onClick, disabled = false }) => {
+  const styles = {
+    primary: { bg: A.accent, fg: '#fff', border: 'none' },
+    secondary: { bg: A.surface, fg: A.text, border: `1px solid ${A.border}` },
+    ghost: { bg: 'transparent', fg: A.textDim, border: 'none' },
+  }[variant];
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      padding: '8px 14px', borderRadius: 8, fontFamily: A.ui, fontSize: 12, fontWeight: 500,
+      background: styles.bg, color: styles.fg, border: styles.border, cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? 0.5 : 1, transition: 'all 0.2s'
+    }} onMouseEnter={e => !disabled && (e.target.style.opacity = '0.85')} onMouseLeave={e => !disabled && (e.target.style.opacity = '1')}>
+      {children}
+    </button>
+  );
+};
+
+const AInput = ({ label, type = 'text', placeholder, value, onChange, disabled = false }) => (
+  <div style={{ marginBottom: 12 }}>
+    {label && <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6, color: A.text }}>{label}</label>}
+    <input type={type} placeholder={placeholder} value={value} onChange={onChange} disabled={disabled}
+      style={{
+        width: '100%', padding: '8px 12px', background: A.surface, color: A.text, border: `1px solid ${A.border}`,
+        borderRadius: 6, fontFamily: A.ui, fontSize: 12, transition: 'border 0.2s',
+        outlineColor: A.accent
+      }} onFocus={e => e.target.style.borderColor = A.accent} onBlur={e => e.target.style.borderColor = A.border} />
+  </div>
+);
+
+const AAlert = ({ children, tone = 'error' }) => {
+  const tones = {
+    error: { bg: 'rgba(239,68,68,0.1)', fg: '#FCA5A5', border: 'rgba(239,68,68,0.3)' },
+    success: { bg: 'rgba(34,197,94,0.1)', fg: '#86EFAC', border: 'rgba(34,197,94,0.3)' },
+  }[tone];
+  return (
+    <div style={{
+      background: tones.bg, border: `1px solid ${tones.border}`, borderRadius: 8, padding: 12,
+      color: tones.fg, fontSize: 12, marginBottom: 12, animation: 'slideIn 0.3s ease-out'
+    }}>
+      {children}
+    </div>
+  );
+};
+
+const ASkeleton = () => (
+  <div style={{ background: A.surface, borderRadius: 12, padding: 12, height: 80, animation: 'shimmer 2s infinite' }} />
+);
+
+// ========== SCREENS ==========
+
+const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
+  const [host, setHost] = React.useState('192.168.1.1');
+  const [port, setPort] = React.useState('22');
+  const [username, setUsername] = React.useState('admin');
+  const [password, setPassword] = React.useState('');
+  const [error, setError] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+
+  const handleLogin = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const result = await API.login(host, port, username, password);
+      setSessionId(result.sessionId);
+      setRouter({ host, port: parseInt(port), username });
+      setPage('Dashboard');
+    } catch (err) {
+      setError(err.message || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: A.bgLayered, padding: 20
+    }}>
+      <ACard pad={32} style={{ width: '100%', maxWidth: 380 }}>
+        <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: A.text }}>NetForge</div>
+        <div style={{ fontSize: 12, color: A.textDim, marginBottom: 20 }}>Connect to your MikroTik router</div>
+
+        {error && <AAlert tone="error">{error}</AAlert>}
+
+        <AInput label="Host" placeholder="192.168.1.1" value={host} onChange={e => setHost(e.target.value)} disabled={loading} />
+        <AInput label="Port" type="number" placeholder="22" value={port} onChange={e => setPort(e.target.value)} disabled={loading} />
+        <AInput label="Username" placeholder="admin" value={username} onChange={e => setUsername(e.target.value)} disabled={loading} />
+        <AInput label="Password" type="password" placeholder="password" value={password} onChange={e => setPassword(e.target.value)} disabled={loading} />
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ABtn variant="primary" onClick={handleLogin} disabled={loading} style={{ flex: 1 }}>
+            {loading ? 'Connecting...' : 'Connect'}
+          </ABtn>
+        </div>
+
+        <div style={{ fontSize: 10, color: A.textFaint, marginTop: 16, textAlign: 'center' }}>
+          Default credentials often admin / password
+        </div>
+      </ACard>
+    </div>
+  );
+};
+
+const DashboardScreen = ({ sessionId }) => {
+  const [stats, setStats] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchStats = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getSystemStats(sessionId);
+        setStats(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchStats();
+    const interval = setInterval(fetchStats, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  const items = [
+    { label: 'CPU', value: stats?.cpu || 0, unit: '%' },
+    { label: 'Memory', value: stats?.memory || 0, unit: '%' },
+    { label: 'Storage', value: stats?.storage || 0, unit: '%' },
+    { label: 'Uptime', value: stats?.uptime || 'N/A', unit: '' },
+  ];
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Dashboard</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
+        {items.map(item => (
+          <ACard key={item.label} pad={16}>
+            <div style={{ fontSize: 11, color: A.textDim, marginBottom: 8 }}>{item.label}</div>
+            <div style={{ fontSize: 24, fontWeight: 600, color: A.accent }}>{item.value}{item.unit}</div>
+          </ACard>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const InterfacesScreen = ({ sessionId }) => {
+  const [interfaces, setInterfaces] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchInterfaces = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getInterfaces(sessionId);
+        setInterfaces(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchInterfaces();
+    const interval = setInterval(fetchInterfaces, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Interfaces</h2>
+      {interfaces.map((iface, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{iface.name}</div>
+            <APill tone={iface.status === 'up' ? 'good' : 'bad'}>{iface.status}</APill>
+          </div>
+          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ width: `${iface.util}%`, height: '100%', background: A.accent, transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ fontSize: 10, color: A.textFaint, marginTop: 6 }}>Utilization: {iface.util}%</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const WANScreen = ({ sessionId }) => {
+  const [wans, setWans] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchWans = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getWanStatus(sessionId);
+        setWans(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchWans();
+    const interval = setInterval(fetchWans, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>WAN Links</h2>
+      {wans.map((wan, i) => (
+        <ACard key={i} pad={16} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{wan.name}</div>
+            <APill tone={wan.status === 'up' ? 'good' : 'bad'}>{wan.status}</APill>
+          </div>
+          <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 4 }}>IP: {wan.ip}</div>
+          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ width: `${wan.util}%`, height: '100%', background: A.accent }} />
+          </div>
+          <div style={{ fontSize: 10, color: A.textFaint, marginTop: 6 }}>Usage: {wan.util}%</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const FirewallScreen = ({ sessionId }) => {
+  const [firewall, setFirewall] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchFirewall = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getFirewall(sessionId);
+        setFirewall(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchFirewall();
+    const interval = setInterval(fetchFirewall, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Firewall</h2>
+      <ACard pad={16} style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: A.textDim, marginBottom: 6 }}>Active Connections</div>
+        <div style={{ fontSize: 20, fontWeight: 600, color: A.accent }}>{firewall?.activeConnections || 0}</div>
+      </ACard>
+      <ACard pad={16} style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: A.textDim, marginBottom: 6 }}>Dropped Packets</div>
+        <div style={{ fontSize: 20, fontWeight: 600, color: A.warn }}>{firewall?.droppedPackets || 0}</div>
+      </ACard>
+      <h3 style={{ color: A.text, marginBottom: 8, fontSize: 12, fontWeight: 600 }}>Blocked Domains</h3>
+      {firewall?.blocked?.map((domain, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: A.text }}>{domain}</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const BandwidthScreen = ({ sessionId }) => {
+  const [bandwidth, setBandwidth] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchBandwidth = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getBandwidth(sessionId);
+        setBandwidth(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchBandwidth();
+    const interval = setInterval(fetchBandwidth, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Bandwidth Queues</h2>
+      {bandwidth.map((queue, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{queue.name}</div>
+          </div>
+          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 4 }}>Target: {queue.target}</div>
+          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 8 }}>Down: {queue.down} / Up: {queue.up}</div>
+          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ width: `${queue.util}%`, height: '100%', background: A.accent }} />
+          </div>
+          <div style={{ fontSize: 10, color: A.textFaint, marginTop: 6 }}>Usage: {queue.util}%</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const ClientsScreen = ({ sessionId }) => {
+  const [clients, setClients] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchClients = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getDhcpClients(sessionId);
+        setClients(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchClients();
+    const interval = setInterval(fetchClients, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>DHCP Clients ({clients.length})</h2>
+      {clients.map((client, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{client.vendor}</div>
+            <div style={{ fontSize: 10, color: A.textFaint }}>{client.lease}</div>
+          </div>
+          <div style={{ fontSize: 10, color: A.textDim }}>IP: {client.ip}</div>
+          <div style={{ fontSize: 9, color: A.textFaint, fontFamily: A.mono }}>MAC: {client.mac}</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const HotspotScreen = ({ sessionId }) => (
+  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <ACard pad={32} style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 13, color: A.text }}>Hotspot</div>
+      <div style={{ fontSize: 12, color: A.textFaint, marginTop: 8 }}>Coming soon</div>
+    </ACard>
+  </div>
+);
+
+const WirelessScreen = ({ sessionId }) => {
+  const [wireless, setWireless] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchWireless = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getWireless(sessionId);
+        setWireless(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchWireless();
+    const interval = setInterval(fetchWireless, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Wireless</h2>
+      {wireless.map((ssid, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{ssid.name}</div>
+            <div style={{ fontSize: 11, color: A.textDim }}>{ssid.signal}%</div>
+          </div>
+          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
+            <div style={{ width: `${ssid.signal}%`, height: '100%', background: A.good }} />
+          </div>
+          <div style={{ fontSize: 10, color: A.textFaint }}>Frequency: {ssid.freq} • Clients: {ssid.clients}</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const VpnScreen = ({ sessionId }) => {
+  const [vpn, setVpn] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchVpn = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getVpn(sessionId);
+        setVpn(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchVpn();
+    const interval = setInterval(fetchVpn, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>VPN Protocols</h2>
+      {vpn.map((protocol, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{protocol.name}</div>
+            <APill tone={protocol.enabled ? 'good' : 'dim'}>{protocol.enabled ? 'Enabled' : 'Disabled'}</APill>
+          </div>
+          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 4 }}>Port: {protocol.port}</div>
+          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 4 }}>Peers: {protocol.peers}</div>
+          <div style={{ fontSize: 10, color: A.textFaint }}>Traffic: {protocol.traffic} MB</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const LogsScreen = ({ sessionId }) => {
+  const [logs, setLogs] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchLogs = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getLogs(sessionId);
+        setLogs(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>System Logs</h2>
+      {logs.map((log, i) => (
+        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
+            <div style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{log.time}</div>
+            <APill tone={log.topic === 'error' ? 'bad' : log.topic === 'firewall' ? 'warn' : 'good'}>{log.topic}</APill>
+          </div>
+          <div style={{ fontSize: 12, color: A.text, marginBottom: 4 }}>{log.msg}</div>
+          <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>Source: {log.source}</div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const ScriptsScreen = ({ sessionId }) => {
+  const [scripts, setScripts] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchScripts = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getScripts(sessionId);
+        setScripts(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchScripts();
+    const interval = setInterval(fetchScripts, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Scheduled Scripts</h2>
+      {scripts.map(script => (
+        <ACard key={script.name} pad={12} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{script.name}</div>
+              <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>{script.schedule}</div>
+            </div>
+            <APill tone={script.status === 'success' ? 'good' : 'bad'}>{script.status}</APill>
+          </div>
+          <div style={{ fontSize: 10, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
+            Last run: {script.lastRun}
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const BackupScreen = ({ sessionId }) => {
+  const [backups, setBackups] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const fetchBackups = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await API.getBackups(sessionId);
+        setBackups(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchBackups();
+    const interval = setInterval(fetchBackups, 5000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Backups</h2>
+      {backups.map(backup => (
+        <ACard key={backup.filename} pad={12} style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 500, fontFamily: A.mono, color: A.text }}>{backup.filename}</div>
+            </div>
+            <APill tone="good">{backup.trigger}</APill>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: A.textDim }}>
+            <span>{backup.size}</span>
+            <span>{backup.timestamp}</span>
+          </div>
+        </ACard>
+      ))}
+    </div>
+  );
+};
+
+const SettingsScreen = ({ sessionId, router }) => (
+  <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
+    <h2 style={{ color: A.text, marginBottom: 24 }}>Settings</h2>
+    <div style={{ marginBottom: 24 }}>
+      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Connection</h3>
+      <ACard pad={16}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+          <div><span style={{ color: A.textFaint }}>Host:</span> <span style={{ color: A.text, float: 'right' }}>{router?.host || 'N/A'}</span></div>
+          <div><span style={{ color: A.textFaint }}>Port:</span> <span style={{ color: A.text, float: 'right' }}>{router?.port || 'N/A'}</span></div>
+          <div><span style={{ color: A.textFaint }}>Username:</span> <span style={{ color: A.text, float: 'right' }}>{router?.username || 'N/A'}</span></div>
+        </div>
+      </ACard>
+    </div>
+    <div>
+      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>System</h3>
+      <ACard pad={16}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+          <div><span style={{ color: A.textFaint }}>Session:</span> <span style={{ color: A.text, float: 'right', fontFamily: A.mono }}>{sessionId?.substring(0, 8)}...</span></div>
+          <div><span style={{ color: A.textFaint }}>API:</span> <span style={{ color: A.text, float: 'right' }}>Connected</span></div>
+        </div>
+      </ACard>
+    </div>
+  </div>
+);
+
+// ========== MAIN APP ==========
+
+const App = () => {
+  const [page, setPage] = React.useState('Login');
+  const [sessionId, setSessionId] = React.useState(null);
+  const [router, setRouter] = React.useState(null);
+
+  const navItems = [
+    { name: 'Dashboard', icon: '📊' },
+    { name: 'Interfaces', icon: '🔗' },
+    { name: 'WAN', icon: '🌐' },
+    { name: 'Firewall', icon: '🛡️' },
+    { name: 'Bandwidth', icon: '📈' },
+    { name: 'Clients', icon: '👥' },
+    { name: 'Hotspot', icon: '📡' },
+    { name: 'Wireless', icon: '📶' },
+    { name: 'VPN', icon: '🔐' },
+    { name: 'Logs', icon: '📋' },
+    { name: 'Scripts', icon: '⚙️' },
+    { name: 'Backup', icon: '💾' },
+    { name: 'Settings', icon: '⚡' },
+  ];
+
+  const handleLogout = async () => {
+    try {
+      if (sessionId) {
+        await API.logout(sessionId);
+      }
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+    setSessionId(null);
+    setRouter(null);
+    setPage('Login');
+  };
+
+  const renderScreen = () => {
+    if (!sessionId && page !== 'Login') {
+      setPage('Login');
+      return null;
+    }
+
+    switch (page) {
+      case 'Login': return <LoginScreen setPage={setPage} setSessionId={setSessionId} setRouter={setRouter} />;
+      case 'Dashboard': return <DashboardScreen sessionId={sessionId} />;
+      case 'Interfaces': return <InterfacesScreen sessionId={sessionId} />;
+      case 'WAN': return <WANScreen sessionId={sessionId} />;
+      case 'Firewall': return <FirewallScreen sessionId={sessionId} />;
+      case 'Bandwidth': return <BandwidthScreen sessionId={sessionId} />;
+      case 'Clients': return <ClientsScreen sessionId={sessionId} />;
+      case 'Hotspot': return <HotspotScreen sessionId={sessionId} />;
+      case 'Wireless': return <WirelessScreen sessionId={sessionId} />;
+      case 'VPN': return <VpnScreen sessionId={sessionId} />;
+      case 'Logs': return <LogsScreen sessionId={sessionId} />;
+      case 'Scripts': return <ScriptsScreen sessionId={sessionId} />;
+      case 'Backup': return <BackupScreen sessionId={sessionId} />;
+      case 'Settings': return <SettingsScreen sessionId={sessionId} router={router} />;
+      default: return null;
+    }
+  };
+
+  if (page === 'Login') {
+    return renderScreen();
+  }
+
+  return (
+    <div style={{ width: '100%', height: '100%', background: A.bg, color: A.text, display: 'flex', flexDirection: 'column', fontFamily: A.ui, fontSize: 13 }}>
+      {/* Title Bar */}
+      <div style={{ height: 32, display: 'flex', alignItems: 'center', borderBottom: `1px solid ${A.border}`, padding: '0 12px', background: 'rgba(7,11,20,0.5)' }}>
+        <div style={{ fontSize: 12, color: A.textDim }}>NetForge · {page}</div>
+        <div style={{ flex: 1 }} />
+        {router && <span style={{ fontSize: 11, color: A.textFaint }}>@ {router.host}:{router.port}</span>}
+      </div>
+
+      {/* Main Layout */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {/* Sidebar */}
+        <div style={{ width: 180, borderRight: `1px solid ${A.border}`, padding: 8, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {navItems.map(item => (
+            <button key={item.name} onClick={() => setPage(item.name)} style={{
+              flex: '0 0 auto', padding: 10, marginBottom: 4, border: 'none', background: page === item.name ? A.accent : 'transparent',
+              color: page === item.name ? '#fff' : A.textDim, cursor: 'pointer', borderRadius: 6, fontFamily: A.ui, fontSize: 12,
+              transition: 'all 0.2s', fontWeight: page === item.name ? 500 : 400
+            }}>
+              <span style={{ marginRight: 6 }}>{item.icon}</span>
+              {item.name}
+            </button>
+          ))}
+          <div style={{ flex: 1 }} />
+          <button onClick={handleLogout} style={{
+            width: '100%', padding: 10, border: 'none', background: 'transparent', color: A.textDim,
+            cursor: 'pointer', borderRadius: 6, fontFamily: A.ui, fontSize: 12, borderTop: `1px solid ${A.border}`,
+            transition: 'color 0.2s'
+          }} onMouseEnter={e => e.target.style.color = A.text} onMouseLeave={e => e.target.style.color = A.textDim}>
+            🚪 Logout
+          </button>
+        </div>
+
+        {/* Content */}
+        {renderScreen()}
+      </div>
+    </div>
+  );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+  </script>
+</body>
+</html>
