@@ -435,6 +435,80 @@ app.get('/api/backups', async (req, res) => {
   }
 });
 
+// ========== SCRIPT EXECUTION ==========
+
+const scriptExecutions = new Map();
+
+app.post('/api/scripts/execute', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { scriptName } = req.body;
+    if (!scriptName) return res.status(400).json({ error: 'Script name required' });
+
+    const executionId = Math.random().toString(36).substring(7);
+    const execution = {
+      executionId,
+      scriptName,
+      status: 'running',
+      output: '',
+      exitCode: null,
+      startedAt: Date.now(),
+      sessionId
+    };
+
+    scriptExecutions.set(executionId, execution);
+
+    // Execute in background
+    (async () => {
+      try {
+        const conn = getConnection(sessionId);
+        const command = `/system script run name="${scriptName}"`;
+        const output = await conn.execute(command);
+        execution.output = output;
+        execution.status = 'done';
+        execution.exitCode = 0;
+      } catch (err) {
+        execution.output = `Error: ${err.message}`;
+        execution.status = 'error';
+        execution.exitCode = 1;
+      }
+    })();
+
+    res.json({ executionId, status: 'queued' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/scripts/:executionId/output', (req, res) => {
+  try {
+    const { executionId } = req.params;
+    const execution = scriptExecutions.get(executionId);
+
+    if (!execution) {
+      return res.status(404).json({ error: 'Execution not found' });
+    }
+
+    const elapsed = Date.now() - execution.startedAt;
+    res.json({
+      executionId,
+      status: execution.status,
+      output: execution.output,
+      exitCode: execution.exitCode,
+      elapsed
+    });
+
+    // Clean up old executions (>10 min)
+    if (elapsed > 600000) {
+      scriptExecutions.delete(executionId);
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== HELPER ENDPOINTS ==========
 
 app.get('/api/traffic', (req, res) => {

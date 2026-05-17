@@ -162,6 +162,26 @@ const API = {
   async getBackups(sessionId) {
     return this.call(sessionId, '/api/backups');
   },
+
+  async executeScript(sessionId, scriptName) {
+    return this.call(sessionId, '/api/scripts/execute', {
+      method: 'POST',
+      body: JSON.stringify({ scriptName }),
+    });
+  },
+
+  async getScriptOutput(executionId) {
+    const url = `${this.baseUrl}/api/scripts/${executionId}/output`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(response.statusText);
+      }
+      return await response.json();
+    } catch (err) {
+      throw err;
+    }
+  },
 };
 
 // ========== ATOMS ==========
@@ -389,6 +409,68 @@ const AlertHistoryPanel = ({ history, onClose, onClear }) => (
         </button>
       </div>
     )}
+  </div>
+);
+
+// ========== SCRIPT EXECUTION UI ==========
+
+const SCRIPT_TEMPLATES = {
+  system_info: {
+    name: 'system_info',
+    label: 'System Information',
+    description: 'Display detailed system information',
+    schedule: 'manual',
+    icon: '📊'
+  },
+  daily_backup: {
+    name: 'daily_backup',
+    label: 'Daily Backup',
+    description: 'Create backup at 2 AM daily',
+    schedule: '0 2 * * *',
+    icon: '💾'
+  },
+  health_check: {
+    name: 'health_check',
+    label: 'Health Check',
+    description: 'Monitor CPU, memory, disk usage',
+    schedule: '*/5 * * * *',
+    icon: '❤️'
+  },
+  cleanup_logs: {
+    name: 'cleanup_logs',
+    label: 'Cleanup Logs',
+    description: 'Remove logs older than 30 days',
+    schedule: '0 3 * * 0',
+    icon: '🗑️'
+  }
+};
+
+const TerminalOutput = ({ output, status, exitCode, elapsed, isLoading }) => (
+  <div style={{
+    background: '#000000',
+    border: `1px solid ${A.border}`,
+    borderRadius: 8,
+    padding: 16,
+    fontFamily: A.mono,
+    fontSize: 11,
+    color: '#00FF00',
+    height: 300,
+    overflow: 'auto',
+    marginBottom: 12,
+    animation: 'fadeIn 0.3s ease-out',
+    lineHeight: 1.5,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word'
+  }}>
+    {output && output.split('\n').map((line, i) => (
+      <div key={i} style={{ opacity: line ? 1 : 0.5 }}>
+        <span style={{ color: '#666666', marginRight: 8 }}>{String(i + 1).padStart(3, ' ')}</span>
+        {line}
+      </div>
+    ))}
+    {isLoading && <div style={{ marginTop: 8, opacity: 0.7, animation: 'pulse 1.5s infinite' }}>▌</div>}
+    {status === 'done' && <div style={{ marginTop: 12, color: '#00FF00', fontWeight: 600 }}>✓ Exit code: {exitCode}</div>}
+    {status === 'error' && <div style={{ marginTop: 12, color: '#FF0000', fontWeight: 600 }}>✗ Error (code: {exitCode})</div>}
   </div>
 );
 
@@ -932,6 +1014,24 @@ const ScriptsScreen = ({ sessionId }) => {
   const [scripts, setScripts] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
+  const [executing, setExecuting] = React.useState(null);
+  const [execOutput, setExecOutput] = React.useState(null);
+  const [execStatus, setExecStatus] = React.useState('idle');
+  const [execElapsed, setExecElapsed] = React.useState(0);
+
+  // Combine API scripts with templates
+  const allScripts = React.useMemo(() => {
+    const templates = Object.values(SCRIPT_TEMPLATES).map(t => ({
+      name: t.name,
+      schedule: t.schedule,
+      lastRun: 'Never',
+      status: 'template',
+      label: t.label,
+      description: t.description,
+      icon: t.icon
+    }));
+    return [...templates, ...scripts];
+  }, [scripts]);
 
   React.useEffect(() => {
     if (!sessionId) return;
@@ -948,30 +1048,113 @@ const ScriptsScreen = ({ sessionId }) => {
       }
     };
     fetchScripts();
-    const interval = setInterval(fetchScripts, 5000);
-    return () => clearInterval(interval);
   }, [sessionId]);
+
+  // Poll execution output
+  React.useEffect(() => {
+    if (!executing || execStatus === 'done' || execStatus === 'error') return;
+
+    const poll = async () => {
+      try {
+        const result = await API.getScriptOutput(executing);
+        setExecOutput(result.output);
+        setExecStatus(result.status);
+        setExecElapsed(result.elapsed);
+
+        if (result.status !== 'running') {
+          // Execution complete
+          setTimeout(() => {
+            // Keep showing for 5 seconds
+            setTimeout(() => {
+              setExecuting(null);
+              setExecStatus('idle');
+            }, 5000);
+          }, 0);
+        }
+      } catch (err) {
+        console.error('Poll error:', err);
+      }
+    };
+
+    const interval = setInterval(poll, 500);
+    return () => clearInterval(interval);
+  }, [executing, execStatus]);
+
+  const handleExecute = async (scriptName) => {
+    try {
+      setExecuting(null);
+      setExecOutput('Starting...\n');
+      setExecStatus('running');
+      setExecElapsed(0);
+
+      const result = await API.executeScript(sessionId, scriptName);
+      setExecuting(result.executionId);
+    } catch (err) {
+      setExecOutput(`Error: ${err.message}`);
+      setExecStatus('error');
+    }
+  };
 
   if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
   if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Scheduled Scripts</h2>
-      {scripts.map(script => (
-        <ACard key={script.name} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{script.name}</div>
-              <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>{script.schedule}</div>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>Scripts & Tasks</h2>
+
+      {executing && (
+        <div style={{ marginBottom: 16 }}>
+          <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 8 }}>Execution Output</h3>
+          <TerminalOutput
+            output={execOutput}
+            status={execStatus}
+            exitCode={execStatus === 'done' ? 0 : execStatus === 'error' ? 1 : null}
+            elapsed={execElapsed}
+            isLoading={execStatus === 'running'}
+          />
+          {execStatus !== 'running' && (
+            <div style={{ fontSize: 10, color: A.textDim, marginBottom: 16 }}>
+              Completed in {(execElapsed / 1000).toFixed(2)}s
             </div>
-            <APill tone={script.status === 'success' ? 'good' : 'bad'}>{script.status}</APill>
-          </div>
-          <div style={{ fontSize: 10, color: A.textDim, paddingTop: 8, borderTop: `1px solid ${A.border}` }}>
-            Last run: {script.lastRun}
-          </div>
-        </ACard>
-      ))}
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+        {allScripts.map(script => (
+          <ACard key={script.name} pad={12}>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                {script.icon && <span style={{ fontSize: 16 }}>{script.icon}</span>}
+                <div style={{ fontSize: 12, fontWeight: 600, color: A.text, flex: 1 }}>
+                  {script.label || script.name}
+                </div>
+                {script.status === 'template' && <APill tone="dim">Template</APill>}
+                {script.status === 'success' && <APill tone="good">Success</APill>}
+              </div>
+              {script.description && (
+                <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 8 }}>
+                  {script.description}
+                </div>
+              )}
+            </div>
+
+            <div style={{ fontSize: 9, color: A.textDim, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${A.border}` }}>
+              <div>Schedule: {script.schedule}</div>
+              <div>Last: {script.lastRun}</div>
+            </div>
+
+            <ABtn
+              variant="secondary"
+              onClick={() => handleExecute(script.name)}
+              disabled={executing !== null}
+              style={{ width: '100%' }}
+            >
+              {executing === script.name ? '▌ Running...' : '▶ Run'}
+            </ABtn>
+          </ACard>
+        ))}
+      </div>
     </div>
   );
 };
