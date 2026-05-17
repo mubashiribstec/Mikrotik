@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetForge - MikroTik Router Manager</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0B1220; color: #E8EAED; overflow: hidden; }
+    html, body, #app { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="text/babel">
+const { useState, useContext, createContext, useEffect, useMemo } = React;
+
+// ============ DESIGN TOKENS ============
+const A = {
+  bgDark: '#0B1220',
+  bgDarker: '#050814',
+  bgCard: '#0F1629',
+  bgSecondary: '#1A2640',
+  textPrimary: '#E8EAED',
+  textSecondary: '#9CA3AF',
+  accentBlue: '#3B82F6',
+  accentBlueDark: '#2563EB',
+  accentCyan: '#06B6D4',
+  accentGreen: '#10B981',
+  accentRed: '#EF4444',
+  accentOrange: '#F97316',
+  accentAmber: '#F59E0B',
+
+  sp4: 4, sp8: 8, sp12: 12, sp16: 16, sp20: 20, sp24: 24, sp32: 32, sp48: 48,
+  sidebarW: 232,
+  topBarH: 56,
+
+  fontSmall: '12px', fontBase: '14px', fontMedium: '15px', fontLarge: '16px', fontXL: '18px',
+  fontBold: 600, fontSemiBold: 500, fontNormal: 400,
+};
+
+// ============ MOCK API SERVICE ============
+const MockAPI = {
+  getSystemStats: () => ({
+    cpu: Math.floor(Math.random() * 60) + 10,
+    memory: Math.floor(Math.random() * 40) + 50,
+    storage: Math.floor(Math.random() * 30) + 5,
+    activeClients: Math.floor(Math.random() * 20) + 30,
+    uptime: '45 days 12 hours',
+  }),
+
+  getTrafficData: () => ({
+    rx: Array.from({ length: 11 }, () => Math.floor(Math.random() * 200) + 80),
+    tx: Array.from({ length: 11 }, () => Math.floor(Math.random() * 160) + 50),
+    rxBps: (Math.random() * 3 + 1.5).toFixed(1),
+    txBps: (Math.random() * 2.5 + 0.8).toFixed(1),
+  }),
+
+  getWANStatus: () => [
+    { name: 'ether2', status: Math.random() > 0.1 ? 'up' : 'down', util: Math.floor(Math.random() * 60) + 20, ip: '203.0.113.42', weight: 1 },
+    { name: 'ether3', status: Math.random() > 0.05 ? 'up' : 'down', util: Math.floor(Math.random() * 50) + 15, ip: '198.51.100.55', weight: 1 },
+    { name: 'ether4', status: 'down', util: 0, ip: 'N/A', weight: 0 },
+  ],
+
+  getInterfaces: () => [
+    { name: 'ether1', status: 'up', speed: '1 Gbps', rx: Math.floor(Math.random() * 100) + 50, tx: Math.floor(Math.random() * 80) + 30 },
+    { name: 'ether2', status: 'up', speed: '1 Gbps', rx: Math.floor(Math.random() * 80) + 30, tx: Math.floor(Math.random() * 60) + 20 },
+    { name: 'ether3', status: Math.random() > 0.7 ? 'up' : 'down', speed: Math.random() > 0.7 ? '1 Gbps' : '0', rx: Math.floor(Math.random() * 50) + 10, tx: Math.floor(Math.random() * 40) + 5 },
+    { name: 'ether4', status: 'up', speed: '100 Mbps', rx: Math.floor(Math.random() * 30) + 5, tx: Math.floor(Math.random() * 25) + 3 },
+    { name: 'ether5', status: 'up', speed: '1 Gbps', rx: Math.floor(Math.random() * 120) + 60, tx: Math.floor(Math.random() * 100) + 40 },
+    { name: 'ether6', status: 'down', speed: '0', rx: 0, tx: 0 },
+    { name: 'ether7', status: 'up', speed: '100 Mbps', rx: Math.floor(Math.random() * 20) + 2, tx: Math.floor(Math.random() * 15) + 2 },
+    { name: 'ether8', status: 'up', speed: '1 Gbps', rx: Math.floor(Math.random() * 70) + 30, tx: Math.floor(Math.random() * 55) + 20 },
+  ],
+
+  getFirewallRules: () => ({
+    blockedSites: ['YouTube', 'Facebook', 'TikTok'],
+    totalRules: 47,
+    activeConnections: Math.floor(Math.random() * 500) + 200,
+    droppedPackets: Math.floor(Math.random() * 10000) + 1000,
+  }),
+
+  getBandwidthQueues: () => [
+    { name: 'download_limit', target: '192.168.1.0/24', download: '10M', upload: '5M', util: Math.floor(Math.random() * 60) + 20 },
+    { name: 'vod_stream', target: '192.168.1.50', download: '30M', upload: '10M', util: Math.floor(Math.random() * 40) + 10 },
+    { name: 'voice_traffic', target: 'mark_voice', download: 'unlimited', upload: 'unlimited', util: Math.floor(Math.random() * 15) + 2 },
+    { name: 'gaming', target: 'mark_gaming', download: '100M', upload: '20M', util: Math.floor(Math.random() * 50) + 15 },
+  ],
+
+  getClients: () => [
+    { id: 1, vendor: 'Apple', ip: '192.168.1.100', mac: '00:1A:2B:3C:4D:5E', iface: 'ether1', lease: Math.floor(Math.random() * 24) + 'h', tx: Math.floor(Math.random() * 1000) + 500, rx: Math.floor(Math.random() * 600) + 200 },
+    { id: 2, vendor: 'Samsung', ip: '192.168.1.105', mac: '00:2A:3B:4C:5D:6E', iface: 'ether2', lease: Math.floor(Math.random() * 20) + 'h', tx: Math.floor(Math.random() * 500) + 200, rx: Math.floor(Math.random() * 800) + 400 },
+    { id: 3, vendor: 'Linux', ip: '192.168.1.110', mac: '00:3A:4B:5C:6D:7E', iface: 'ether1', lease: Math.floor(Math.random() * 18) + 'h', tx: Math.floor(Math.random() * 300) + 100, rx: Math.floor(Math.random() * 400) + 150 },
+    { id: 4, vendor: 'Unknown', ip: '192.168.1.115', mac: '00:4A:5B:6C:7D:8E', iface: 'wifi', lease: Math.floor(Math.random() * 12) + 'h', tx: Math.floor(Math.random() * 200) + 50, rx: Math.floor(Math.random() * 250) + 80 },
+  ],
+
+  getHotspotUsers: () => [
+    { id: 1, name: 'user1@example.com', plan: 'Premium 10M', online: Math.random() > 0.3, ip: '10.0.0.2', uptime: Math.floor(Math.random() * 20) + 'h', dataUsed: (Math.random() * 3 + 1).toFixed(1) + ' GB' },
+    { id: 2, name: 'user2@example.com', plan: 'Basic 5M', online: Math.random() > 0.2, ip: '10.0.0.3', uptime: Math.floor(Math.random() * 24) + 'h', dataUsed: (Math.random() * 5 + 2).toFixed(1) + ' GB' },
+    { id: 3, name: 'user3@example.com', plan: 'Premium 10M', online: false, ip: '10.0.0.4', uptime: '0m', dataUsed: (Math.random() * 2 + 0.5).toFixed(1) + ' GB' },
+  ],
+
+  getWirelessSSIDs: () => [
+    { name: 'NetForge-Main', freq: '2.4 GHz', clients: Math.floor(Math.random() * 15) + 5, signal: Math.floor(Math.random() * 20) + 85 },
+    { name: 'NetForge-Guest', freq: '2.4 GHz', clients: Math.floor(Math.random() * 8) + 1, signal: Math.floor(Math.random() * 20) + 75 },
+    { name: 'NetForge-5G', freq: '5 GHz', clients: Math.floor(Math.random() * 12) + 3, signal: Math.floor(Math.random() * 15) + 90 },
+  ],
+
+  getVPNStatus: () => [
+    { name: 'WireGuard', port: 51820, peers: Math.floor(Math.random() * 8) + 2, enabled: true, traffic: Math.floor(Math.random() * 500) + 100 },
+    { name: 'L2TP/IPsec', port: 1701, peers: Math.floor(Math.random() * 4) + 1, enabled: true, traffic: Math.floor(Math.random() * 300) + 50 },
+    { name: 'OpenVPN', port: 1194, peers: Math.floor(Math.random() * 5) + 1, enabled: Math.random() > 0.5, traffic: Math.floor(Math.random() * 400) + 80 },
+  ],
+
+  getLogs: () => {
+    const topics = ['interface', 'system', 'firewall', 'dhcp', 'wireless', 'script', 'certificate'];
+    const messages = ['went up', 'went down', 'configuration changed', 'lease assigned', 'connection established', 'status update', 'error occurred'];
+    return Array.from({ length: 5 }, (_, i) => ({
+      timestamp: new Date(Date.now() - i * 60000).toLocaleTimeString(),
+      topic: topics[Math.floor(Math.random() * topics.length)],
+      source: ['ether1', 'ether2', 'system', 'DHCP', 'wireless'][Math.floor(Math.random() * 5)],
+      message: messages[Math.floor(Math.random() * messages.length)],
+    }));
+  },
+
+  getScripts: () => [
+    { id: 1, name: 'backup_daily', lastRun: new Date(Date.now() - 86400000).toLocaleString(), schedule: '0 2 * * *', status: 'success' },
+    { id: 2, name: 'health_check', lastRun: new Date(Date.now() - 300000).toLocaleString(), schedule: '*/5 * * * *', status: 'success' },
+    { id: 3, name: 'cleanup_logs', lastRun: new Date(Date.now() - 604800000).toLocaleString(), schedule: '0 3 * * 0', status: 'success' },
+  ],
+
+  getBackups: () => [
+    { filename: `backup-${new Date().toISOString().split('T')[0]}-full.backup`, size: (Math.random() * 3 + 10).toFixed(1) + ' MB', timestamp: new Date().toLocaleString(), trigger: 'Scheduled' },
+    { filename: `backup-${new Date(Date.now() - 86400000).toISOString().split('T')[0]}-full.backup`, size: (Math.random() * 2 + 11).toFixed(1) + ' MB', timestamp: new Date(Date.now() - 86400000).toLocaleString(), trigger: 'Scheduled' },
+    { filename: `backup-${new Date(Date.now() - 172800000).toISOString().split('T')[0]}-manual.backup`, size: (Math.random() * 2.5 + 10).toFixed(1) + ' MB', timestamp: new Date(Date.now() - 172800000).toLocaleString(), trigger: 'Manual' },
+  ],
+
+  getTopTalkers: () => [
+    { host: '192.168.1.100', tx: Math.floor(Math.random() * 500) + 500, rx: Math.floor(Math.random() * 400) + 200 },
+    { host: '192.168.1.105', tx: Math.floor(Math.random() * 600) + 200, rx: Math.floor(Math.random() * 800) + 400 },
+    { host: '192.168.1.110', tx: Math.floor(Math.random() * 300) + 100, rx: Math.floor(Math.random() * 350) + 150 },
+    { host: '192.168.1.115', tx: Math.floor(Math.random() * 150) + 50, rx: Math.floor(Math.random() * 200) + 80 },
+  ],
+};
+
+// ============ ICONS ============
+const Icons = {
+  Dashboard: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>,
+  Interface: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 9h8M8 13h8M12 3v18M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>,
+  Lan: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 8v4M16 8v4M12 10v8"/></svg>,
+  Firewall: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1l9 5v7c0 5.55-3.84 10.74-9 12-5.16-1.26-9-6.45-9-12V6l9-5z"/></svg>,
+  Speed: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="1"/><path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"/></svg>,
+  Users: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
+  Wifi: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12.55a11 11 0 0114.08 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.94 0"/></svg>,
+  Lock: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
+  List: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9h18M3 15h18"/></svg>,
+  Save: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>,
+  Settings: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6M4.22 4.22l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M4.22 19.78l4.24-4.24m4.24-4.24l4.24-4.24"/></svg>,
+  Bell: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+  ChevronRight: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>,
+  Plus: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+  Search: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
+  LogOut: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>,
+  Play: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+};
+
+const Icon = ({ name, size = 20, color = 'currentColor' }) => {
+  const Component = Icons[name];
+  return Component ? <div style={{ display: 'inline-flex', width: size, height: size, color }}><Component /></div> : null;
+};
+
+// ============ CONTEXT ============
+const NavCtx = createContext({ page: 'Login', setPage: () => {} });
+const DataCtx = createContext({ data: {}, refreshData: () => {} });
+
+// ============ LOGO ============
+const NetForgeMark = () => (
+  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke={A.accentBlue} strokeWidth="1.5">
+    <circle cx="12" cy="12" r="8"/>
+    <circle cx="12" cy="4" r="2" fill={A.accentBlue}/>
+    <circle cx="18.63" cy="18.63" r="2" fill={A.accentBlue}/>
+    <circle cx="5.37" cy="18.63" r="2" fill={A.accentBlue}/>
+    <line x1="12" y1="12" x2="12" y2="4"/>
+    <line x1="12" y1="12" x2="18.63" y2="18.63"/>
+    <line x1="12" y1="12" x2="5.37" y2="18.63"/>
+  </svg>
+);
+
+// ============ REUSABLE COMPONENTS ============
+const ABase = ({ children, style = {}, ...props }) => (
+  <div style={{ backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 8, padding: A.sp16, ...style }} {...props}>{children}</div>
+);
+
+const ATitleBar = ({ title, children }) => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: A.sp20 }}>
+    <h1 style={{ fontSize: A.fontXL, fontWeight: A.fontBold, color: A.textPrimary }}>{title}</h1>
+    {children}
+  </div>
+);
+
+const ABtn = ({ label, onClick, variant = 'primary', icon, disabled = false }) => {
+  const bgColor = variant === 'primary' ? A.accentBlue : variant === 'secondary' ? A.bgSecondary : A.accentRed;
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      backgroundColor: disabled ? A.bgSecondary : bgColor, color: A.textPrimary, border: 'none', borderRadius: 6, padding: `${A.sp8}px ${A.sp16}px`, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: A.fontBase, display: 'flex', alignItems: 'center', gap: A.sp8, opacity: disabled ? 0.5 : 1,
+    }}>
+      {icon && <Icon name={icon} size={16} />}
+      {label}
+    </button>
+  );
+};
+
+const APill = ({ label, active = false, onClick }) => (
+  <button onClick={onClick} style={{
+    backgroundColor: active ? A.accentBlue : A.bgSecondary, color: A.textPrimary, border: 'none', borderRadius: 20, padding: `${A.sp8}px ${A.sp12}px`, cursor: 'pointer', fontSize: A.fontSmall, fontWeight: active ? A.fontSemiBold : A.fontNormal,
+  }}>
+    {label}
+  </button>
+);
+
+const ACard = ({ title, children, footer }) => (
+  <ABase style={{ marginBottom: A.sp16 }}>
+    {title && <h2 style={{ fontSize: A.fontMedium, fontWeight: A.fontSemiBold, marginBottom: A.sp12, color: A.textPrimary }}>{title}</h2>}
+    {children}
+    {footer && <div style={{ marginTop: A.sp12, paddingTop: A.sp12, borderTop: `1px solid ${A.bgSecondary}`, fontSize: A.fontSmall, color: A.textSecondary }}>{footer}</div>}
+  </ABase>
+);
+
+const ALabeledField = ({ label, children, help }) => (
+  <div style={{ marginBottom: A.sp16 }}>
+    <label style={{ display: 'block', fontSize: A.fontSmall, fontWeight: A.fontSemiBold, marginBottom: A.sp8, color: A.textSecondary }}>{label}</label>
+    {children}
+    {help && <div style={{ fontSize: A.fontSmall, color: A.textSecondary, marginTop: A.sp4 }}>{help}</div>}
+  </div>
+);
+
+const AToggleRow = ({ label, value, onChange, help }) => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: A.sp12, backgroundColor: A.bgSecondary, borderRadius: 6, marginBottom: A.sp8 }}>
+    <div>
+      <div style={{ fontSize: A.fontBase, color: A.textPrimary, fontWeight: A.fontSemiBold }}>{label}</div>
+      {help && <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>{help}</div>}
+    </div>
+    <button onClick={() => onChange(!value)} style={{ width: 44, height: 24, backgroundColor: value ? A.accentBlue : A.bgDark, borderRadius: 12, border: 'none', cursor: 'pointer', position: 'relative' }}>
+      <div style={{ width: 20, height: 20, backgroundColor: A.textPrimary, borderRadius: 10, position: 'absolute', top: 2, left: value ? 22 : 2, transition: 'left 0.2s' }} />
+    </button>
+  </div>
+);
+
+const LineChart = ({ data, height = 100, color = A.accentBlue }) => {
+  if (!data || data.length < 2) return null;
+  const max = Math.max(...data);
+  const points = data.map((v, i) => `${(i / (data.length - 1)) * 200},${100 - (v / max) * 80}`).join(' ');
+  return (
+    <svg viewBox="0 0 200 100" style={{ height, width: '100%' }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+    </svg>
+  );
+};
+
+// ============ TOP BAR ============
+const ATopBar = ({ onRefresh }) => {
+  const [mode, setMode] = useState('Simple');
+  return (
+    <div style={{ height: A.topBarH, backgroundColor: A.bgDarker, borderBottom: `1px solid ${A.bgSecondary}`, display: 'flex', alignItems: 'center', paddingLeft: A.sp20, paddingRight: A.sp20, gap: A.sp16 }}>
+      <div style={{ flex: 1 }} />
+      <div style={{ display: 'flex', gap: A.sp8 }}>
+        <APill label="Simple" active={mode === 'Simple'} onClick={() => setMode('Simple')} />
+        <APill label="Advanced" active={mode === 'Advanced'} onClick={() => setMode('Advanced')} />
+      </div>
+      <ABtn icon="Bell" variant="secondary" onClick={() => {}} />
+      <ABtn icon="Search" variant="secondary" onClick={onRefresh} />
+    </div>
+  );
+};
+
+// ============ SIDEBAR ============
+const ASidebar = () => {
+  const { page, setPage } = useContext(NavCtx);
+  const items = [
+    { label: 'Dashboard', icon: 'Dashboard', page: 'Dashboard' },
+    { label: 'Interfaces', icon: 'Interface', page: 'Interfaces' },
+    { label: 'WAN / Load Balance', icon: 'Lan', page: 'WanLB' },
+    { label: 'Firewall', icon: 'Firewall', page: 'Firewall' },
+    { label: 'Bandwidth', icon: 'Speed', page: 'Bandwidth' },
+    { label: 'DHCP & Clients', icon: 'Users', page: 'Clients' },
+    { label: 'Hotspot / PPPoE', icon: 'Lock', page: 'Hotspot' },
+    { label: 'Wireless', icon: 'Wifi', page: 'Wireless' },
+    { label: 'VPN', icon: 'Lock', page: 'Vpn' },
+    { label: 'Logs', icon: 'List', page: 'Logs' },
+    { label: 'Scripts', icon: 'Play', page: 'Scripts' },
+    { label: 'Backup', icon: 'Save', page: 'Backup' },
+    { label: 'Settings', icon: 'Settings', page: 'Settings' },
+  ];
+  return (
+    <div style={{ width: A.sidebarW, height: '100vh', backgroundColor: A.bgDark, borderRight: `1px solid ${A.bgSecondary}`, display: 'flex', flexDirection: 'column', padding: A.sp16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: A.sp8, marginBottom: A.sp32, paddingBottom: A.sp16, borderBottom: `1px solid ${A.bgSecondary}` }}>
+        <NetForgeMark />
+        <span style={{ fontSize: A.fontMedium, fontWeight: A.fontBold, color: A.accentBlue }}>NetForge</span>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {items.map((item) => (
+          <button key={item.page} onClick={() => setPage(item.page)} style={{
+            width: '100%', padding: `${A.sp12}px ${A.sp8}px`, marginBottom: A.sp8, backgroundColor: page === item.page ? A.accentBlue : 'transparent', color: page === item.page ? A.bgDark : A.textPrimary, border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: A.fontBase, fontWeight: page === item.page ? A.fontSemiBold : A.fontNormal, display: 'flex', alignItems: 'center', gap: A.sp8,
+          }}>
+            <Icon name={item.icon} size={18} />
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <button onClick={() => setPage('Login')} style={{ width: '100%', padding: `${A.sp12}px ${A.sp8}px`, backgroundColor: A.bgSecondary, color: A.textPrimary, border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: A.fontBase, display: 'flex', alignItems: 'center', gap: A.sp8 }}>
+        <Icon name="LogOut" size={18} />
+        Logout
+      </button>
+    </div>
+  );
+};
+
+// ============ LOGIN ============
+const ALogin = () => {
+  const { setPage } = useContext(NavCtx);
+  const [host, setHost] = useState('192.168.1.1');
+  const [user, setUser] = useState('admin');
+  const [pass, setPass] = useState('');
+  const recentConnections = [
+    { host: '192.168.1.1', user: 'admin', label: 'Main Router' },
+    { host: '192.168.2.1', user: 'admin', label: 'Branch Office' },
+  ];
+  return (
+    <div style={{ height: '100vh', display: 'flex', backgroundColor: A.bgDark }}>
+      <div style={{ flex: 1, padding: A.sp48, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        <div style={{ marginBottom: A.sp48 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: A.sp16, marginBottom: A.sp16 }}>
+            <NetForgeMark />
+            <h1 style={{ fontSize: '32px', fontWeight: A.fontBold, color: A.accentBlue }}>NetForge</h1>
+          </div>
+          <p style={{ color: A.textSecondary, fontSize: A.fontLarge }}>MikroTik Router Manager (Mock API)</p>
+        </div>
+        <ALabeledField label="Host / IP Address">
+          <input type="text" value={host} onChange={(e) => setHost(e.target.value)} style={{ width: '100%', padding: A.sp12, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 6, color: A.textPrimary, fontSize: A.fontBase }} />
+        </ALabeledField>
+        <ALabeledField label="Username">
+          <input type="text" value={user} onChange={(e) => setUser(e.target.value)} style={{ width: '100%', padding: A.sp12, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 6, color: A.textPrimary, fontSize: A.fontBase }} />
+        </ALabeledField>
+        <ALabeledField label="Password">
+          <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} style={{ width: '100%', padding: A.sp12, backgroundColor: A.bgCard, border: `1px solid ${A.bgSecondary}`, borderRadius: 6, color: A.textPrimary, fontSize: A.fontBase }} />
+        </ALabeledField>
+        <button onClick={() => setPage('Dashboard')} style={{ width: '100%', padding: A.sp12, backgroundColor: A.accentBlue, color: A.bgDark, border: 'none', borderRadius: 6, fontSize: A.fontBase, fontWeight: A.fontSemiBold, cursor: 'pointer', marginTop: A.sp24 }}>
+          Connect
+        </button>
+      </div>
+      <div style={{ width: '400px', padding: A.sp32, backgroundColor: A.bgCard, borderLeft: `1px solid ${A.bgSecondary}` }}>
+        <h2 style={{ fontSize: A.fontLarge, fontWeight: A.fontSemiBold, marginBottom: A.sp16, color: A.textPrimary }}>Recent Connections</h2>
+        {recentConnections.map((conn, i) => (
+          <button key={i} onClick={() => setPage('Dashboard')} style={{ width: '100%', padding: A.sp12, marginBottom: A.sp12, backgroundColor: A.bgSecondary, color: A.textPrimary, border: 'none', borderRadius: 6, cursor: 'pointer', textAlign: 'left' }}>
+            <div style={{ fontSize: A.fontBase, fontWeight: A.fontSemiBold }}>{conn.label}</div>
+            <div style={{ fontSize: A.fontSmall, color: A.textSecondary }}>{conn.host}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ============ KPI CARD ============
+const AKpi = ({ label, value, unit, trend }) => (
+  <ABase style={{ marginBottom: A.sp12 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: A.sp12 }}>
+      <div>
+        <div style={{ fontSize: A.fontSmall, color: A.textSecondary, marginBottom: A.sp4 }}>{label}</div>
+        <div style={{ fontSize: '24px', fontWeight: A.fontBold, color: A.accentBlue }}>{value}{unit}</div>
+      </div>
+      <div style={{ width: 60, height: 40 }}>
+        <LineChart data={trend} color={A.accentGreen} />
+      </div>
+    </div>
+  </ABase>
+);
+
+// ============ ACTION BUTTON ============
+const AAction = ({ label, active = false, onClick }) => (
+  <button onClick={onClick} style={{
+    padding: `${A.sp12}px ${A.sp16}px`, backgroundColor: active ? A.accentBlue : A.bgCard, color: A.textPrimary, border: `1px solid ${active ? A.accentBlue : A.bgSecondary}`, borderRadius: 6, cursor: 'pointer', fontSize: A.fontSmall, fontWeight: A.fontSemiBold, marginRight: A.sp8, marginBottom: A.sp8,
+  }}>
+    {label}
+  </button>
+);
+
+// ============ DASHBOARD (with live data) ============
+const ADashboard = () => {
+  const { data } = useContext(DataCtx);
+  const systemStats = data.systemStats || { cpu: 0, memory: 0, storage: 0, activeClients: 0 };
+  const traffic = data.traffic || { rx: [], tx: [] };
+  const wanStatus = data.wanStatus || [];
+  const topTalkers = data.topTalkers || [];
+
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Dashboard" />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: A.sp16, marginBottom: A.sp24 }}>
+        <AKpi label="CPU Usage" value={systemStats.cpu} unit="%" trend={[systemStats.cpu - 5, systemStats.cpu - 2, systemStats.cpu, systemStats.cpu + 2, systemStats.cpu - 1]} />
+        <AKpi label="Memory" value={systemStats.memory} unit="%" trend={[systemStats.memory - 3, systemStats.memory - 1, systemStats.memory, systemStats.memory + 1, systemStats.memory]} />
+        <AKpi label="Storage" value={systemStats.storage} unit="%" trend={[systemStats.storage, systemStats.storage + 1, systemStats.storage, systemStats.storage]} />
+        <AKpi label="Active Clients" value={systemStats.activeClients} unit="" trend={[systemStats.activeClients - 2, systemStats.activeClients, systemStats.activeClients + 1, systemStats.activeClients - 1, systemStats.activeClients]} />
+      </div>
+      <ACard title="Quick Actions">
+        <div>
+          <AAction label="Block YouTube" active={true} onClick={() => {}} />
+          <AAction label="Block Facebook" onClick={() => {}} />
+          <AAction label="Block TikTok" onClick={() => {}} />
+          <AAction label="Limit speed" onClick={() => {}} />
+          <AAction label="Add load balance" onClick={() => {}} />
+        </div>
+      </ACard>
+      <ACard title="Traffic Overview (Live)">
+        <svg viewBox="0 0 480 140" style={{ width: '100%', height: '140px', marginBottom: A.sp12 }}>
+          <defs><pattern id="grid" width="40" height="20" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 20" fill="none" stroke="#1a2640" strokeWidth="0.5"/></pattern></defs>
+          <rect width="480" height="140" fill="url(#grid)" />
+          {traffic.rx && traffic.rx.length > 0 && (
+            <>
+              <polyline points={traffic.rx.map((v, i) => `${(i / (traffic.rx.length - 1)) * 480},${140 - (v / 200) * 100}`).join(' ')} fill="none" stroke={A.accentBlue} strokeWidth="2"/>
+              <polyline points={traffic.tx.map((v, i) => `${(i / (traffic.tx.length - 1)) * 480},${140 - (v / 200) * 100}`).join(' ')} fill="none" stroke={A.accentCyan} strokeWidth="2"/>
+            </>
+          )}
+        </svg>
+        <div style={{ display: 'flex', gap: A.sp16, fontSize: A.fontSmall }}>
+          <div><span style={{ color: A.accentBlue }}>●</span> RX: {traffic.rxBps} Mbps</div>
+          <div><span style={{ color: A.accentCyan }}>●</span> TX: {traffic.txBps} Mbps</div>
+        </div>
+      </ACard>
+      <ACard title="WAN Status (Live)">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Interface</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Status</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>IP</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Utilization</th>
+          </tr></thead>
+          <tbody>
+            {wanStatus.map((wan, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{wan.name}</td>
+                <td style={{ padding: A.sp8 }}><span style={{ color: wan.status === 'up' ? A.accentGreen : A.accentRed }}>● {wan.status}</span></td>
+                <td style={{ padding: A.sp8 }}>{wan.ip}</td>
+                <td style={{ padding: A.sp8 }}><div style={{ width: 100, height: 20, backgroundColor: A.bgSecondary, borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${wan.util}%`, height: '100%', backgroundColor: A.accentBlue }} /></div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+      <ACard title="Top Talkers (Live)">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Host</th>
+            <th style={{ textAlign: 'right', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>→ TX</th>
+            <th style={{ textAlign: 'right', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>← RX</th>
+          </tr></thead>
+          <tbody>
+            {topTalkers.map((row, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{row.host}</td>
+                <td style={{ padding: A.sp8, textAlign: 'right', color: A.accentBlue }}>{row.tx} MB</td>
+                <td style={{ padding: A.sp8, textAlign: 'right', color: A.accentCyan }}>{row.rx} MB</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ INTERFACES (with live data) ============
+const AInterfaces = () => {
+  const { data } = useContext(DataCtx);
+  const interfaces = data.interfaces || [];
+
+  return (
+    <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+      <ATitleBar title="Interfaces (Live)" />
+      <ACard title="Port Status">
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Interface</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Status</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>Speed</th>
+            <th style={{ textAlign: 'left', padding: A.sp8, color: A.textSecondary, fontSize: A.fontSmall }}>RX/TX (MB)</th>
+          </tr></thead>
+          <tbody>
+            {interfaces.map((iface, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${A.bgSecondary}` }}>
+                <td style={{ padding: A.sp8 }}>{iface.name}</td>
+                <td style={{ padding: A.sp8 }}><span style={{ color: iface.status === 'up' ? A.accentGreen : A.accentRed }}>● {iface.status}</span></td>
+                <td style={{ padding: A.sp8 }}>{iface.speed}</td>
+                <td style={{ padding: A.sp8 }}>{iface.rx} / {iface.tx}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ACard>
+    </div>
+  );
+};
+
+// ============ PLACEHOLDER SCREENS ============
+const AScreen = ({ title }) => (
+  <div style={{ overflowY: 'auto', height: `calc(100vh - ${A.topBarH}px)`, padding: A.sp20 }}>
+    <ATitleBar title={title} />
+    <ACard title="Coming Soon">
+      <div style={{ padding: A.sp32, textAlign: 'center', color: A.textSecondary }}>
+        {title} screen with live API data
+      </div>
+    </ACard>
+  </div>
+);
+
+// ============ MAIN APP ============
+const App = () => {
+  const [page, setPage] = useState('Login');
+  const [data, setData] = useState({});
+
+  const refreshData = () => {
+    setData({
+      systemStats: MockAPI.getSystemStats(),
+      traffic: MockAPI.getTrafficData(),
+      wanStatus: MockAPI.getWANStatus(),
+      interfaces: MockAPI.getInterfaces(),
+      firewall: MockAPI.getFirewallRules(),
+      queues: MockAPI.getBandwidthQueues(),
+      clients: MockAPI.getClients(),
+      hotspotUsers: MockAPI.getHotspotUsers(),
+      wireless: MockAPI.getWirelessSSIDs(),
+      vpn: MockAPI.getVPNStatus(),
+      logs: MockAPI.getLogs(),
+      scripts: MockAPI.getScripts(),
+      backups: MockAPI.getBackups(),
+      topTalkers: MockAPI.getTopTalkers(),
+    });
+  };
+
+  useEffect(() => {
+    if (page !== 'Login') {
+      refreshData();
+      const interval = setInterval(refreshData, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [page]);
+
+  const renderPage = () => {
+    switch(page) {
+      case 'Dashboard': return <ADashboard />;
+      case 'Interfaces': return <AInterfaces />;
+      case 'WanLB': return <AScreen title="WAN / Load Balance" />;
+      case 'Firewall': return <AScreen title="Firewall" />;
+      case 'Bandwidth': return <AScreen title="Bandwidth" />;
+      case 'Clients': return <AScreen title="DHCP & Clients" />;
+      case 'Hotspot': return <AScreen title="Hotspot / PPPoE" />;
+      case 'Wireless': return <AScreen title="Wireless" />;
+      case 'Vpn': return <AScreen title="VPN" />;
+      case 'Logs': return <AScreen title="Logs" />;
+      case 'Scripts': return <AScreen title="Scripts" />;
+      case 'Backup': return <AScreen title="Backup" />;
+      case 'Settings': return <AScreen title="Settings" />;
+      case 'Login': return <ALogin />;
+      default: return <ALogin />;
+    }
+  };
+
+  return (
+    <NavCtx.Provider value={{ page, setPage }}>
+      <DataCtx.Provider value={{ data, refreshData }}>
+        {page === 'Login' ? (
+          <ALogin />
+        ) : (
+          <div style={{ display: 'flex', height: '100vh' }}>
+            <ASidebar />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+              <ATopBar onRefresh={refreshData} />
+              {renderPage()}
+            </div>
+          </div>
+        )}
+      </DataCtx.Provider>
+    </NavCtx.Provider>
+  );
+};
+
+ReactDOM.render(<App />, document.getElementById('app'));
+  </script>
+</body>
+</html>
