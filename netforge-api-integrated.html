@@ -1467,6 +1467,8 @@ const LogsScreen = ({ sessionId }) => {
   const [logs, setLogs] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
+  const [page, setPage] = React.useState(0);
+  const PAGE_SIZE = 15;
 
   React.useEffect(() => {
     if (!sessionId) return;
@@ -1476,6 +1478,7 @@ const LogsScreen = ({ sessionId }) => {
       try {
         const data = await API.getLogs(sessionId);
         setLogs(data);
+        setPage(0);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -1490,19 +1493,39 @@ const LogsScreen = ({ sessionId }) => {
   if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
   if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
 
+  const startIdx = page * PAGE_SIZE;
+  const endIdx = startIdx + PAGE_SIZE;
+  const paginatedLogs = logs.slice(startIdx, endIdx);
+  const totalPages = Math.ceil(logs.length / PAGE_SIZE);
+
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>System Logs</h2>
-      {logs.map((log, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
-            <div style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{log.time}</div>
-            <APill tone={log.topic === 'error' ? 'bad' : log.topic === 'firewall' ? 'warn' : 'good'}>{log.topic}</APill>
-          </div>
-          <div style={{ fontSize: 12, color: A.text, marginBottom: 4 }}>{log.msg}</div>
-          <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>Source: {log.source}</div>
-        </ACard>
-      ))}
+    <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column' }}>
+      <h2 style={{ color: A.text, marginBottom: 16 }}>System Logs ({logs.length})</h2>
+      <div style={{ flex: 1, overflow: 'auto', marginBottom: 16 }}>
+        {paginatedLogs.length > 0 ? paginatedLogs.map((log, i) => (
+          <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
+              <div style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{log.time}</div>
+              <APill tone={log.topic === 'error' ? 'bad' : log.topic === 'firewall' ? 'warn' : 'good'}>{log.topic}</APill>
+            </div>
+            <div style={{ fontSize: 12, color: A.text, marginBottom: 4 }}>{log.msg}</div>
+            <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>Source: {log.source}</div>
+          </ACard>
+        )) : <div style={{ color: A.textDim, fontSize: 12 }}>No logs</div>}
+      </div>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', borderTop: `1px solid ${A.border}`, paddingTop: 16 }}>
+          <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} style={{
+            padding: '6px 12px', background: page === 0 ? A.surface : A.accentLine, color: A.text, border: 'none',
+            borderRadius: 4, cursor: page === 0 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === 0 ? 0.5 : 1
+          }}>← Prev</button>
+          <span style={{ color: A.textDim, fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
+          <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page === totalPages - 1} style={{
+            padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accentLine, color: A.text, border: 'none',
+            borderRadius: 4, cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === totalPages - 1 ? 0.5 : 1
+          }}>Next →</button>
+        </div>
+      )}
     </div>
   );
 };
@@ -1704,30 +1727,101 @@ const BackupScreen = ({ sessionId }) => {
   );
 };
 
-const SettingsScreen = ({ sessionId, router }) => (
-  <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
-    <h2 style={{ color: A.text, marginBottom: 24 }}>Settings</h2>
-    <div style={{ marginBottom: 24 }}>
-      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Connection</h3>
-      <ACard pad={16}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
-          <div><span style={{ color: A.textFaint }}>Host:</span> <span style={{ color: A.text, float: 'right' }}>{router?.host || 'N/A'}</span></div>
-          <div><span style={{ color: A.textFaint }}>Port:</span> <span style={{ color: A.text, float: 'right' }}>{router?.port || 'N/A'}</span></div>
-          <div><span style={{ color: A.textFaint }}>Username:</span> <span style={{ color: A.text, float: 'right' }}>{router?.username || 'N/A'}</span></div>
+const SettingsScreen = ({ sessionId, router }) => {
+  const [showReconnect, setShowReconnect] = React.useState(false);
+  const [host, setHost] = React.useState(router?.host || '');
+  const [port, setPort] = React.useState(router?.port || 22);
+  const [username, setUsername] = React.useState(router?.username || '');
+  const [password, setPassword] = React.useState('');
+  const [msg, setMsg] = React.useState('');
+
+  const handleReconnect = async () => {
+    if (!host || !username || !password) {
+      setMsg('All fields required');
+      return;
+    }
+    try {
+      const result = await API.login(host, parseInt(port), username, password);
+      if (result.sessionId) {
+        setMsg('✓ Connected! Refresh to continue.');
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        setMsg('✗ Connection failed');
+      }
+    } catch (e) {
+      setMsg('✗ ' + e.message);
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
+      <h2 style={{ color: A.text, marginBottom: 24 }}>Settings</h2>
+
+      <div style={{ marginBottom: 24 }}>
+        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Current Connection</h3>
+        <ACard pad={16}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, marginBottom: 16 }}>
+            <div><span style={{ color: A.textFaint }}>Host:</span> <span style={{ color: A.text, float: 'right', fontFamily: A.mono }}>{router?.host || 'N/A'}</span></div>
+            <div><span style={{ color: A.textFaint }}>Port:</span> <span style={{ color: A.text, float: 'right' }}>{router?.port || 'N/A'}</span></div>
+            <div><span style={{ color: A.textFaint }}>Username:</span> <span style={{ color: A.text, float: 'right' }}>{router?.username || 'N/A'}</span></div>
+          </div>
+          <button onClick={() => setShowReconnect(!showReconnect)} style={{
+            width: '100%', padding: 8, border: `1px solid ${A.accentLine}`, background: 'transparent',
+            color: A.accent, cursor: 'pointer', borderRadius: 4, fontFamily: A.ui, fontSize: 12,
+            transition: 'all 0.2s'
+          }} onMouseEnter={e => {e.target.background = A.accentSoft; e.target.color = A.accent;}}
+             onMouseLeave={e => {e.target.background = 'transparent';}}>
+            🔄 {showReconnect ? 'Cancel' : 'Change Connection'}
+          </button>
+        </ACard>
+      </div>
+
+      {showReconnect && (
+        <div style={{ marginBottom: 24 }}>
+          <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>New Connection</h3>
+          <ACard pad={16}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+              <input type="text" placeholder="Host/IP" value={host} onChange={e => setHost(e.target.value)} style={{
+                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
+                borderRadius: 4, fontFamily: A.ui, fontSize: 12
+              }} />
+              <input type="number" placeholder="Port" value={port} onChange={e => setPort(e.target.value)} style={{
+                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
+                borderRadius: 4, fontFamily: A.ui, fontSize: 12
+              }} />
+              <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} style={{
+                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
+                borderRadius: 4, fontFamily: A.ui, fontSize: 12
+              }} />
+              <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} style={{
+                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
+                borderRadius: 4, fontFamily: A.ui, fontSize: 12
+              }} />
+              {msg && <div style={{ fontSize: 12, color: msg.includes('✓') ? A.good : A.bad }}>{msg}</div>}
+            </div>
+            <button onClick={handleReconnect} style={{
+              width: '100%', padding: 10, background: A.accent, border: 'none', color: A.bg,
+              borderRadius: 4, cursor: 'pointer', fontFamily: A.ui, fontSize: 12, fontWeight: 600,
+              transition: 'opacity 0.2s'
+            }} onMouseEnter={e => e.target.style.opacity = 0.8} onMouseLeave={e => e.target.style.opacity = 1}>
+              Connect
+            </button>
+          </ACard>
         </div>
-      </ACard>
+      )}
+
+      <div>
+        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Session Info</h3>
+        <ACard pad={16}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+            <div><span style={{ color: A.textFaint }}>Session ID:</span> <span style={{ color: A.text, float: 'right', fontFamily: A.mono }}>{sessionId?.substring(0, 8)}...</span></div>
+            <div><span style={{ color: A.textFaint }}>API Status:</span> <span style={{ color: A.good, float: 'right' }}>✓ Connected</span></div>
+          </div>
+        </ACard>
+      </div>
     </div>
-    <div>
-      <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>System</h3>
-      <ACard pad={16}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
-          <div><span style={{ color: A.textFaint }}>Session:</span> <span style={{ color: A.text, float: 'right', fontFamily: A.mono }}>{sessionId?.substring(0, 8)}...</span></div>
-          <div><span style={{ color: A.textFaint }}>API:</span> <span style={{ color: A.text, float: 'right' }}>Connected</span></div>
-        </div>
-      </ACard>
-    </div>
-  </div>
-);
+  );
+};
 
 // ========== NEW CONFIG SCREENS ==========
 
@@ -1855,6 +1949,8 @@ const RoutesScreen = ({ sessionId }) => {
   const [gw, setGw] = React.useState('');
   const [dist, setDist] = React.useState('0');
   const [comment, setComment] = React.useState('');
+  const [page, setPage] = React.useState(0);
+  const PAGE_SIZE = 12;
 
   React.useEffect(() => {
     if (!sessionId) return;
@@ -1942,23 +2038,49 @@ const RoutesScreen = ({ sessionId }) => {
         </ACard>
       )}
 
-      {routes.map(route => (
-        <ACard key={route.id} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{route.destination}</div>
-              <div style={{ fontSize: 10, color: A.textDim }}>via {route.gateway}</div>
+      {(() => {
+        const startIdx = page * PAGE_SIZE;
+        const endIdx = startIdx + PAGE_SIZE;
+        const paginatedRoutes = routes.slice(startIdx, endIdx);
+        const totalPages = Math.ceil(routes.length / PAGE_SIZE);
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+            <div style={{ flex: 1, overflow: 'auto', marginBottom: totalPages > 1 ? 16 : 0 }}>
+              {paginatedRoutes.map(route => (
+                <ACard key={route.id} pad={12} style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{route.destination}</div>
+                      <div style={{ fontSize: 10, color: A.textDim }}>via {route.gateway}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <APill tone={route.disabled ? 'dim' : 'good'}>{route.distance}</APill>
+                      <button onClick={() => handleDelete(route.id)} style={{
+                        background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500, minWidth: 60
+                      }}>Delete</button>
+                    </div>
+                  </div>
+                  {route.comment && <div style={{ fontSize: 10, color: A.textFaint }}>• {route.comment}</div>}
+                </ACard>
+              ))}
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <APill tone={route.disabled ? 'dim' : 'good'}>{route.distance}</APill>
-              <button onClick={() => handleDelete(route.id)} style={{
-                background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500, minWidth: 60
-              }}>Delete</button>
-            </div>
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', borderTop: `1px solid ${A.border}`, paddingTop: 16 }}>
+                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} style={{
+                  padding: '6px 12px', background: page === 0 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  borderRadius: 4, cursor: page === 0 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === 0 ? 0.5 : 1
+                }}>← Prev</button>
+                <span style={{ color: A.textDim, fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
+                <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page === totalPages - 1} style={{
+                  padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  borderRadius: 4, cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === totalPages - 1 ? 0.5 : 1
+                }}>Next →</button>
+              </div>
+            )}
           </div>
-          {route.comment && <div style={{ fontSize: 10, color: A.textFaint }}>• {route.comment}</div>}
-        </ACard>
-      ))}
+        );
+      })()}
     </div>
   );
 };
@@ -2050,6 +2172,8 @@ const NatScreen = ({ sessionId }) => {
   const [chain, setChain] = React.useState('srcnat');
   const [srcAddr, setSrcAddr] = React.useState('');
   const [action, setAction] = React.useState('masquerade');
+  const [page, setPage] = React.useState(0);
+  const PAGE_SIZE = 12;
 
   React.useEffect(() => {
     if (!sessionId) return;
@@ -2132,22 +2256,48 @@ const NatScreen = ({ sessionId }) => {
         </ACard>
       )}
 
-      {rules.map(rule => (
-        <ACard key={rule.id} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{rule.action}</div>
-              <div style={{ fontSize: 10, color: A.textDim }}>{rule.chain}</div>
+      {(() => {
+        const startIdx = page * PAGE_SIZE;
+        const endIdx = startIdx + PAGE_SIZE;
+        const paginatedRules = rules.slice(startIdx, endIdx);
+        const totalPages = Math.ceil(rules.length / PAGE_SIZE);
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+            <div style={{ flex: 1, overflow: 'auto', marginBottom: totalPages > 1 ? 16 : 0 }}>
+              {paginatedRules.map(rule => (
+                <ACard key={rule.id} pad={12} style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{rule.action}</div>
+                      <div style={{ fontSize: 10, color: A.textDim }}>{rule.chain}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <APill tone={rule.disabled ? 'dim' : 'good'}>{rule.srcAddress || 'all'}</APill>
+                      <button onClick={() => handleDelete(rule.id)} style={{
+                        background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500, minWidth: 60
+                      }}>Delete</button>
+                    </div>
+                  </div>
+                </ACard>
+              ))}
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <APill tone={rule.disabled ? 'dim' : 'good'}>{rule.srcAddress || 'all'}</APill>
-              <button onClick={() => handleDelete(rule.id)} style={{
-                background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500, minWidth: 60
-              }}>Delete</button>
-            </div>
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', borderTop: `1px solid ${A.border}`, paddingTop: 16 }}>
+                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} style={{
+                  padding: '6px 12px', background: page === 0 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  borderRadius: 4, cursor: page === 0 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === 0 ? 0.5 : 1
+                }}>← Prev</button>
+                <span style={{ color: A.textDim, fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
+                <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page === totalPages - 1} style={{
+                  padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  borderRadius: 4, cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === totalPages - 1 ? 0.5 : 1
+                }}>Next →</button>
+              </div>
+            )}
           </div>
-        </ACard>
-      ))}
+        );
+      })()}
     </div>
   );
 };

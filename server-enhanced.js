@@ -283,7 +283,9 @@ app.get('/api/system-stats', async (req, res) => {
       uptime: uptime,
     });
   } catch (err) {
-    // Fallback if parsing fails
+    if (err.message.includes('Invalid or expired session')) {
+      return res.status(401).json({ error: 'Invalid or expired session' });
+    }
     res.json({
       cpu: Math.floor(Math.random() * 60) + 15,
       memory: Math.floor(Math.random() * 25) + 60,
@@ -328,6 +330,7 @@ app.get('/api/interfaces', async (req, res) => {
       { name: 'ether1', status: 'up', util: 15 },
     ]);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     res.json([
       { name: 'ether1', status: 'up', util: 0 },
     ]);
@@ -365,6 +368,7 @@ app.get('/api/wan-status', async (req, res) => {
       { name: 'ether2', status: 'up', util: 10, ip: '0.0.0.0/24' },
     ]);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     res.json([
       { name: 'ether1', status: 'unknown', util: 0, ip: 'not-configured' },
     ]);
@@ -413,6 +417,7 @@ app.get('/api/firewall', async (req, res) => {
       droppedPackets: Math.max(0, droppedPackets),
     });
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     // Fallback if parsing fails
     res.json({
       blocked: ['(Rules not accessible)'],
@@ -443,6 +448,7 @@ app.get('/api/bandwidth', async (req, res) => {
       { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
     ]);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     res.json([
       { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
     ]);
@@ -535,6 +541,7 @@ app.get('/api/dhcp-clients', async (req, res) => {
       { vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
     ]);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     // Fallback
     res.json([
       { vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
@@ -577,6 +584,7 @@ app.get('/api/wireless', async (req, res) => {
       { name: 'wlan0', freq: '2.4 GHz', clients: 0, signal: 85 },
     ]);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     // Fallback
     res.json([
       { name: 'wlan0', freq: '2.4 GHz', clients: 0, signal: 80 },
@@ -647,6 +655,7 @@ app.get('/api/vpn', async (req, res) => {
 
     res.json(data);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     // Fallback
     res.json([
       { name: 'WireGuard', port: 51820, peers: 0, enabled: true, traffic: 0 },
@@ -704,6 +713,7 @@ app.get('/api/logs', async (req, res) => {
       { time: new Date().toLocaleTimeString(), topic: 'system', source: 'system', msg: 'System started' }
     ]);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     // Fallback
     res.json([
       { time: new Date().toLocaleTimeString(), topic: 'system', source: 'system', msg: 'Unable to fetch logs' }
@@ -783,6 +793,7 @@ app.get('/api/backups', async (req, res) => {
 
     res.json(data);
   } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
     // Fallback
     const today = new Date().toISOString().split('T')[0];
     res.json([
