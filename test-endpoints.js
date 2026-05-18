@@ -1,6 +1,6 @@
 const http = require('http');
 
-const BASE_URL = 'http://localhost:3001';
+const BASE_URL = `http://localhost:${process.env.PORT || 4444}`;
 const tests = [];
 let passed = 0;
 let failed = 0;

@@ -542,7 +542,7 @@ async function fetchTraffic(sessionId, conn) {
 
 app.post('/api/login', loginLimiter, async (req, res) => {
   try {
-    const { host, port = 22, username, password } = req.body;
+    const { host, port = 22, username, password } = req.body || {};
 
     if (!host || !username || !password) {
       return res.status(400).json({ error: 'Missing credentials: host, username, password required' });

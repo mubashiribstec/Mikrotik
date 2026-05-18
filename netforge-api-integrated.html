@@ -33,7 +33,7 @@ const AuthCtx = React.createContext({
   router: null,
   setRouter: () => {},
   logout: () => {},
-  apiBaseUrl: 'http://localhost:4444'
+  apiBaseUrl: window.location.origin
 });
 const AlertCtx = React.createContext({
   alerts: [],
@@ -159,7 +159,7 @@ class WebSocketManagerClass {
 
 // ========== API HELPER ==========
 const API = {
-  baseUrl: 'http://localhost:4444',
+  baseUrl: window.location.origin,
   wsManager: null,
 
   initWebSocket(sessionId) {
