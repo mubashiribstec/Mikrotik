@@ -13,18 +13,18 @@ app.use(express.json());
 
 // Rate limiting for login (prevent brute force)
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per window
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: 'Too many login attempts, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method !== 'POST', // Only rate limit POST requests
+  skip: (req) => req.method !== 'POST',
 });
 
 // Rate limiting for all API calls
 const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 100, // 100 requests per minute
+  windowMs: 1 * 60 * 1000,
+  max: 100,
   message: 'Too many requests, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
@@ -40,32 +40,40 @@ class RouterConnection {
     this.conn = null;
     this.isConnected = false;
     this.lastActivity = Date.now();
-    this.sessionId = Math.random().toString(36).substring(7);
   }
 
   async connect() {
     return new Promise((resolve, reject) => {
       this.conn = new ssh2.Client();
+      let settled = false;
+
+      const settle = (fn, arg) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          fn(arg);
+        }
+      };
+
+      const timer = setTimeout(() => {
+        this.conn.end();
+        settle(reject, new Error('Connection timeout (30s)'));
+      }, 30000);
 
       this.conn.on('ready', () => {
         this.isConnected = true;
         this.lastActivity = Date.now();
-        resolve();
+        settle(resolve);
       });
 
       this.conn.on('error', (err) => {
         this.isConnected = false;
-        reject(new Error(`SSH Connection failed: ${err.message}`));
+        settle(reject, new Error(`SSH Connection failed: ${err.message}`));
       });
 
       this.conn.on('close', () => {
         this.isConnected = false;
       });
-
-      const timeout = setTimeout(() => {
-        this.conn.end();
-        reject(new Error('Connection timeout (30s)'));
-      }, 30000);
 
       this.conn.connect({
         host: this.config.host,
@@ -90,8 +98,6 @@ class RouterConnection {
           hmac: ['hmac-sha2-256', 'hmac-sha1', 'hmac-md5'],
         },
       });
-
-      this.conn.on('ready', () => clearTimeout(timeout));
     });
   }
 
@@ -101,26 +107,21 @@ class RouterConnection {
     }
 
     return new Promise((resolve, reject) => {
-      let output = '';
+      let stdout = '';
+      let stderr = '';
 
       this.conn.exec(command, (err, stream) => {
         if (err) return reject(err);
 
-        stream.on('close', (code, signal) => {
+        stream.on('close', () => {
           this.lastActivity = Date.now();
-          // RouterOS often returns non-zero exit codes for successful commands;
-          // resolve with whatever output was collected rather than rejecting on code.
-          resolve(output);
+          // RouterOS often returns non-zero exit codes for valid commands.
+          // Resolve with combined output regardless of exit code.
+          resolve(stdout + stderr);
         });
 
-        stream.on('data', (data) => {
-          output += data.toString();
-        });
-
-        stream.stderr.on('data', (data) => {
-          // Append stderr to output so callers can see RouterOS error messages
-          output += data.toString();
-        });
+        stream.on('data', (data) => { stdout += data.toString(); });
+        stream.stderr.on('data', (data) => { stderr += data.toString(); });
       });
     });
   }
@@ -137,30 +138,404 @@ class RouterConnection {
 
 function getConnection(sessionId) {
   const session = sessions.get(sessionId);
-  if (!session) {
-    throw new Error('Invalid or expired session');
-  }
+  if (!session) throw new Error('Invalid or expired session');
   return connections.get(sessionId);
 }
 
+// Parse RouterOS tabular print output.
+// RouterOS format:
+//   Flags: X - disabled, R - running
+//    #   NAME              TYPE       MTU
+//    0 R ether1            ether      1500
+//    1   ether2            ether      1500
 function parseRouterOSOutput(output) {
-  const lines = output.trim().split('\n');
-  if (lines.length < 2) return [];
+  if (!output || !output.trim()) return [];
 
-  const headers = lines[0].split(/\s{2,}/).map(h => h.trim().toLowerCase().replace(/ /g, '_'));
+  const lines = output.trim().split('\n').map(l => l.replace(/\r$/, ''));
+
+  // Find the column-header line: first line that starts with optional spaces + '#'
+  let headerIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*#/.test(lines[i])) {
+      headerIdx = i;
+      break;
+    }
+  }
+
+  if (headerIdx === -1) {
+    // No tabular header — fall through to key:value parser
+    return parseRouterOSKeyValue(output);
+  }
+
+  const headerLine = lines[headerIdx];
+
+  // Find position of '#' and record column start positions for every word after it
+  const hashPos = headerLine.indexOf('#');
+  const afterHash = headerLine.substring(hashPos + 1); // e.g. "   NAME   TYPE   MTU"
+  const baseOffset = hashPos + 1;
+
+  const columns = []; // { name: string, start: number }
+  let inWord = false;
+  let wordStart = 0;
+
+  for (let c = 0; c < afterHash.length; c++) {
+    if (afterHash[c] !== ' ') {
+      if (!inWord) { inWord = true; wordStart = c; }
+    } else {
+      if (inWord) {
+        inWord = false;
+        columns.push({
+          name: afterHash.substring(wordStart, c).toLowerCase().replace(/-/g, '_'),
+          start: baseOffset + wordStart,
+        });
+      }
+    }
+  }
+  if (inWord) {
+    columns.push({
+      name: afterHash.substring(wordStart).trim().toLowerCase().replace(/-/g, '_'),
+      start: baseOffset + wordStart,
+    });
+  }
+
   const rows = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const values = lines[i].split(/\s{2,}/).map(v => v.trim());
-    const row = {};
-    headers.forEach((h, idx) => {
-      row[h] = values[idx] || '';
-    });
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    // Data rows start with optional spaces followed by a digit
+    if (!/^\s*\d/.test(line)) continue;
+
+    // Extract row index number
+    const indexMatch = line.match(/^\s*(\d+)/);
+    const rowIndex = indexMatch ? indexMatch[1] : '';
+
+    // Extract flag characters (letters between the index and the first column)
+    let flags = '';
+    if (columns.length > 0 && indexMatch) {
+      const flagsArea = line.substring(indexMatch[0].length, columns[0].start);
+      flags = flagsArea.replace(/\s/g, '');
+    }
+
+    const row = {
+      numbers: rowIndex,
+      _flags: flags,
+      running: flags.includes('R') ? 'true' : 'false',
+      disabled: flags.includes('X') ? 'true' : 'false',
+    };
+
+    for (let j = 0; j < columns.length; j++) {
+      const { name, start } = columns[j];
+      const end = j + 1 < columns.length ? columns[j + 1].start : undefined;
+      row[name] = (end !== undefined ? line.substring(start, end) : line.substring(start) || '').trim();
+    }
+
     rows.push(row);
   }
 
   return rows;
+}
+
+// Parse RouterOS key: value output (e.g. /system resource print, /ip dns print)
+function parseRouterOSKeyValue(output) {
+  if (!output || !output.trim()) return [];
+
+  const row = {};
+  for (const line of output.trim().split('\n')) {
+    // Match lines like "   uptime: 1d2h3m" or "cpu-load: 5"
+    const m = line.match(/^\s+([\w-]+):\s*(.*)$/);
+    if (m) {
+      row[m[1].toLowerCase().replace(/-/g, '_')] = m[2].trim();
+    }
+  }
+  return Object.keys(row).length > 0 ? [row] : [];
+}
+
+// ========== SHARED DATA FETCHERS ==========
+// These are called by both REST handlers and the WebSocket broadcaster.
+
+async function fetchSystemStats(conn) {
+  const output = await conn.execute('/system resource print');
+  const kv = parseRouterOSKeyValue(output)[0] || {};
+
+  const totalMemory = parseInt(kv.total_memory) || 0;
+  const freeMemory = parseInt(kv.free_memory) || 0;
+  const memoryUsed = totalMemory - freeMemory;
+  const memoryPercent = totalMemory > 0 ? Math.round((memoryUsed / totalMemory) * 100) : 0;
+
+  const totalHdd = parseInt(kv.total_hdd_space) || 0;
+  const freeHdd = parseInt(kv.free_hdd_space) || 0;
+  const hddUsed = totalHdd - freeHdd;
+  const storagePercent = totalHdd > 0 ? Math.round((hddUsed / totalHdd) * 100) : 0;
+
+  const cpuLoad = parseInt(kv.cpu_load) || 0;
+
+  return {
+    cpu: Math.max(0, Math.min(100, cpuLoad)),
+    memory: Math.max(0, Math.min(100, memoryPercent)),
+    storage: Math.max(0, Math.min(100, storagePercent)),
+    uptime: kv.uptime || 'unknown',
+  };
+}
+
+async function fetchInterfaces(conn) {
+  const output = await conn.execute('/interface print');
+  const ifaces = parseRouterOSOutput(output);
+
+  // Get per-interface byte counters for utilisation
+  let statsRows = [];
+  try {
+    const statsOut = await conn.execute('/interface print stats');
+    statsRows = parseRouterOSOutput(statsOut);
+  } catch (e) { /* optional */ }
+
+  return ifaces.map(iface => {
+    const stats = statsRows.find(s => s.name === iface.name) || {};
+    return {
+      name: iface.name || 'unknown',
+      status: iface.running === 'true' ? 'up' : 'down',
+      util: 0, // rate requires two readings; set 0 here
+      rxBytes: parseInt(stats.rx_byte) || 0,
+      txBytes: parseInt(stats.tx_byte) || 0,
+    };
+  });
+}
+
+async function fetchWanStatus(conn) {
+  const addrOutput = await conn.execute('/ip address print');
+  const addresses = parseRouterOSOutput(addrOutput);
+
+  const ifOutput = await conn.execute('/interface print');
+  const ifaces = parseRouterOSOutput(ifOutput);
+
+  return addresses.map((addr, idx) => {
+    const iface = ifaces.find(i => i.name === addr.interface);
+    return {
+      name: addr.interface || `ether${idx + 2}`,
+      status: iface ? (iface.running === 'true' ? 'up' : 'down') : 'unknown',
+      util: 0,
+      ip: addr.address || '0.0.0.0/24',
+    };
+  });
+}
+
+async function fetchFirewall(conn) {
+  const rulesOutput = await conn.execute('/ip firewall filter print');
+  const rules = parseRouterOSOutput(rulesOutput);
+
+  const blocked = rules
+    .filter(r => (r.action === 'drop' || r.action === 'reject') && r.comment)
+    .map(r => r.comment);
+
+  let activeConnections = 0;
+  try {
+    const connOut = await conn.execute('/ip firewall connection print count-only');
+    activeConnections = parseInt(connOut.trim()) || 0;
+  } catch (e) { /* optional */ }
+
+  let droppedPackets = 0;
+  try {
+    const statsOut = await conn.execute('/ip firewall filter print stats');
+    for (const line of statsOut.split('\n')) {
+      if (line.includes('packets:')) {
+        droppedPackets += parseInt(line.split('packets:')[1]?.trim()) || 0;
+      }
+    }
+  } catch (e) { /* optional */ }
+
+  return {
+    blocked: blocked.length > 0 ? blocked : ['(No drop rules configured)'],
+    activeConnections: Math.max(0, activeConnections),
+    droppedPackets: Math.max(0, droppedPackets),
+  };
+}
+
+async function fetchBandwidth(conn) {
+  const output = await conn.execute('/queue simple print');
+  const queues = parseRouterOSOutput(output);
+
+  const data = queues.map(q => ({
+    name: q.name || 'queue',
+    target: q.target || 'all',
+    down: q.max_limit ? q.max_limit.split('/')[0] : 'unlimited',
+    up: q.max_limit ? q.max_limit.split('/')[1] : 'unlimited',
+    util: 0,
+  }));
+
+  return data.length > 0 ? data : [
+    { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
+  ];
+}
+
+async function fetchDhcpClients(conn) {
+  const output = await conn.execute('/ip dhcp-server lease print');
+  const clients = parseRouterOSOutput(output);
+
+  let arpData = [];
+  try {
+    arpData = parseRouterOSOutput(await conn.execute('/ip arp print'));
+  } catch (e) { /* optional */ }
+
+  return clients.slice(0, 10).map(client => {
+    // expires-after format: "23h59m55s" or "3d23h..."
+    let leaseHours = '24h';
+    if (client.expires_after) {
+      const d = parseInt(client.expires_after.match(/(\d+)d/)?.[1]) || 0;
+      const h = parseInt(client.expires_after.match(/(\d+)h/)?.[1]) || 0;
+      leaseHours = `${d * 24 + h}h`;
+    }
+
+    let vendor = 'Device';
+    const arp = arpData.find(a => a.mac_address === client.mac_address);
+    if (arp && arp.comment) vendor = arp.comment.substring(0, 20);
+
+    return {
+      vendor,
+      ip: client.address || '0.0.0.0',
+      mac: client.mac_address || '00:00:00:00:00:00',
+      iface: client.interface || 'bridge',
+      lease: leaseHours,
+      tx: 0,
+      rx: 0,
+    };
+  });
+}
+
+async function fetchWireless(conn) {
+  const output = await conn.execute('/interface wireless print');
+  const ifaces = parseRouterOSOutput(output);
+
+  let clients = [];
+  try {
+    clients = parseRouterOSOutput(await conn.execute('/interface wireless registration-table print'));
+  } catch (e) { /* no wireless or not supported */ }
+
+  return ifaces.map(iface => {
+    const connectedClients = clients.filter(c => c.interface === iface.name).length;
+    let freq = '2.4 GHz';
+    if ((iface.band || '').includes('5') || (iface.name || '').includes('5')) freq = '5 GHz';
+
+    return {
+      name: iface.name || 'wlan0',
+      freq,
+      clients: Math.max(0, connectedClients),
+      signal: 0,
+    };
+  });
+}
+
+async function fetchVpn(conn) {
+  const data = [];
+
+  try {
+    const wgIfaces = parseRouterOSOutput(await conn.execute('/interface wireguard print'));
+    for (const wg of wgIfaces) {
+      let peers = 0;
+      try {
+        const out = await conn.execute('/interface wireguard peers print count-only');
+        peers = parseInt(out.trim()) || 0;
+      } catch (e) { /* ok */ }
+      data.push({
+        name: wg.name || 'WireGuard',
+        port: parseInt(wg.listen_port) || 51820,
+        peers,
+        enabled: wg.disabled !== 'true',
+        traffic: 0,
+      });
+    }
+  } catch (e) { /* WireGuard not configured */ }
+
+  try {
+    const l2tpOut = await conn.execute('/interface l2tp-server server print');
+    const l2tp = parseRouterOSKeyValue(l2tpOut)[0] || {};
+    if (l2tp.enabled === 'yes') {
+      let peers = 0;
+      try {
+        const out = await conn.execute('/interface l2tp-server print count-only');
+        peers = parseInt(out.trim()) || 0;
+      } catch (e) { /* ok */ }
+      data.push({ name: 'L2TP/IPsec', port: 1701, peers, enabled: true, traffic: 0 });
+    }
+  } catch (e) { /* L2TP not configured */ }
+
+  if (data.length === 0) {
+    data.push(
+      { name: 'WireGuard', port: 51820, peers: 0, enabled: false, traffic: 0 },
+      { name: 'L2TP/IPsec', port: 1701, peers: 0, enabled: false, traffic: 0 }
+    );
+  }
+
+  return data;
+}
+
+async function fetchLogs(conn) {
+  const output = await conn.execute('/log print');
+  const data = [];
+
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.trim().split(/\s+/);
+    const timestamp = `${parts[0] || ''} ${parts[1] || ''}`.trim();
+    const rest = parts.slice(2).join(' ');
+
+    let topic = 'system';
+    if (line.includes('interface')) topic = 'interface';
+    else if (line.includes('firewall')) topic = 'firewall';
+    else if (line.includes('dhcp') || line.includes('lease')) topic = 'dhcp';
+    else if (line.includes('wireless') || line.includes('wlan')) topic = 'wireless';
+    else if (line.includes('vpn') || line.includes('ipsec')) topic = 'vpn';
+
+    let source = 'system';
+    if (line.includes('ether')) source = 'ether';
+    else if (line.includes('wlan')) source = 'wireless';
+    else if (line.includes('dhcp')) source = 'DHCP';
+
+    data.push({ time: timestamp, topic, source, msg: rest.substring(0, 100) });
+  }
+
+  return data.slice(-50).reverse();
+}
+
+// Rolling traffic history per session (28 data-points, updated each poll)
+const trafficHistory = new Map();
+
+async function fetchTraffic(sessionId, conn) {
+  const statsOut = await conn.execute('/interface print stats');
+  const ifaces = parseRouterOSOutput(statsOut);
+
+  let totalRx = 0, totalTx = 0;
+  for (const iface of ifaces) {
+    totalRx += parseInt(iface.rx_byte) || 0;
+    totalTx += parseInt(iface.tx_byte) || 0;
+  }
+
+  const now = Date.now();
+
+  if (!trafficHistory.has(sessionId)) {
+    trafficHistory.set(sessionId, {
+      rx: new Array(28).fill(0),
+      tx: new Array(28).fill(0),
+      lastRx: totalRx,
+      lastTx: totalTx,
+      lastTime: now,
+    });
+    return { rx: new Array(28).fill(0), tx: new Array(28).fill(0) };
+  }
+
+  const hist = trafficHistory.get(sessionId);
+  const elapsed = Math.max(1, (now - hist.lastTime) / 1000);
+
+  // Convert bytes/s to Kbps
+  const rxKbps = Math.max(0, Math.round(((totalRx - hist.lastRx) * 8) / elapsed / 1024));
+  const txKbps = Math.max(0, Math.round(((totalTx - hist.lastTx) * 8) / elapsed / 1024));
+
+  hist.rx = [...hist.rx.slice(1), rxKbps];
+  hist.tx = [...hist.tx.slice(1), txKbps];
+  hist.lastRx = totalRx;
+  hist.lastTx = totalTx;
+  hist.lastTime = now;
+
+  return { rx: hist.rx, tx: hist.tx };
 }
 
 // ========== AUTH ENDPOINTS ==========
@@ -173,12 +548,10 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Missing credentials: host, username, password required' });
     }
 
-    // Validate input
     if (host.length > 255 || username.length > 255 || password.length > 255) {
       return res.status(400).json({ error: 'Invalid input length' });
     }
 
-    // Test connection
     const config = { host, port: parseInt(port), username, password };
     const testConn = new RouterConnection(config);
 
@@ -190,40 +563,28 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: `Connection failed: ${err.message}` });
     }
 
-    // Create session
     const sessionId = Math.random().toString(36).substring(7);
-    const session = {
-      sessionId,
-      host,
-      port: parseInt(port),
-      username,
-      createdAt: Date.now(),
-    };
+    sessions.set(sessionId, {
+      sessionId, host, port: parseInt(port), username,
+      createdAt: Date.now(), lastActivity: Date.now(),
+    });
 
-    sessions.set(sessionId, session);
-
-    // Create pooled connection
     const conn = new RouterConnection(config);
     connections.set(sessionId, conn);
 
     // Auto-cleanup after 1 hour of inactivity
     setTimeout(() => {
-      if (sessions.has(sessionId)) {
-        const session = sessions.get(sessionId);
-        if (Date.now() - session.lastActivity > 3600000) {
-          const conn = connections.get(sessionId);
-          if (conn) conn.close();
-          sessions.delete(sessionId);
-          connections.delete(sessionId);
-        }
+      const sess = sessions.get(sessionId);
+      if (sess && Date.now() - sess.lastActivity > 3600000) {
+        const c = connections.get(sessionId);
+        if (c) c.close();
+        sessions.delete(sessionId);
+        connections.delete(sessionId);
+        trafficHistory.delete(sessionId);
       }
     }, 3600000);
 
-    res.json({
-      sessionId,
-      message: 'Connected successfully',
-      router: `${host}:${port}`,
-    });
+    res.json({ sessionId, message: 'Connected successfully', router: `${host}:${port}` });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -240,6 +601,7 @@ app.post('/api/logout', (req, res) => {
 
     sessions.delete(sessionId);
     connections.delete(sessionId);
+    trafficHistory.delete(sessionId);
 
     res.json({ message: 'Logged out' });
   } catch (err) {
@@ -251,62 +613,24 @@ app.post('/api/logout', (req, res) => {
 
 app.use('/api/', apiLimiter);
 
+// Touch session activity on every authenticated request
+app.use('/api/', (req, res, next) => {
+  const sessionId = req.headers['x-session-id'];
+  if (sessionId) {
+    const sess = sessions.get(sessionId);
+    if (sess) sess.lastActivity = Date.now();
+  }
+  next();
+});
+
 app.get('/api/system-stats', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const output = await conn.execute('/system info print');
-
-    // Parse system info output
-    let uptime = 'unknown';
-    let freeMemory = 0;
-    let totalMemory = 0;
-
-    const lines = output.split('\n');
-    lines.forEach(line => {
-      if (line.includes('uptime:')) {
-        uptime = line.split('uptime:')[1]?.trim() || 'unknown';
-      }
-      if (line.includes('free-memory:')) {
-        freeMemory = parseInt(line.split('free-memory:')[1]?.trim()) || 0;
-      }
-      if (line.includes('total-memory:')) {
-        totalMemory = parseInt(line.split('total-memory:')[1]?.trim()) || 512000;
-      }
-    });
-
-    // Calculate memory percentage
-    const memoryUsed = totalMemory - freeMemory;
-    const memoryPercent = totalMemory > 0 ? Math.round((memoryUsed / totalMemory) * 100) : 0;
-
-    // Get disk/storage info
-    const resourceOutput = await conn.execute('/system resource print');
-    let cpuLoad = 0;
-    const resourceLines = resourceOutput.split('\n');
-    resourceLines.forEach(line => {
-      if (line.includes('cpu-load:')) {
-        cpuLoad = parseInt(line.split('cpu-load:')[1]?.trim()) || 0;
-      }
-    });
-
-    res.json({
-      cpu: Math.max(0, Math.min(100, cpuLoad)),
-      memory: Math.max(0, Math.min(100, memoryPercent)),
-      storage: Math.floor(Math.random() * 30) + 10, // Fallback: partial mock
-      uptime: uptime,
-    });
+    res.json(await fetchSystemStats(getConnection(sessionId)));
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) {
-      return res.status(401).json({ error: 'Invalid or expired session' });
-    }
-    res.json({
-      cpu: Math.floor(Math.random() * 60) + 15,
-      memory: Math.floor(Math.random() * 25) + 60,
-      storage: Math.floor(Math.random() * 20) + 10,
-      uptime: 'unknown',
-    });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -314,41 +638,10 @@ app.get('/api/interfaces', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const output = await conn.execute('/interface print');
-    const interfaces = parseRouterOSOutput(output);
-
-    // Get interface statistics
-    const statsOutput = await conn.execute('/interface monitor-traffic numbers=0 once');
-    const statsLines = statsOutput.split('\n');
-    const statsMap = new Map();
-
-    statsLines.forEach(line => {
-      if (line.includes('rx-bits-per-second:')) {
-        const bits = parseInt(line.split('rx-bits-per-second:')[1]?.trim()) || 0;
-        const percent = Math.min(100, Math.round((bits / 1000000) * 10)); // Assume 100Mbps = 100M bits
-        statsMap.set('rx', percent);
-      }
-    });
-
-    const data = interfaces.map(iface => {
-      const util = statsMap.get('rx') || Math.floor(Math.random() * 70) + 5;
-      return {
-        name: iface.name || 'unknown',
-        status: iface.running === 'true' ? 'up' : 'down',
-        util: Math.max(0, Math.min(100, util)),
-      };
-    });
-
-    res.json(data.length > 0 ? data : [
-      { name: 'ether1', status: 'up', util: 15 },
-    ]);
+    res.json(await fetchInterfaces(getConnection(sessionId)));
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    res.json([
-      { name: 'ether1', status: 'up', util: 0 },
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -356,37 +649,11 @@ app.get('/api/wan-status', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-
-    // Get IP addresses
-    const addrOutput = await conn.execute('/ip address print');
-    const addresses = parseRouterOSOutput(addrOutput);
-
-    // Get interface status
-    const ifOutput = await conn.execute('/interface print');
-    const interfaces = parseRouterOSOutput(ifOutput);
-
-    const data = addresses.map((addr, idx) => {
-      const iface = interfaces.find(i => i.interface === addr.interface || i.name === addr.interface);
-      const status = iface && iface.running === 'true' ? 'up' : 'down';
-
-      return {
-        name: addr.interface || `ether${idx + 2}`,
-        status: status,
-        util: Math.floor(Math.random() * 60) + 5,
-        ip: addr.address || '0.0.0.0/24',
-      };
-    });
-
-    res.json(data.length > 0 ? data : [
-      { name: 'ether2', status: 'up', util: 10, ip: '0.0.0.0/24' },
-    ]);
+    const data = await fetchWanStatus(getConnection(sessionId));
+    res.json(data.length > 0 ? data : [{ name: 'ether2', status: 'unknown', util: 0, ip: 'not-configured' }]);
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    res.json([
-      { name: 'ether1', status: 'unknown', util: 0, ip: 'not-configured' },
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -394,51 +661,10 @@ app.get('/api/firewall', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-
-    // Get firewall rules
-    const rulesOutput = await conn.execute('/ip firewall filter print');
-    const rules = parseRouterOSOutput(rulesOutput);
-
-    // Extract blocked domains from rule comments/names
-    let blocked = [];
-    rules.forEach(rule => {
-      if (rule.action === 'drop' || rule.action === 'reject') {
-        if (rule.comment) {
-          blocked.push(rule.comment);
-        }
-      }
-    });
-
-    // Get connection tracking
-    const connOutput = await conn.execute('/ip firewall connection print count-only');
-    const activeConnections = parseInt(connOutput.trim()) || 0;
-
-    // Get dropped packets stats
-    const statsOutput = await conn.execute('/ip firewall filter print stats');
-    let droppedPackets = 0;
-    const statsLines = statsOutput.split('\n');
-    statsLines.forEach(line => {
-      if (line.includes('packets:')) {
-        const packets = parseInt(line.split('packets:')[1]?.trim()) || 0;
-        droppedPackets += packets;
-      }
-    });
-
-    res.json({
-      blocked: blocked.length > 0 ? blocked : ['(No blocked domains configured)'],
-      activeConnections: Math.max(0, activeConnections),
-      droppedPackets: Math.max(0, droppedPackets),
-    });
+    res.json(await fetchFirewall(getConnection(sessionId)));
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    // Fallback if parsing fails
-    res.json({
-      blocked: ['(Rules not accessible)'],
-      activeConnections: 0,
-      droppedPackets: 0,
-    });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -446,27 +672,10 @@ app.get('/api/bandwidth', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const output = await conn.execute('/queue simple print');
-    const queues = parseRouterOSOutput(output);
-
-    const data = queues.map(queue => ({
-      name: queue.name || 'queue',
-      target: queue.target || 'all',
-      down: queue.max_limit ? queue.max_limit.split('/')[0] : 'unlimited',
-      up: queue.max_limit ? queue.max_limit.split('/')[1] : 'unlimited',
-      util: Math.floor(Math.random() * 80) + 5,
-    }));
-
-    res.json(data.length > 0 ? data : [
-      { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
-    ]);
+    res.json(await fetchBandwidth(getConnection(sessionId)));
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    res.json([
-      { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -474,93 +683,13 @@ app.get('/api/dhcp-clients', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const output = await conn.execute('/ip dhcp-server lease print');
-    const clients = parseRouterOSOutput(output);
-
-    // Get ARP data to match vendor info (MAC to hostname/device type)
-    let arpOutput = '';
-    try {
-      arpOutput = await conn.execute('/ip arp print');
-    } catch (e) {
-      // Continue without ARP data
-    }
-    const arpData = parseRouterOSOutput(arpOutput);
-
-    // Get interface traffic data
-    let trafficMap = {};
-    try {
-      const ifaceOutput = await conn.execute('/interface print');
-      const ifaces = parseRouterOSOutput(ifaceOutput);
-      // Try to get monitor-traffic for bandwidth (may not be available on all RouterOS versions)
-      for (const iface of ifaces) {
-        try {
-          const traffic = await conn.execute(`/interface monitor-traffic interface=${iface.name} numbers=1`);
-          const lines = traffic.split('\n');
-          const dataLine = lines.find(l => l.includes('bytes'));
-          if (dataLine) {
-            const parts = dataLine.split(/\s+/);
-            trafficMap[iface.name] = {
-              tx: parseInt(parts[0]) || 0,
-              rx: parseInt(parts[1]) || 0
-            };
-          }
-        } catch (e) {
-          // Skip traffic for this interface
-        }
-      }
-    } catch (e) {
-      // Continue without traffic data
-    }
-
-    const data = clients.slice(0, 4).map(client => {
-      // Parse lease-time to hours
-      let leaseHours = '24h';
-      if (client.lease_time) {
-        const seconds = parseInt(client.lease_time);
-        if (!isNaN(seconds)) {
-          leaseHours = Math.floor(seconds / 3600) + 'h';
-        }
-      }
-
-      // Try to find vendor from ARP or use generic device
-      let vendor = 'Device';
-      const arpEntry = arpData.find(a => a.mac_address === client.mac_address);
-      if (arpEntry && arpEntry.comment) {
-        vendor = arpEntry.comment.substring(0, 20);
-      } else if (client.mac_address) {
-        const macPrefix = client.mac_address.substring(0, 8).toUpperCase();
-        // Simple vendor detection from MAC prefix (common vendors)
-        if (macPrefix.startsWith('00:1A:2B')) vendor = 'Apple';
-        else if (macPrefix.startsWith('B8:27:EB')) vendor = 'Raspberry Pi';
-        else if (macPrefix.startsWith('DC:A6:32')) vendor = 'Tp-Link';
-        else vendor = 'Device';
-      }
-
-      // Get traffic from map or use fallback
-      const traffic = trafficMap[client.interface] || { tx: 0, rx: 0 };
-
-      return {
-        vendor: vendor,
-        ip: client.address || '192.168.1.100',
-        mac: client.mac_address || '00:00:00:00:00:00',
-        iface: client.interface || 'ether1',
-        lease: leaseHours,
-        tx: traffic.tx || Math.floor(Math.random() * 1000) + 500,
-        rx: traffic.rx || Math.floor(Math.random() * 600) + 200,
-      };
-    });
-
+    const data = await fetchDhcpClients(getConnection(sessionId));
     res.json(data.length > 0 ? data : [
       { vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
     ]);
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    // Fallback
-    res.json([
-      { vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -568,42 +697,11 @@ app.get('/api/wireless', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const output = await conn.execute('/interface wireless print');
-    const interfaces = parseRouterOSOutput(output);
-
-    // Get client info
-    const clientOutput = await conn.execute('/interface wireless registration-table print');
-    const clients = parseRouterOSOutput(clientOutput);
-
-    // Map interfaces with real data
-    const data = interfaces.map(iface => {
-      // Count clients connected to this interface
-      const connectedClients = clients.filter(c => c.interface === iface.name).length;
-
-      // Determine frequency from interface name or details
-      let freq = '2.4 GHz';
-      if (iface.band && iface.band.includes('5')) freq = '5 GHz';
-      else if (iface.name && iface.name.includes('5')) freq = '5 GHz';
-
-      return {
-        name: iface.name || 'wlan0',
-        freq: freq,
-        clients: Math.max(0, connectedClients),
-        signal: Math.floor(Math.random() * 20) + 80, // Still approximate: 80-100%
-      };
-    });
-
-    res.json(data.length > 0 ? data : [
-      { name: 'wlan0', freq: '2.4 GHz', clients: 0, signal: 85 },
-    ]);
+    const data = await fetchWireless(getConnection(sessionId));
+    res.json(data.length > 0 ? data : [{ name: 'wlan0', freq: '2.4 GHz', clients: 0, signal: 0 }]);
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    // Fallback
-    res.json([
-      { name: 'wlan0', freq: '2.4 GHz', clients: 0, signal: 80 },
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -611,71 +709,10 @@ app.get('/api/vpn', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const data = [];
-
-    // Try WireGuard
-    try {
-      const wgOutput = await conn.execute('/interface wireguard print');
-      const wgInterfaces = parseRouterOSOutput(wgOutput);
-
-      for (const wg of wgInterfaces) {
-        // Get WireGuard peers count
-        let peerCount = 0;
-        try {
-          const peerOutput = await conn.execute(`/interface wireguard peers print numbers=0`);
-          peerCount = (peerOutput.split('\n').length - 1) || 0;
-        } catch (e) {
-          // Default to 0 peers
-        }
-
-        data.push({
-          name: wg.name || 'WireGuard',
-          port: wg.listen_port || 51820,
-          peers: peerCount,
-          enabled: wg.disabled !== 'true',
-          traffic: Math.floor(Math.random() * 500) + 100,
-        });
-      }
-    } catch (e) {
-      // WireGuard not available
-    }
-
-    // Try IPsec
-    try {
-      const ipsecOutput = await conn.execute('/ip ipsec print');
-      const ipsecInterfaces = parseRouterOSOutput(ipsecOutput);
-
-      for (const ipsec of ipsecInterfaces) {
-        data.push({
-          name: ipsec.name || 'IPsec',
-          port: 500,
-          peers: parseInt(ipsec.peer) ? 1 : 0,
-          enabled: ipsec.disabled !== 'true',
-          traffic: Math.floor(Math.random() * 300) + 50,
-        });
-      }
-    } catch (e) {
-      // IPsec not available
-    }
-
-    // Fallback if no VPN found
-    if (data.length === 0) {
-      data.push(
-        { name: 'WireGuard', port: 51820, peers: 0, enabled: true, traffic: 0 },
-        { name: 'L2TP/IPsec', port: 1701, peers: 0, enabled: false, traffic: 0 }
-      );
-    }
-
-    res.json(data);
+    res.json(await fetchVpn(getConnection(sessionId)));
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    // Fallback
-    res.json([
-      { name: 'WireGuard', port: 51820, peers: 0, enabled: true, traffic: 0 },
-      { name: 'L2TP/IPsec', port: 1701, peers: 0, enabled: false, traffic: 0 }
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -683,56 +720,10 @@ app.get('/api/logs', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const conn = getConnection(sessionId);
-    const output = await conn.execute('/log print follow=no numbers=0..49');
-
-    // Parse log entries
-    const data = [];
-    const lines = output.split('\n');
-
-    lines.forEach((line, index) => {
-      if (!line.trim() || index === 0) return;
-
-      // Try to extract log components from line
-      const parts = line.split(' ');
-      const timestamp = parts[0] || new Date().toLocaleTimeString();
-
-      // Determine topic from log content
-      let topic = 'system';
-      if (line.includes('interface')) topic = 'interface';
-      else if (line.includes('firewall')) topic = 'firewall';
-      else if (line.includes('dhcp') || line.includes('lease')) topic = 'dhcp';
-      else if (line.includes('wireless') || line.includes('wlan')) topic = 'wireless';
-      else if (line.includes('vpn') || line.includes('ipsec')) topic = 'vpn';
-
-      // Extract source
-      let source = 'system';
-      if (line.includes('ether')) source = 'ether1';
-      else if (line.includes('wlan')) source = 'wireless';
-      else if (line.includes('dhcp')) source = 'DHCP';
-
-      // Use actual log message
-      const message = line.substring(Math.min(15, line.length)).trim() || 'Event occurred';
-
-      data.push({
-        time: timestamp,
-        topic: topic,
-        source: source,
-        msg: message.substring(0, 80) // Limit length
-      });
-    });
-
-    // Return real logs or fallback
-    res.json(data.length > 0 ? data.slice(0, 50) : [
-      { time: new Date().toLocaleTimeString(), topic: 'system', source: 'system', msg: 'System started' }
-    ]);
+    res.json(await fetchLogs(getConnection(sessionId)));
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    // Fallback
-    res.json([
-      { time: new Date().toLocaleTimeString(), topic: 'system', source: 'system', msg: 'Unable to fetch logs' }
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -742,12 +733,17 @@ app.get('/api/scripts', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const conn = getConnection(sessionId);
-    await conn.execute('/system script print');
+    const output = await conn.execute('/system script print');
+    const scripts = parseRouterOSOutput(output);
 
-    res.json([
-      { name: 'backup_daily', lastRun: new Date(Date.now() - 86400000).toLocaleString(), schedule: '0 2 * * *', status: 'success' },
-      { name: 'health_check', lastRun: new Date(Date.now() - 300000).toLocaleString(), schedule: '*/5 * * * *', status: 'success' },
-    ]);
+    const data = scripts.map(s => ({
+      name: s.name || 'unknown',
+      lastRun: s.last_started || 'never',
+      runCount: parseInt(s.run_count) || 0,
+      policy: s.policy || '',
+    }));
+
+    res.json(data.length > 0 ? data : []);
   } catch (err) {
     res.status(401).json({ error: err.message });
   }
@@ -762,58 +758,39 @@ app.get('/api/backups', async (req, res) => {
     const output = await conn.execute('/file print');
     const files = parseRouterOSOutput(output);
 
-    // Filter backup files (.backup extension)
     const backupFiles = files.filter(f =>
-      (f.name && f.name.endsWith('.backup')) ||
-      (f.name && f.name.endsWith('.bin'))
+      f.name && (f.name.endsWith('.backup') || f.name.endsWith('.bin'))
     );
 
     const data = backupFiles.slice(0, 10).map(file => {
-      // Parse size: RouterOS returns size in bytes
       let sizeStr = '0 MB';
-      if (file.size) {
-        const sizeBytes = parseInt(file.size);
-        if (!isNaN(sizeBytes)) {
-          const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
-          sizeStr = sizeMB + ' MB';
-        }
+      const sizeBytes = parseInt(file.size);
+      if (!isNaN(sizeBytes)) {
+        sizeStr = (sizeBytes / (1024 * 1024)).toFixed(1) + ' MB';
       }
 
-      // Determine trigger type from filename patterns
       let trigger = 'Manual';
-      if (file.name && (file.name.includes('scheduled') || file.name.includes('auto'))) {
-        trigger = 'Scheduled';
-      } else if (file.name && file.name.includes('daily')) {
+      if (file.name && (file.name.includes('scheduled') || file.name.includes('auto') || file.name.includes('daily'))) {
         trigger = 'Scheduled';
       }
-
-      // Use modification time or created time
-      const timestamp = file['creation_time'] || file['modification_time'] || new Date().toLocaleString();
 
       return {
         filename: file.name || 'unknown.backup',
         size: sizeStr,
-        timestamp: timestamp,
-        trigger: trigger,
+        timestamp: file.creation_time || file.modification_time || new Date().toLocaleString(),
+        trigger,
       };
     });
 
-    // Fallback if no backups found
     if (data.length === 0) {
       const today = new Date().toISOString().split('T')[0];
-      data.push(
-        { filename: `backup-${today}-full.backup`, size: '0 MB', timestamp: new Date().toLocaleString(), trigger: 'Manual' }
-      );
+      data.push({ filename: `backup-${today}.backup`, size: '0 MB', timestamp: new Date().toLocaleString(), trigger: 'Manual' });
     }
 
     res.json(data);
   } catch (err) {
-    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: 'Invalid or expired session' });
-    // Fallback
-    const today = new Date().toISOString().split('T')[0];
-    res.json([
-      { filename: `backup-${today}-full.backup`, size: '0 MB', timestamp: new Date().toLocaleString(), trigger: 'Manual' }
-    ]);
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -833,12 +810,11 @@ app.get('/api/ip-addresses', async (req, res) => {
       address: addr.address || '',
       interface: addr.interface || '',
       disabled: addr.disabled === 'true',
-      comment: addr.comment || ''
+      comment: addr.comment || '',
     }));
 
     res.json(data.length > 0 ? data : [
       { id: '0', address: '192.168.1.1/24', interface: 'ether1', disabled: false, comment: 'LAN' },
-      { id: '1', address: '203.0.113.1/32', interface: 'ether2', disabled: false, comment: 'WAN' }
     ]);
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -851,19 +827,11 @@ app.post('/api/ip-addresses/add', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { address, interface: iface, comment } = req.body;
-
-    if (!address || !iface) {
-      return res.status(400).json({ error: 'Address and interface required' });
-    }
-
-    // Validate IP/CIDR format
-    if (!/^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(address)) {
-      return res.status(400).json({ error: 'Invalid IP address format' });
-    }
+    if (!address || !iface) return res.status(400).json({ error: 'Address and interface required' });
+    if (!/^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(address)) return res.status(400).json({ error: 'Invalid IP address format' });
 
     const conn = getConnection(sessionId);
-    const cmd = `/ip address add address=${address} interface=${iface}${comment ? ` comment=${comment}` : ''}`;
-    await conn.execute(cmd);
+    await conn.execute(`/ip address add address=${address} interface=${iface}${comment ? ` comment="${comment}"` : ''}`);
 
     res.json({ success: true, message: 'IP address added' });
   } catch (err) {
@@ -879,9 +847,7 @@ app.post('/api/ip-addresses/remove', async (req, res) => {
     const { id } = req.body;
     if (!id) return res.status(400).json({ error: 'ID required' });
 
-    const conn = getConnection(sessionId);
-    await conn.execute(`/ip address remove numbers=${id}`);
-
+    await getConnection(sessionId).execute(`/ip address remove numbers=${id}`);
     res.json({ success: true, message: 'IP address removed' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -905,11 +871,11 @@ app.get('/api/routes', async (req, res) => {
       gateway: route.gateway || '',
       distance: route.distance || '0',
       disabled: route.disabled === 'true',
-      comment: route.comment || ''
+      comment: route.comment || '',
     }));
 
     res.json(data.length > 0 ? data : [
-      { id: '0', destination: '0.0.0.0/0', gateway: '203.0.113.254', distance: '0', disabled: false, comment: 'Default route' }
+      { id: '0', destination: '0.0.0.0/0', gateway: '', distance: '0', disabled: false, comment: 'Default route' },
     ]);
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -922,19 +888,14 @@ app.post('/api/routes/add', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { destination, gateway, distance, comment } = req.body;
+    if (!destination || !gateway) return res.status(400).json({ error: 'Destination and gateway required' });
+    if (!/^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(destination)) return res.status(400).json({ error: 'Invalid destination format' });
 
-    if (!destination || !gateway) {
-      return res.status(400).json({ error: 'Destination and gateway required' });
-    }
+    let cmd = `/ip route add dst-address=${destination} gateway=${gateway}`;
+    if (distance) cmd += ` distance=${distance}`;
+    if (comment) cmd += ` comment="${comment}"`;
 
-    if (!/^\d+\.\d+\.\d+\.\d+(\/\d+)?$/.test(destination)) {
-      return res.status(400).json({ error: 'Invalid destination format' });
-    }
-
-    const conn = getConnection(sessionId);
-    const cmd = `/ip route add dst-address=${destination} gateway=${gateway}${distance ? ` distance=${distance}` : ''}${comment ? ` comment=${comment}` : ''}`;
-    await conn.execute(cmd);
-
+    await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'Route added' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -949,9 +910,7 @@ app.post('/api/routes/remove', async (req, res) => {
     const { id } = req.body;
     if (!id) return res.status(400).json({ error: 'Route ID required' });
 
-    const conn = getConnection(sessionId);
-    await conn.execute(`/ip route remove numbers=${id}`);
-
+    await getConnection(sessionId).execute(`/ip route remove numbers=${id}`);
     res.json({ success: true, message: 'Route removed' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -967,14 +926,14 @@ app.get('/api/dns', async (req, res) => {
 
     const conn = getConnection(sessionId);
     const output = await conn.execute('/ip dns print');
+    const kv = parseRouterOSKeyValue(output)[0] || {};
 
-    // Mock DNS response
     res.json({
-      servers: ['8.8.8.8', '8.8.4.4'],
-      allowRemoteRequests: false,
-      cacheSize: 2048,
-      cacheMaxTtl: 86400,
-      comment: ''
+      servers: (kv.servers || '').split(',').map(s => s.trim()).filter(Boolean),
+      allowRemoteRequests: kv.allow_remote_requests === 'yes',
+      cacheSize: parseInt(kv.cache_size) || 2048,
+      cacheMaxTtl: kv.cache_max_ttl || '1w',
+      comment: kv.comment || '',
     });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -987,16 +946,12 @@ app.post('/api/dns/update', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { servers, allowRemoteRequests } = req.body;
-
     if (!Array.isArray(servers) || servers.length === 0) {
       return res.status(400).json({ error: 'At least one DNS server required' });
     }
 
-    const conn = getConnection(sessionId);
-    const serverList = servers.join(',');
-    const cmd = `/ip dns set servers=${serverList} allow-remote-requests=${allowRemoteRequests ? 'yes' : 'no'}`;
-    await conn.execute(cmd);
-
+    const cmd = `/ip dns set servers=${servers.join(',')} allow-remote-requests=${allowRemoteRequests ? 'yes' : 'no'}`;
+    await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'DNS settings updated' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1019,15 +974,13 @@ app.get('/api/nat', async (req, res) => {
       chain: rule.chain || 'srcnat',
       srcAddress: rule.src_address || '',
       dstAddress: rule.dst_address || '',
-      protocol: rule.protocol || 'tcp',
+      protocol: rule.protocol || '',
       action: rule.action || 'masquerade',
       disabled: rule.disabled === 'true',
-      comment: rule.comment || ''
+      comment: rule.comment || '',
     }));
 
-    res.json(data.length > 0 ? data : [
-      { id: '0', chain: 'srcnat', srcAddress: '192.168.1.0/24', dstAddress: '', protocol: 'tcp/udp', action: 'masquerade', disabled: false, comment: 'LAN masquerade' }
-    ]);
+    res.json(data.length > 0 ? data : []);
   } catch (err) {
     res.status(401).json({ error: err.message });
   }
@@ -1039,20 +992,15 @@ app.post('/api/nat/add', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { chain, srcAddress, dstAddress, action, protocol, comment } = req.body;
+    if (!chain || !action) return res.status(400).json({ error: 'Chain and action required' });
 
-    if (!chain || !action) {
-      return res.status(400).json({ error: 'Chain and action required' });
-    }
-
-    const conn = getConnection(sessionId);
     let cmd = `/ip firewall nat add chain=${chain} action=${action}`;
     if (srcAddress) cmd += ` src-address=${srcAddress}`;
     if (dstAddress) cmd += ` dst-address=${dstAddress}`;
     if (protocol) cmd += ` protocol=${protocol}`;
-    if (comment) cmd += ` comment=${comment}`;
+    if (comment) cmd += ` comment="${comment}"`;
 
-    await conn.execute(cmd);
-
+    await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'NAT rule added' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1067,9 +1015,7 @@ app.post('/api/nat/remove', async (req, res) => {
     const { id } = req.body;
     if (!id) return res.status(400).json({ error: 'Rule ID required' });
 
-    const conn = getConnection(sessionId);
-    await conn.execute(`/ip firewall nat remove numbers=${id}`);
-
+    await getConnection(sessionId).execute(`/ip firewall nat remove numbers=${id}`);
     res.json({ success: true, message: 'NAT rule removed' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1083,13 +1029,22 @@ app.get('/api/masquerade', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
-    res.json({
-      enabled: true,
-      srcAddress: '192.168.1.0/24',
-      outInterface: 'ether2',
-      protocols: ['tcp', 'udp'],
-      comment: 'Main LAN masquerade'
-    });
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip firewall nat print');
+    const rules = parseRouterOSOutput(output);
+
+    const masq = rules.find(r => r.action === 'masquerade');
+    if (masq) {
+      res.json({
+        enabled: masq.disabled !== 'true',
+        srcAddress: masq.src_address || '',
+        outInterface: masq.out_interface || '',
+        protocols: masq.protocol ? [masq.protocol] : [],
+        comment: masq.comment || '',
+      });
+    } else {
+      res.json({ enabled: false, srcAddress: '', outInterface: '', protocols: [], comment: '' });
+    }
   } catch (err) {
     res.status(401).json({ error: err.message });
   }
@@ -1101,11 +1056,8 @@ app.post('/api/masquerade/toggle', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { enabled } = req.body;
-
-    const conn = getConnection(sessionId);
     const cmd = `/ip firewall nat set [find action=masquerade] disabled=${enabled ? 'no' : 'yes'}`;
-    await conn.execute(cmd);
-
+    await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: `Masquerade ${enabled ? 'enabled' : 'disabled'}` });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1120,14 +1072,31 @@ app.get('/api/hotspot', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const conn = getConnection(sessionId);
-    const output = await conn.execute('/ip hotspot profile print');
+
+    const output = await conn.execute('/ip hotspot print');
+    const hotspots = parseRouterOSOutput(output);
+
+    let activeUsers = 0;
+    try {
+      const activeOut = await conn.execute('/ip hotspot active print count-only');
+      activeUsers = parseInt(activeOut.trim()) || 0;
+    } catch (e) { /* optional */ }
+
+    let profiles = [];
+    try {
+      const profOut = await conn.execute('/ip hotspot profile print');
+      const profRows = parseRouterOSOutput(profOut);
+      profiles = profRows.map(p => ({
+        id: p.numbers || '',
+        name: p.name || 'default',
+        comment: p.comment || '',
+      }));
+    } catch (e) { /* optional */ }
 
     res.json({
-      enabled: true,
-      activeUsers: 8,
-      profiles: [
-        { id: '0', name: 'default', routes: true, dns: true, comment: 'Default hotspot profile' }
-      ]
+      enabled: hotspots.length > 0 && hotspots[0].disabled !== 'true',
+      activeUsers,
+      profiles,
     });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1140,12 +1109,18 @@ app.get('/api/hotspot/users', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const conn = getConnection(sessionId);
-    await conn.execute('/ip hotspot user print');
+    const output = await conn.execute('/ip hotspot user print');
+    const users = parseRouterOSOutput(output);
 
-    res.json([
-      { id: '0', name: 'user1', profile: 'default', disabled: false, comment: 'Test user' },
-      { id: '1', name: 'user2', profile: 'default', disabled: false, comment: 'Test user 2' }
-    ]);
+    const data = users.map(u => ({
+      id: u.numbers || '',
+      name: u.name || '',
+      profile: u.profile || 'default',
+      disabled: u.disabled === 'true',
+      comment: u.comment || '',
+    }));
+
+    res.json(data);
   } catch (err) {
     res.status(401).json({ error: err.message });
   }
@@ -1157,15 +1132,12 @@ app.post('/api/hotspot/user/add', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { username, password, profile, comment } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password required' });
-    }
+    let cmd = `/ip hotspot user add name="${username}" password="${password}" profile=${profile || 'default'}`;
+    if (comment) cmd += ` comment="${comment}"`;
 
-    const conn = getConnection(sessionId);
-    const cmd = `/ip hotspot user add name=${username} password=${password} profile=${profile || 'default'}${comment ? ` comment=${comment}` : ''}`;
-    await conn.execute(cmd);
-
+    await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'Hotspot user added' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1180,9 +1152,7 @@ app.post('/api/hotspot/user/remove', async (req, res) => {
     const { id } = req.body;
     if (!id) return res.status(400).json({ error: 'User ID required' });
 
-    const conn = getConnection(sessionId);
-    await conn.execute(`/ip hotspot user remove numbers=${id}`);
-
+    await getConnection(sessionId).execute(`/ip hotspot user remove numbers=${id}`);
     res.json({ success: true, message: 'Hotspot user removed' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -1193,23 +1163,11 @@ app.post('/api/hotspot/user/remove', async (req, res) => {
 
 const scriptExecutions = new Map();
 
-// Whitelist of allowed scripts (prevent command injection)
 const ALLOWED_SCRIPTS = new Set([
-  'system_info',
-  'daily_backup',
-  'health_check',
-  'cleanup_logs',
-  'interface_monitor',
-  'bandwidth_report',
-  'firewall_stats',
-  'dhcp_status',
-  'wireless_monitor',
-  'vpn_check',
-  'system_update_check',
-  'backup_restore',
-  'reset_interface',
-  'restart_service',
-  'check_dns'
+  'system_info', 'daily_backup', 'health_check', 'cleanup_logs',
+  'interface_monitor', 'bandwidth_report', 'firewall_stats', 'dhcp_status',
+  'wireless_monitor', 'vpn_check', 'system_update_check', 'backup_restore',
+  'reset_interface', 'restart_service', 'check_dns',
 ]);
 
 app.post('/api/scripts/execute', async (req, res) => {
@@ -1221,32 +1179,21 @@ app.post('/api/scripts/execute', async (req, res) => {
     if (!scriptName || typeof scriptName !== 'string') {
       return res.status(400).json({ error: 'Invalid script name format' });
     }
-
-    // Validate script is in whitelist
     if (!ALLOWED_SCRIPTS.has(scriptName)) {
       return res.status(403).json({ error: 'Script not allowed' });
     }
 
     const executionId = Math.random().toString(36).substring(7);
     const execution = {
-      executionId,
-      scriptName,
-      status: 'running',
-      output: '',
-      exitCode: null,
-      startedAt: Date.now(),
-      sessionId
+      executionId, scriptName, status: 'running',
+      output: '', exitCode: null, startedAt: Date.now(), sessionId,
     };
-
     scriptExecutions.set(executionId, execution);
 
-    // Execute in background
     (async () => {
       try {
         const conn = getConnection(sessionId);
-        const command = `/system script run name="${scriptName}"`;
-        const output = await conn.execute(command);
-        execution.output = output;
+        execution.output = await conn.execute(`/system script run name="${scriptName}"`);
         execution.status = 'done';
         execution.exitCode = 0;
       } catch (err) {
@@ -1264,56 +1211,66 @@ app.post('/api/scripts/execute', async (req, res) => {
 
 app.get('/api/scripts/:executionId/output', (req, res) => {
   try {
-    const { executionId } = req.params;
-    const execution = scriptExecutions.get(executionId);
-
-    if (!execution) {
-      return res.status(404).json({ error: 'Execution not found' });
-    }
+    const execution = scriptExecutions.get(req.params.executionId);
+    if (!execution) return res.status(404).json({ error: 'Execution not found' });
 
     const elapsed = Date.now() - execution.startedAt;
     res.json({
-      executionId,
+      executionId: execution.executionId,
       status: execution.status,
       output: execution.output,
       exitCode: execution.exitCode,
-      elapsed
+      elapsed,
     });
 
-    // Clean up old executions (>10 min)
-    if (elapsed > 600000) {
-      scriptExecutions.delete(executionId);
-    }
+    if (elapsed > 600000) scriptExecutions.delete(req.params.executionId);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ========== HELPER ENDPOINTS ==========
+// ========== TRAFFIC & DIAGNOSTICS ==========
 
-app.get('/api/traffic', (req, res) => {
-  const SAMPLE_RX = [22,28,24,30,40,32,38,55,72,68,90,84,72,68,55,62,70,82,95,88,76,72,68,70,75,80,72,68];
-  const SAMPLE_TX = [12,16,18,15,22,18,22,28,38,36,48,45,38,35,28,32,36,42,50,46,40,38,35,36,40,42,38,36];
-
-  res.json({
-    rx: SAMPLE_RX.map(v => v + Math.floor(Math.random() * 20) - 10),
-    tx: SAMPLE_TX.map(v => v + Math.floor(Math.random() * 15) - 7),
-  });
+app.get('/api/traffic', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    res.json(await fetchTraffic(sessionId, getConnection(sessionId)));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/top-talkers', (req, res) => {
-  res.json([
-    { ip: '192.168.1.100', rx: Math.floor(Math.random() * 500) + 400, tx: Math.floor(Math.random() * 300) + 200 },
-    { ip: '192.168.1.105', rx: Math.floor(Math.random() * 600) + 500, tx: Math.floor(Math.random() * 400) + 300 },
-  ]);
+app.get('/api/top-talkers', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+
+    // Use DHCP leases as the authoritative list of active clients
+    const output = await conn.execute('/ip dhcp-server lease print');
+    const leases = parseRouterOSOutput(output);
+
+    // RouterOS does not expose per-client bandwidth without accounting;
+    // report the client list with zero rx/tx (accurate, not fabricated).
+    const data = leases.slice(0, 5).map(l => ({
+      ip: l.address || '0.0.0.0',
+      mac: l.mac_address || '',
+      rx: 0,
+      tx: 0,
+    }));
+
+    res.json(data.length > 0 ? data : [{ ip: '0.0.0.0', mac: '', rx: 0, tx: 0 }]);
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    sessions: sessions.size,
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: 'ok', sessions: sessions.size, timestamp: new Date().toISOString() });
 });
 
 // ========== SERVE STATIC FILES ==========
@@ -1333,27 +1290,22 @@ app.use((err, req, res, next) => {
 
 // ========== WEBSOCKET SERVER ==========
 
-const wsClients = new Map(); // sessionId -> Set of WebSocket connections
-const lastDataCache = new Map(); // endpoint -> lastData for delta detection
+const wsClients = new Map();
+const lastDataCache = new Map();
 const MAX_CACHE_SIZE = 1000;
 let cacheSize = 0;
 
 class WebSocketManager {
   constructor(wss) {
     this.wss = wss;
-    this.subscriptions = new Map(); // sessionId -> Set of subscribed endpoints
+    this.subscriptions = new Map();
     this.startBroadcaster();
   }
 
   addClient(sessionId, ws) {
-    if (!wsClients.has(sessionId)) {
-      wsClients.set(sessionId, new Set());
-    }
+    if (!wsClients.has(sessionId)) wsClients.set(sessionId, new Set());
     wsClients.get(sessionId).add(ws);
-
-    if (!this.subscriptions.has(sessionId)) {
-      this.subscriptions.set(sessionId, new Set());
-    }
+    if (!this.subscriptions.has(sessionId)) this.subscriptions.set(sessionId, new Set());
   }
 
   removeClient(sessionId, ws) {
@@ -1368,9 +1320,7 @@ class WebSocketManager {
   }
 
   subscribe(sessionId, endpoint) {
-    if (!this.subscriptions.has(sessionId)) {
-      this.subscriptions.set(sessionId, new Set());
-    }
+    if (!this.subscriptions.has(sessionId)) this.subscriptions.set(sessionId, new Set());
     this.subscriptions.get(sessionId).add(endpoint);
   }
 
@@ -1378,43 +1328,26 @@ class WebSocketManager {
     const clients = wsClients.get(sessionId);
     if (!clients || !data) return;
 
-    // Delta detection: only send if data changed
     const cacheKey = `${sessionId}:${endpoint}`;
+    const currentStr = JSON.stringify(data);
     const cached = lastDataCache.get(cacheKey);
-    const currentDataStr = JSON.stringify(data);
 
-    // Compare with cached string (not object, to avoid reference issues)
-    if (cached && cached.str === currentDataStr) {
-      return; // No change, skip broadcast
-    }
+    if (cached && cached.str === currentStr) return; // no change
 
-    // Store stringified version + deep clone to prevent reference mutations
-    lastDataCache.set(cacheKey, {
-      str: currentDataStr,
-      data: JSON.parse(currentDataStr)
-    });
-
-    // Implement cache size eviction (FIFO)
+    lastDataCache.set(cacheKey, { str: currentStr });
     cacheSize++;
     if (cacheSize > MAX_CACHE_SIZE) {
-      const firstKey = lastDataCache.keys().next().value;
-      lastDataCache.delete(firstKey);
+      lastDataCache.delete(lastDataCache.keys().next().value);
       cacheSize--;
     }
 
-    const message = JSON.stringify({
-      type: endpoint,
-      timestamp: Date.now(),
-      data
-    });
+    const message = JSON.stringify({ type: endpoint, timestamp: Date.now(), data });
 
     clients.forEach(ws => {
       if (ws.readyState === WebSocket.OPEN) {
         const subs = this.subscriptions.get(sessionId);
         if (subs && subs.has(endpoint)) {
-          ws.send(message, err => {
-            if (err) console.error('WS send error:', err);
-          });
+          ws.send(message, err => { if (err) console.error('WS send error:', err); });
         }
       }
     });
@@ -1422,87 +1355,32 @@ class WebSocketManager {
 
   startBroadcaster() {
     setInterval(async () => {
-      const endpoints = [
-        '/api/system-stats',
-        '/api/interfaces',
-        '/api/wan-status',
-        '/api/firewall',
-        '/api/bandwidth',
-        '/api/dhcp-clients',
-        '/api/wireless',
-        '/api/vpn',
-        '/api/logs'
-      ];
-
       for (const [sessionId, conn] of connections.entries()) {
         if (!conn.isConnected) continue;
 
-        for (const endpoint of endpoints) {
-          try {
-            let data;
-            switch (endpoint) {
-              case '/api/system-stats':
-                data = {
-                  cpu: Math.floor(Math.random() * 60) + 15,
-                  memory: Math.floor(Math.random() * 25) + 60,
-                  storage: Math.floor(Math.random() * 20) + 10,
-                  uptime: '45 days 12h'
-                };
-                break;
-              case '/api/interfaces':
-                data = [
-                  { name: 'ether1', status: 'up', util: Math.floor(Math.random() * 70) + 10 },
-                  { name: 'ether2', status: 'up', util: Math.floor(Math.random() * 60) + 15 }
-                ];
-                break;
-              case '/api/wan-status':
-                data = [
-                  { name: 'ether2', status: 'up', util: Math.floor(Math.random() * 60) + 20, ip: '203.0.113.42' }
-                ];
-                break;
-              case '/api/firewall':
-                data = {
-                  blocked: ['YouTube', 'Facebook', 'TikTok'],
-                  activeConnections: Math.floor(Math.random() * 500) + 200,
-                  droppedPackets: Math.floor(Math.random() * 50000) + 5000
-                };
-                break;
-              case '/api/bandwidth':
-                data = [
-                  { name: 'download_limit', target: '192.168.1.0/24', down: '10M', up: '5M', util: Math.floor(Math.random() * 60) + 20 }
-                ];
-                break;
-              case '/api/dhcp-clients':
-                data = [
-                  { vendor: 'Apple', ip: '192.168.1.100', mac: '00:1A:2B:3C:4D:5E', iface: 'ether1', lease: '18h', tx: 850, rx: 420 }
-                ];
-                break;
-              case '/api/wireless':
-                data = [
-                  { name: 'NetForge-Main', freq: '2.4 GHz', clients: 12, signal: 92 }
-                ];
-                break;
-              case '/api/vpn':
-                data = [
-                  { name: 'WireGuard', port: 51820, peers: Math.floor(Math.random() * 8) + 2, enabled: true, traffic: Math.floor(Math.random() * 500) + 100 }
-                ];
-                break;
-              case '/api/logs':
-                data = [
-                  { time: new Date().toLocaleTimeString(), topic: 'system', source: 'system', msg: 'running' }
-                ];
-                break;
-              default:
-                continue;
-            }
+        // Map each WebSocket endpoint to the real data-fetcher
+        const fetchers = [
+          ['/api/system-stats',  () => fetchSystemStats(conn)],
+          ['/api/interfaces',    () => fetchInterfaces(conn)],
+          ['/api/wan-status',    () => fetchWanStatus(conn)],
+          ['/api/firewall',      () => fetchFirewall(conn)],
+          ['/api/bandwidth',     () => fetchBandwidth(conn)],
+          ['/api/dhcp-clients',  () => fetchDhcpClients(conn)],
+          ['/api/wireless',      () => fetchWireless(conn)],
+          ['/api/vpn',           () => fetchVpn(conn)],
+          ['/api/logs',          () => fetchLogs(conn)],
+        ];
 
-            await wsManager.broadcast(sessionId, endpoint, data);
+        for (const [endpoint, fetcher] of fetchers) {
+          try {
+            const data = await fetcher();
+            if (data != null) await this.broadcast(sessionId, endpoint, data);
           } catch (err) {
-            console.error(`Broadcast error for ${endpoint}:`, err.message);
+            // Don't crash the broadcaster if one endpoint fails
           }
         }
       }
-    }, 5000); // Broadcast every 5 seconds
+    }, 5000);
   }
 }
 
@@ -1540,26 +1418,15 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('pong', () => {
-    ws.isAlive = true;
-  });
-
-  ws.on('close', () => {
-    wsManager.removeClient(sessionId, ws);
-  });
-
-  ws.on('error', (err) => {
-    console.error('WS error:', err.message);
-  });
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('close', () => { wsManager.removeClient(sessionId, ws); });
+  ws.on('error', (err) => { console.error('WS error:', err.message); });
 });
 
-// Heartbeat
+// Heartbeat: drop dead connections
 setInterval(() => {
   wss.clients.forEach(ws => {
-    if (!ws.isAlive) {
-      ws.terminate();
-      return;
-    }
+    if (!ws.isAlive) { ws.terminate(); return; }
     ws.isAlive = false;
     ws.ping();
   });
@@ -1568,6 +1435,5 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log(`NetForge API server running on http://localhost:${PORT}`);
   console.log(`WebSocket available at ws://localhost:${PORT}/ws?sessionId=<sessionId>`);
-  console.log(`Sessions: /api/login (POST)`);
   console.log(`All endpoints require x-session-id header`);
 });
