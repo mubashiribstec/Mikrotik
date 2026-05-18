@@ -62,7 +62,7 @@ print_step() {
 check_os() {
     print_step "Detecting operating system..."
 
-    if [[ "$OSTYPE" == "linux-alpine" ]]; then
+    if [[ "$OSTYPE" == "linux-alpine" ]] || [[ "$OSTYPE" == "linux-musl" ]]; then
         OS="alpine"
         print_success "Detected: Alpine Linux"
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
