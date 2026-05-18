@@ -73,6 +73,22 @@ class RouterConnection {
         username: this.config.username,
         password: this.config.password,
         readyTimeout: 30000,
+        // RouterOS compatibility: allow legacy algorithms used by older firmware
+        algorithms: {
+          kex: [
+            'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521',
+            'diffie-hellman-group14-sha256', 'diffie-hellman-group14-sha1',
+            'diffie-hellman-group1-sha1',
+          ],
+          cipher: [
+            'aes128-ctr', 'aes192-ctr', 'aes256-ctr',
+            'aes128-cbc', 'aes256-cbc', '3des-cbc',
+          ],
+          serverHostKey: [
+            'ssh-rsa', 'ssh-dss', 'ecdsa-sha2-nistp256',
+          ],
+          hmac: ['hmac-sha2-256', 'hmac-sha1', 'hmac-md5'],
+        },
       });
 
       this.conn.on('ready', () => clearTimeout(timeout));
@@ -92,11 +108,9 @@ class RouterConnection {
 
         stream.on('close', (code, signal) => {
           this.lastActivity = Date.now();
-          if (code === 0) {
-            resolve(output);
-          } else {
-            reject(new Error(`Command failed with code ${code}`));
-          }
+          // RouterOS often returns non-zero exit codes for successful commands;
+          // resolve with whatever output was collected rather than rejecting on code.
+          resolve(output);
         });
 
         stream.on('data', (data) => {
@@ -104,7 +118,8 @@ class RouterConnection {
         });
 
         stream.stderr.on('data', (data) => {
-          console.error('RouterOS stderr:', data.toString());
+          // Append stderr to output so callers can see RouterOS error messages
+          output += data.toString();
         });
       });
     });
