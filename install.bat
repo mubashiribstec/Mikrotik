@@ -20,7 +20,7 @@ set "NC=[0m"
 
 REM Configuration
 set "SCRIPT_DIR=%cd%"
-set "APP_PORT=3001"
+set "APP_PORT=8080"
 set "LOG_FILE=%SCRIPT_DIR%\netforge.log"
 set "CONFIG_DIR=%USERPROFILE%\.netforge"
 set "CONFIG_FILE=%CONFIG_DIR%\config.bat"

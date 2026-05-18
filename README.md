@@ -58,12 +58,12 @@ npm install
 npm start
 
 # Open browser
-# http://localhost:3001
+# http://localhost:8080
 ```
 
 ### Connect to Router
 
-1. Open http://localhost:3001
+1. Open http://localhost:8080
 2. Enter your MikroTik credentials:
    - **Host**: Router IP (e.g., 192.168.88.1)
    - **Port**: 22 (SSH)
@@ -190,7 +190,7 @@ node test-endpoints.js
 ### Port Already in Use
 ```bash
 # Find process on port 3001
-lsof -i :3001
+lsof -i :8080
 # Or: netstat -tulpn | grep 3001
 # Kill it
 kill -9 <PID>

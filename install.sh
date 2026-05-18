@@ -25,7 +25,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_PORT=3001
+APP_PORT=8080
 LOG_FILE="${SCRIPT_DIR}/netforge.log"
 CONFIG_FILE="${SCRIPT_DIR}/.netforge-config"
 

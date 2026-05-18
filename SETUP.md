@@ -69,8 +69,8 @@ npm install
 npm start
 
 # You should see:
-# NetForge API server running on http://localhost:3001
-# WebSocket available at ws://localhost:3001/ws?sessionId=<sessionId>
+# NetForge API server running on http://localhost:8080
+# WebSocket available at ws://localhost:8080/ws?sessionId=<sessionId>
 ```
 
 ---
@@ -78,12 +78,12 @@ npm start
 ## Accessing the Application
 
 ### Local Access
-1. Open your browser: `http://localhost:3001`
+1. Open your browser: `http://localhost:8080`
 2. You'll see the NetForge login screen
 
 ### Remote Access (if running on server/VM)
 1. Find your server's IP: `ip addr show` (or `ifconfig`)
-2. Access from another machine: `http://<SERVER_IP>:3001`
+2. Access from another machine: `http://<SERVER_IP>:8080`
 
 **Note**: For production, consider using a reverse proxy (nginx) with SSL/TLS
 
@@ -100,7 +100,7 @@ npm start
 ### Connection Steps
 
 1. **Start NetForge** (see "Start the Application" above)
-2. **Open Web Interface**: `http://localhost:3001`
+2. **Open Web Interface**: `http://localhost:8080`
 3. **Login Form**:
    - **Host**: Your router's IP (e.g., `192.168.88.1`)
    - **Port**: `22` (SSH port, default)
@@ -174,7 +174,7 @@ All endpoints require `x-session-id` header (provided automatically by frontend)
 - `GET /api/scripts` - System scripts
 
 ### WebSocket (Real-time Updates)
-- `ws://localhost:3001/ws?sessionId=<sessionId>`
+- `ws://localhost:8080/ws?sessionId=<sessionId>`
 
 ---
 
@@ -288,7 +288,7 @@ sudo systemctl start netforge
 ### Port 3001 Already in Use
 ```bash
 # Find process using port 3001
-lsof -i :3001
+lsof -i :8080
 # Or on Alpine: netstat -tulpn | grep 3001
 
 # Kill the process
@@ -384,12 +384,12 @@ node test-endpoints.js
 ### Manual API Testing
 ```bash
 # Login and get session
-curl -X POST http://localhost:3001/api/login \
+curl -X POST http://localhost:8080/api/login \
   -H "Content-Type: application/json" \
   -d '{"host":"192.168.88.1","port":22,"username":"admin","password":"password"}'
 
 # Use returned sessionId in subsequent requests
-curl -H "x-session-id: <sessionId>" http://localhost:3001/api/system-stats
+curl -H "x-session-id: <sessionId>" http://localhost:8080/api/system-stats
 ```
 
 ---

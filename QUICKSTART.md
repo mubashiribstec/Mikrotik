@@ -46,14 +46,14 @@ npm start
 
 You should see:
 ```
-NetForge API server running on http://localhost:3001
-WebSocket available at ws://localhost:3001/ws?sessionId=<sessionId>
+NetForge API server running on http://localhost:8080
+WebSocket available at ws://localhost:8080/ws?sessionId=<sessionId>
 ```
 
 ### 4. Open in Browser
 
-- **Local computer**: http://localhost:3001
-- **Remote server**: http://<SERVER_IP>:3001
+- **Local computer**: http://localhost:8080
+- **Remote server**: http://<SERVER_IP>:8080
 
 ## Login to Your MikroTik Router
 
@@ -137,7 +137,7 @@ tail -f /var/log/netforge.log
 ### "Port 3001 already in use"
 ```bash
 # Find what's using it
-lsof -i :3001
+lsof -i :8080
 # Kill the process
 kill -9 <PID>
 # Or use a different port (edit server-enhanced.js)

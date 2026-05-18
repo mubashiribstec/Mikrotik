@@ -118,7 +118,7 @@ The script will:
 After the script completes, you'll see:
 
 ```
-Web Interface: http://localhost:3001
+Web Interface: http://localhost:8080
 Router IP: 192.168.88.1
 Username: admin
 ```
@@ -264,12 +264,12 @@ Contains:
 
 ### From same computer:
 ```
-http://localhost:3001
+http://localhost:8080
 ```
 
 ### From another computer on same network:
 ```
-http://<your-computer-ip>:3001
+http://<your-computer-ip>:8080
 ```
 
 Find your IP:
