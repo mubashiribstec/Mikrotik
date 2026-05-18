@@ -2,10 +2,10 @@
   "name": "netforge-api",
   "version": "1.0.0",
   "description": "NetForge MikroTik Router Management Backend",
-  "main": "server.js",
+  "main": "server-enhanced.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server-enhanced.js",
+    "dev": "node server-enhanced.js"
   },
   "keywords": ["mikrotik", "router", "api"],
   "author": "",
