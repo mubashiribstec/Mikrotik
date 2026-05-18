@@ -22,6 +22,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_PORT=4444
 LOG_FILE="${SCRIPT_DIR}/netforge.log"
 CONFIG_DIR="$HOME/.netforge"
+
+# Detect LAN IP so remote users know the right URL to open
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP=$(ip route get 1 2>/dev/null | awk '/src/{print $7}' | head -1)
+fi
+SERVER_IP="${SERVER_IP:-localhost}"
 CONFIG_FILE="$CONFIG_DIR/config"
 
 ################################################################################
@@ -484,9 +491,11 @@ print_startup_info() {
     print_header "🚀 NetForge is Running!"
 
     echo ""
-    echo "  Web Interface:  http://localhost:$APP_PORT"
-    echo "  API Server:     http://localhost:$APP_PORT"
-    echo "  WebSocket:      ws://localhost:$APP_PORT/ws"
+    echo "  Web Interface:  http://$SERVER_IP:$APP_PORT"
+    if [ "$SERVER_IP" != "localhost" ]; then
+        echo "  (local only)    http://localhost:$APP_PORT"
+    fi
+    echo "  WebSocket:      ws://$SERVER_IP:$APP_PORT/ws"
     echo ""
     echo "  Router:         ${ROUTER_NAME:-Unknown}"
     echo "  Host:           $ROUTER_HOST:$ROUTER_PORT"
@@ -500,13 +509,12 @@ print_startup_info() {
 print_next_steps() {
     print_header "Next Steps"
 
-    echo "1. Open your browser:"
-    echo "   ${BLUE}http://localhost:$APP_PORT${NC}"
+    echo "1. Open your browser from ANY device on the network:"
+    echo "   ${BLUE}http://$SERVER_IP:$APP_PORT${NC}"
     echo ""
     echo "2. You should see the NetForge login screen"
     echo ""
-    echo "3. Your router credentials should be pre-filled"
-    echo "   If not, use:"
+    echo "3. Enter your MikroTik credentials:"
     echo "   Host:     $ROUTER_HOST"
     echo "   Port:     $ROUTER_PORT"
     echo "   Username: $ROUTER_USER"
@@ -589,9 +597,6 @@ main() {
         load_or_create_config
     fi
 
-    # Test endpoints
-    test_endpoints || true
-
     # Start server
     if ! start_server; then
         print_error "Failed to start server"
@@ -602,6 +607,9 @@ main() {
     if test_server; then
         open_browser
     fi
+
+    # Test endpoints now that the server is running
+    test_endpoints || true
 
     # Show information
     print_startup_info
