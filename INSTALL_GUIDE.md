@@ -76,7 +76,7 @@ chmod +x install.sh
 ✓ Saves configuration to ~/.netforge/config
 ✓ Runs endpoint tests
 ✓ Starts the server
-✓ Opens browser to http://localhost:8080
+✓ Opens browser to http://localhost:4444
 ✓ Streams live logs
 ```
 
@@ -135,7 +135,7 @@ npm install
 npm start
 ```
 
-Then open: **http://localhost:8080**
+Then open: **http://localhost:4444**
 
 ---
 
@@ -183,7 +183,7 @@ Then open: **http://localhost:8080**
 
 **Port 3001 already in use:**
 - Open Command Prompt
-- Type: `netstat -ano | findstr :8080`
+- Type: `netstat -ano | findstr :4444`
 - Close the application using that port
 - Try again
 
@@ -245,7 +245,7 @@ node test-endpoints.js
 
 ### Test 2: Browser Access
 ```
-http://localhost:8080
+http://localhost:4444
 ```
 Should show login screen
 
@@ -297,7 +297,7 @@ nssm start NetForge
 
 ### Local Network
 ```
-http://192.168.x.x:8080
+http://192.168.x.x:4444
 ```
 (Replace with your computer's IP)
 
@@ -308,7 +308,7 @@ If you need remote access:
 2. Or configure nginx/Apache as reverse proxy with SSL
 3. See SETUP.md for production deployment
 
-**Security Warning:** Do NOT expose port 8080 to the internet without SSL/TLS encryption.
+**Security Warning:** Do NOT expose port 4444 to the internet without SSL/TLS encryption.
 
 ---
 
@@ -362,13 +362,13 @@ taskkill /F /IM node.exe
 
 **Linux/macOS:**
 ```bash
-lsof -i :8080
+lsof -i :4444
 kill -9 <PID>
 ```
 
 **Windows:**
 ```cmd
-netstat -ano | findstr :8080
+netstat -ano | findstr :4444
 taskkill /PID <PID> /F
 ```
 
@@ -484,7 +484,7 @@ npm install
 
 After installation:
 
-1. ✅ Access http://localhost:8080
+1. ✅ Access http://localhost:4444
 2. ✅ Login with your router credentials
 3. ✅ Explore the dashboard
 4. ✅ Monitor real-time metrics
