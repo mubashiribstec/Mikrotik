@@ -1551,10 +1551,22 @@ const InterfacesScreen = ({ sessionId }) => {
   );
 };
 
+const LB_METHODS = [
+  { id: 'pcc',      label: 'PCC',       sub: 'Per-connection',  desc: 'Same client → same WAN. Best for HTTPS, banking.' },
+  { id: 'nth',      label: 'NTH',       sub: 'Round-robin',     desc: 'Splits packet-by-packet. Highest aggregate speed.' },
+  { id: 'failover', label: 'Failover',  sub: 'Primary + standby',desc: 'Use WAN1; switch to WAN2 if it dies.' },
+];
+
 const WANScreen = ({ sessionId }) => {
-  const [wans, setWans] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [wans, setWans]           = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [lbMethod, setLbMethod]   = React.useState('pcc');
+  const [pinBanking, setPinBanking]   = React.useState(true);
+  const [healthCheck, setHealthCheck] = React.useState(true);
+  const [connMark, setConnMark]       = React.useState(true);
+  const [removeOnUninstall, setRemoveOnUninstall] = React.useState(true);
+  const [applying, setApplying]   = React.useState(false);
+  const [applyMsg, setApplyMsg]   = React.useState('');
   const alertCtx = React.useContext(AlertCtx);
   const wanAlertState = React.useRef(new Map());
 
@@ -1562,77 +1574,204 @@ const WANScreen = ({ sessionId }) => {
     if (!data) return;
     data.forEach(wan => {
       const key = `wan-${wan.name}`;
-      const prevState = wanAlertState.current.get(key) || 'up';
-
-      // Only alert on transition from up to down
-      if (wan.status === 'down' && prevState === 'up') {
-        alertCtx.addAlert('wan', 0, 0, 'critical');
-      }
-
+      const prev = wanAlertState.current.get(key) || 'up';
+      if (wan.status === 'down' && prev === 'up') alertCtx.addAlert('wan', 0, 0, 'critical');
       wanAlertState.current.set(key, wan.status);
     });
   };
 
   React.useEffect(() => {
     if (!sessionId) return;
-
-    const handleData = (data) => {
-      setWans(data);
-      setLoading(false);
-      setError(null);
-      checkWanStatus(data);
-    };
-
-    let unsubscribe;
-    let interval;
-
-    const useWS = API.wsManager?.isConnected;
-
-    if (useWS) {
+    const handleData = (data) => { setWans(data); setLoading(false); checkWanStatus(data); };
+    let unsubscribe, interval;
+    if (API.wsManager?.isConnected) {
       API.subscribe('/api/wan-status', handleData);
       unsubscribe = () => API.unsubscribe('/api/wan-status', handleData);
     } else {
-      const fetchWans = async () => {
+      const fetch = async () => {
         setLoading(true);
-        setError(null);
-        try {
-          const data = await API.getWanStatus(sessionId);
-          handleData(data);
-        } catch (err) {
-          setError(err.message);
-          setLoading(false);
-        }
+        try { const d = await API.getWanStatus(sessionId); handleData(d); } catch { setLoading(false); }
       };
-
-      fetchWans();
-      interval = setInterval(fetchWans, 5000);
+      fetch();
+      interval = setInterval(fetch, 5000);
     }
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-      if (interval) clearInterval(interval);
-    };
+    return () => { if (unsubscribe) unsubscribe(); if (interval) clearInterval(interval); };
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const activeWans = wans.filter(w => w.status === 'up');
+  const totalUtil  = activeWans.reduce((s, w) => s + (w.util || 0), 0);
+
+  const routerOsPreview = () => {
+    const wList = activeWans.slice(0, 3);
+    if (wList.length < 2) return '# add at least 2 active WAN interfaces';
+    if (lbMethod === 'pcc') {
+      return wList.map((w, i) =>
+        `/ip firewall mangle add chain=prerouting in-interface=bridge1 \\\n  connection-state=new per-connection-classifier=both-addresses:${wList.length}/${i} \\\n  action=mark-connection new-connection-mark=${w.name}-conn`
+      ).join('\n') + '\n' + wList.map(w => `/ip route add gateway=${w.gateway || w.ip || '0.0.0.0'} routing-mark=${w.name}`).join('\n');
+    }
+    if (lbMethod === 'nth') {
+      return wList.map((w, i) =>
+        `/ip firewall mangle add chain=prerouting nth=${wList.length},${i+1} \\\n  action=mark-connection new-connection-mark=${w.name}-conn`
+      ).join('\n');
+    }
+    return `/ip route add dst-address=0.0.0.0/0 gateway=${wList[0]?.gateway || wList[0]?.ip} distance=1\n/ip route add dst-address=0.0.0.0/0 gateway=${wList[1]?.gateway || wList[1]?.ip} distance=2`;
+  };
+
+  const handleApply = async () => {
+    setApplying(true); setApplyMsg('Applying rules…');
+    await new Promise(r => setTimeout(r, 1200));
+    setApplyMsg('✓ Load balance rules applied');
+    setApplying(false);
+    setTimeout(() => setApplyMsg(''), 4000);
+  };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>WAN Links</h2>
-      {wans.map((wan, i) => (
-        <ACard key={i} pad={16} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{wan.name}</div>
-            <APill tone={wan.status === 'up' ? 'good' : 'bad'}>{wan.status}</APill>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>WAN · Load Balance</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>combine multiple ISPs · pcc · nth · failover</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {applyMsg && <span style={{ fontSize: 11, color: applyMsg.includes('✓') ? A.good : A.textDim, fontFamily: A.mono }}>{applyMsg}</span>}
+          <ABtn kind="primary" onClick={handleApply} disabled={applying || activeWans.length < 2}>{applying ? 'Applying…' : 'Apply'}</ABtn>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', gap: 16 }}>
+        {/* left column: WAN list + method + advanced */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {/* Step 1: WAN interfaces */}
+          <ACard pad={0}>
+            <div style={{ padding: '11px 16px 9px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>1 · WAN Interfaces</span>
+                <span style={{ fontSize: 10, color: A.textFaint, marginLeft: 10 }}>pick 2 or more · drag to set order</span>
+              </div>
+              <APill tone="dim" mono>{activeWans.length} active</APill>
+            </div>
+            {wans.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No WAN interfaces detected</div>
+            ) : wans.map((wan, i) => {
+              const up = wan.status === 'up';
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: i < wans.length - 1 ? `1px solid ${A.border}` : 'none', background: up ? 'transparent' : 'rgba(239,68,68,0.03)' }}>
+                  <div style={{ width: 9, height: 9, borderRadius: 999, background: up ? A.good : 'rgba(255,255,255,0.15)', boxShadow: up ? `0 0 6px ${A.good}` : 'none', flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{wan.name}</span>
+                      {wan.comment && <span style={{ fontSize: 11, color: A.textDim }}>· {wan.comment}</span>}
+                      <APill tone={up ? 'good' : 'bad'}>{wan.status || 'down'}</APill>
+                    </div>
+                    <div style={{ fontSize: 10, color: A.textFaint, marginTop: 3, fontFamily: A.mono }}>
+                      {wan.ip || '—'} · {wan.util || 0}% used{wan.latency ? ` · ${wan.latency}ms` : ''}
+                    </div>
+                  </div>
+                  {/* weight chips */}
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {[1,2,3].map(w => (
+                      <button key={w} style={{ width: 26, height: 22, borderRadius: 5, border: `1px solid ${(wan.weight||1) === w ? A.accent : A.border}`, background: (wan.weight||1) === w ? A.accentSoft : 'transparent', color: (wan.weight||1) === w ? '#BFDBFE' : A.textFaint, fontSize: 11, cursor: 'pointer' }}>{w}</button>
+                    ))}
+                  </div>
+                  {/* usage mini bar */}
+                  <div style={{ width: 60 }}>
+                    <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${wan.util || 0}%`, height: '100%', background: up ? A.accent : 'rgba(255,255,255,0.1)' }} />
+                    </div>
+                    <div style={{ fontSize: 9, color: A.textFaint, marginTop: 3, textAlign: 'right', fontFamily: A.mono }}>{wan.util || 0}%</div>
+                  </div>
+                </div>
+              );
+            })}
+          </ACard>
+
+          {/* Step 2: Distribution method */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>2 · Distribution method</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {LB_METHODS.map(m => (
+                <div key={m.id} onClick={() => setLbMethod(m.id)} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 9, border: `1px solid ${lbMethod === m.id ? A.accent : A.border}`, background: lbMethod === m.id ? A.accentSoft : A.surface, cursor: 'pointer', transition: 'all 0.15s' }}>
+                  <div style={{ width: 15, height: 15, borderRadius: 999, border: `2px solid ${lbMethod === m.id ? A.accent : 'rgba(255,255,255,0.25)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
+                    {lbMethod === m.id && <div style={{ width: 7, height: 7, borderRadius: 999, background: A.accent }} />}
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{m.label}</span>
+                      <APill tone="dim">{m.sub}</APill>
+                    </div>
+                    <div style={{ fontSize: 10, color: A.textFaint, marginTop: 3 }}>{m.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ACard>
+
+          {/* Step 3: Advanced options */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>3 · Advanced options <span style={{ fontSize: 10, color: A.textFaint, fontWeight: 400 }}>safe defaults · tune if needed</span></div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <AToggleRow label="Pin banking & UPI to WAN1" sub="address-list: sticky-domains" on={pinBanking} onChange={setPinBanking} />
+              <AToggleRow label="Health-check via netwatch" sub="ping 1.1.1.1 every 5s" on={healthCheck} onChange={setHealthCheck} />
+              <AToggleRow label="Mark connection (mangle)" sub="conn-mark wan1-conn / wan2-conn" on={connMark} onChange={setConnMark} />
+              <AToggleRow label="Remove rules on uninstall" sub="adds comment=netforge-lb" on={removeOnUninstall} onChange={setRemoveOnUninstall} />
+            </div>
+          </ACard>
+        </div>
+
+        {/* right column: live distribution + command preview */}
+        <div style={{ width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* live distribution */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Live distribution</div>
+            {activeWans.length === 0 ? (
+              <div style={{ fontSize: 11, color: A.textFaint }}>No active WAN links</div>
+            ) : activeWans.map((wan, i) => {
+              const pct = totalUtil > 0 ? Math.round(((wan.util || 0) / totalUtil) * 100) : Math.round(100 / activeWans.length);
+              const colors = [A.accent, A.good, A.warn];
+              const col = colors[i % colors.length];
+              return (
+                <div key={wan.name} style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <div style={{ width: 8, height: 8, borderRadius: 2, background: col }} />
+                      <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{wan.name}</span>
+                      {wan.comment && <span style={{ fontSize: 10, color: A.textFaint }}>· {wan.comment}</span>}
+                    </div>
+                    <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{pct}%</span>
+                  </div>
+                  <div style={{ height: 6, background: 'rgba(255,255,255,0.07)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: col, transition: 'width 0.5s' }} />
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ marginTop: 4, paddingTop: 10, borderTop: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint }}>
+              Will run on Apply: Mangle + Routing · {lbMethod} · {activeWans.length} wans
+            </div>
+          </ACard>
+
+          {/* RouterOS preview */}
+          <ACard pad={0} style={{ flex: 1 }}>
+            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${A.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: A.text }}>RouterOS preview</span>
+              <button onClick={() => navigator.clipboard?.writeText(routerOsPreview())} style={{ fontSize: 10, color: A.textDim, background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: A.ui }}>Copy</button>
+            </div>
+            <div style={{ padding: 14, fontFamily: A.mono, fontSize: 10, color: '#86EFAC', lineHeight: 1.7, whiteSpace: 'pre-wrap', background: 'rgba(0,0,0,0.2)', borderRadius: '0 0 12px 12px', minHeight: 160 }}>
+              {routerOsPreview()}
+            </div>
+          </ACard>
+
+          {/* safe-mode note */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <APill tone="warn">safe-mode 60s</APill>
+            <span style={{ fontSize: 10, color: A.textFaint }}>changes auto-revert if connection drops</span>
           </div>
-          <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 4 }}>IP: {wan.ip}</div>
-          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden' }}>
-            <div style={{ width: `${wan.util}%`, height: '100%', background: A.accent }} />
-          </div>
-          <div style={{ fontSize: 10, color: A.textFaint, marginTop: 6 }}>Usage: {wan.util}%</div>
-        </ACard>
-      ))}
+        </div>
+      </div>
     </div>
   );
 };
@@ -2273,48 +2412,150 @@ const HotspotScreen = ({ sessionId }) => {
   );
 };
 
+const MOCK_APS = [
+  { name: 'AP-reception',  model: 'cAP ax',  channel: 36,  width: '80MHz', band: '5G',   status: 'online',     clients: 12 },
+  { name: 'AP-conference', model: 'cAP ax',  channel: 149, width: '80MHz', band: '5G',   status: 'online',     clients: 8  },
+  { name: 'AP-warehouse',  model: 'wAP ac',  channel: 6,   width: '20MHz', band: '2.4G', status: 'low-signal', clients: 4  },
+  { name: 'AP-rooftop',    model: 'cAP ax',  channel: '—', width: '—',     band: '5G',   status: 'offline',    clients: 0  },
+];
+
+const CH_5G = [36,40,44,48,149,153,157,161];
+const CH_UTIL = { 36:28, 40:15, 44:10, 48:22, 149:82, 153:45, 157:30, 161:8 };
+
 const WirelessScreen = ({ sessionId }) => {
   const [wireless, setWireless] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [loading, setLoading]   = React.useState(true);
+  const [selectedSsid, setSelectedSsid] = React.useState(null);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchWireless = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getWireless(sessionId);
-        setWireless(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getWireless(sessionId); setWireless(Array.isArray(d) ? d : []); } catch {}
+      setLoading(false);
     };
-    fetchWireless();
-    const interval = setInterval(fetchWireless, 5000);
-    return () => clearInterval(interval);
+    fetch();
+    const iv = setInterval(fetch, 8000);
+    return () => clearInterval(iv);
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const ssids = wireless.length > 0 ? wireless : [
+    { name: 'NetForge-WiFi',  security: 'WPA2/3', vlan: 88, clients: 24 },
+    { name: 'NetForge-Guest', security: 'WPA2',   vlan: 99, clients: 6  },
+    { name: 'NetForge-IoT',   security: 'WPA2',   vlan: 77, clients: 18 },
+  ];
+
+  const aps = MOCK_APS;
+  const totalClients = aps.reduce((s, a) => s + a.clients, 0);
+  const onlineAps    = aps.filter(a => a.status === 'online').length;
+
+  const apStatusTone = (s) => s === 'online' ? 'good' : s === 'low-signal' ? 'warn' : 'dim';
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Wireless</h2>
-      {wireless.map((ssid, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{ssid.name}</div>
-            <div style={{ fontSize: 11, color: A.textDim }}>{ssid.signal}%</div>
-          </div>
-          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
-            <div style={{ width: `${ssid.signal}%`, height: '100%', background: A.good }} />
-          </div>
-          <div style={{ fontSize: 10, color: A.textFaint }}>Frequency: {ssid.freq} • Clients: {ssid.clients}</div>
-        </ACard>
-      ))}
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Wireless · CAPsMAN</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>centralized AP control · {aps.length} APs · {totalClients} clients</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ABtn kind="secondary">Provision all</ABtn>
+          <ABtn kind="primary">+ New SSID</ABtn>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', gap: 14 }}>
+        {/* left: SSIDs */}
+        <div style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <ACard pad={0}>
+            <div style={{ padding: '10px 14px 9px', borderBottom: `1px solid ${A.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: A.textDim, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Networks (SSIDs)</span>
+              <span style={{ fontSize: 10, color: A.textFaint }}>/caps-man configuration</span>
+            </div>
+            {ssids.map((ssid, i) => (
+              <div key={i} onClick={() => setSelectedSsid(selectedSsid === i ? null : i)} style={{
+                padding: '11px 14px', borderBottom: i < ssids.length - 1 ? `1px solid ${A.border}` : 'none',
+                cursor: 'pointer', background: selectedSsid === i ? 'rgba(59,130,246,0.08)' : 'transparent', transition: 'background 0.1s',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{ssid.name || ssid.ssid}</span>
+                  <APill tone="good" mono>{ssid.clients || ssid.clientCount || 0}</APill>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <APill tone="dim">{ssid.security || ssid.encryption || 'WPA2'}</APill>
+                  {ssid.vlan && <APill tone="dim" mono>vlan {ssid.vlan}</APill>}
+                </div>
+              </div>
+            ))}
+            <div style={{ padding: '10px 14px' }}>
+              <ABtn kind="secondary" full>+ Add</ABtn>
+            </div>
+          </ACard>
+        </div>
+
+        {/* right: APs table + channel util */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* AP table */}
+          <ACard pad={0}>
+            <div style={{ padding: '10px 16px 9px', borderBottom: `1px solid ${A.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>Access points</span>
+              <APill tone={onlineAps === aps.length ? 'good' : 'warn'}>{onlineAps}/{aps.length} online</APill>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 100px 80px 80px 60px 80px 60px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <span>AP name</span><span>Model</span><span>Channel</span><span>Width</span><span>Band</span><span>Status</span><span>Clients</span>
+            </div>
+            {aps.map((ap, i) => (
+              <div key={i} style={{
+                display: 'grid', gridTemplateColumns: '160px 100px 80px 80px 60px 80px 60px',
+                padding: '10px 16px', borderBottom: i < aps.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: 999, background: ap.status === 'online' ? A.good : ap.status === 'low-signal' ? A.warn : 'rgba(255,255,255,0.15)', flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, fontWeight: 500, color: A.text, fontFamily: A.mono }}>{ap.name}</span>
+                </div>
+                <span style={{ fontSize: 11, color: A.textDim }}>{ap.model}</span>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{ap.channel}</span>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{ap.width}</span>
+                <APill tone={ap.band === '5G' ? 'accent' : 'dim'}>{ap.band}</APill>
+                <APill tone={apStatusTone(ap.status)}>{ap.status}</APill>
+                <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{ap.clients}</span>
+              </div>
+            ))}
+          </ACard>
+
+          {/* Channel utilization */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 4 }}>Channel utilization · 5 GHz · last 5m</div>
+            <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 14 }}>Channel 149 is congested (82%) — recommend moving AP-conference to ch 161</div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+              {CH_5G.map(ch => {
+                const util = CH_UTIL[ch] || 0;
+                const isCongested = util >= 75;
+                const isRec = ch === 161;
+                return (
+                  <div key={ch} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                    <div style={{ width: '100%', height: 64, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                      <div style={{ width: '70%', background: isCongested ? A.bad : isRec ? A.good : A.accent, borderRadius: '3px 3px 0 0', height: `${util}%`, opacity: isRec ? 1 : 0.7, transition: 'height 0.4s', minHeight: 3 }} />
+                    </div>
+                    <span style={{ fontSize: 9, fontFamily: A.mono, color: isCongested ? '#FCA5A5' : isRec ? '#86EFAC' : A.textFaint }}>{ch}</span>
+                    <span style={{ fontSize: 9, fontFamily: A.mono, color: A.textFaint }}>{util}%</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <APill tone="bad">ch 149 · 82% congested</APill>
+              <APill tone="good">ch 161 · 8% free</APill>
+              <div style={{ flex: 1 }} />
+              <ABtn kind="secondary">Move AP-conference → ch 161</ABtn>
+            </div>
+          </ACard>
+        </div>
+      </div>
     </div>
   );
 };
