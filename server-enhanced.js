@@ -303,19 +303,31 @@ async function fetchInterfaces(conn) {
   const output = await conn.execute('/interface print');
   const ifaces = parseRouterOSOutput(output);
 
-  // Get per-interface byte counters for utilisation
   let statsRows = [];
   try {
     const statsOut = await conn.execute('/interface print stats');
     statsRows = parseRouterOSOutput(statsOut);
   } catch (e) { /* optional */ }
 
+  // Fetch IP addresses to enrich each interface entry
+  let addrRows = [];
+  try {
+    addrRows = parseRouterOSOutput(await conn.execute('/ip address print'));
+  } catch (e) { /* optional */ }
+
   return ifaces.map(iface => {
     const stats = statsRows.find(s => s.name === iface.name) || {};
+    const addr  = addrRows.find(a => a.interface === iface.name) || {};
     return {
-      name: iface.name || 'unknown',
-      status: iface.running === 'true' ? 'up' : 'down',
-      util: 0, // rate requires two readings; set 0 here
+      name:       iface.name || 'unknown',
+      type:       iface.type || 'ether',
+      status:     iface.running === 'true' ? 'up' : 'down',
+      disabled:   iface.disabled === 'true',
+      comment:    iface.comment || '',
+      macAddress: iface.mac_address || '',
+      mtu:        iface.actual_mtu || iface.mtu || '',
+      address:    addr.address || '',
+      util: 0,
       rxBytes: parseInt(stats.rx_byte) || 0,
       txBytes: parseInt(stats.tx_byte) || 0,
     };
@@ -329,13 +341,33 @@ async function fetchWanStatus(conn) {
   const ifOutput = await conn.execute('/interface print');
   const ifaces = parseRouterOSOutput(ifOutput);
 
-  return addresses.map((addr, idx) => {
+  // Identify WAN interfaces by type, name convention, or comment
+  const wanNames = new Set();
+  ifaces.forEach(iface => {
+    const type    = (iface.type || '').toLowerCase();
+    const comment = (iface.comment || '').toLowerCase();
+    const name    = (iface.name || '').toLowerCase();
+    if (
+      type === 'pppoe-out' || type === 'l2tp-out' || type === 'pptp-out' ||
+      comment.includes('wan') || name.includes('wan') || name === 'ether1'
+    ) {
+      wanNames.add(iface.name);
+    }
+  });
+
+  const filtered = wanNames.size > 0
+    ? addresses.filter(a => wanNames.has(a.interface))
+    : addresses;
+
+  return (filtered.length > 0 ? filtered : addresses).map((addr, idx) => {
     const iface = ifaces.find(i => i.name === addr.interface);
     return {
-      name: addr.interface || `ether${idx + 2}`,
-      status: iface ? (iface.running === 'true' ? 'up' : 'down') : 'unknown',
-      util: 0,
-      ip: addr.address || '0.0.0.0/24',
+      name:    addr.interface || `WAN${idx + 1}`,
+      status:  iface ? (iface.running === 'true' ? 'up' : 'down') : 'unknown',
+      util:    0,
+      ip:      addr.address || '0.0.0.0/24',
+      comment: addr.comment || iface?.comment || '',
+      weight:  1,
     };
   });
 }
@@ -357,9 +389,18 @@ async function fetchFirewall(conn) {
   let droppedPackets = 0;
   try {
     const statsOut = await conn.execute('/ip firewall filter print stats');
-    for (const line of statsOut.split('\n')) {
-      if (line.includes('packets:')) {
-        droppedPackets += parseInt(line.split('packets:')[1]?.trim()) || 0;
+    const statsRows = parseRouterOSOutput(statsOut);
+    for (const statsRow of statsRows) {
+      // Stats output may or may not include the action column; fall back to matching rule
+      let action = (statsRow.action || '').toLowerCase();
+      if (!action) {
+        const matchingRule = rules.find(r => r.numbers === statsRow.numbers);
+        action = (matchingRule?.action || '').toLowerCase();
+      }
+      if (action === 'drop' || action === 'reject') {
+        // RouterOS formats large numbers with spaces: "16 543 045" → strip spaces
+        const pkts = parseInt((statsRow.packets || '').replace(/[\s,]/g, '')) || 0;
+        droppedPackets += pkts;
       }
     }
   } catch (e) { /* optional */ }
@@ -375,13 +416,19 @@ async function fetchBandwidth(conn) {
   const output = await conn.execute('/queue simple print');
   const queues = parseRouterOSOutput(output);
 
-  const data = queues.map(q => ({
-    name: q.name || 'queue',
-    target: q.target || 'all',
-    down: q.max_limit ? q.max_limit.split('/')[0] : 'unlimited',
-    up: q.max_limit ? q.max_limit.split('/')[1] : 'unlimited',
-    util: 0,
-  }));
+  const data = queues.map(q => {
+    // RouterOS priority: 1=highest…8=lowest. Map to label for the UI.
+    const prio = parseInt(q.priority) || 8;
+    const priorityLabel = prio <= 3 ? 'high' : prio <= 5 ? 'normal' : 'low';
+    return {
+      name:     q.name || 'queue',
+      target:   q.target || 'all',
+      down:     q.max_limit ? q.max_limit.split('/')[0] : 'unlimited',
+      up:       q.max_limit ? q.max_limit.split('/')[1] : 'unlimited',
+      priority: priorityLabel,
+      util:     0,
+    };
+  });
 
   return data.length > 0 ? data : [
     { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
@@ -397,7 +444,7 @@ async function fetchDhcpClients(conn) {
     arpData = parseRouterOSOutput(await conn.execute('/ip arp print'));
   } catch (e) { /* optional */ }
 
-  return clients.slice(0, 10).map(client => {
+  return clients.map(client => {
     // expires-after format: "23h59m55s" or "3d23h..."
     let leaseHours = '24h';
     if (client.expires_after) {
@@ -410,11 +457,15 @@ async function fetchDhcpClients(conn) {
     const arp = arpData.find(a => a.mac_address === client.mac_address);
     if (arp && arp.comment) vendor = arp.comment.substring(0, 20);
 
+    // host-name comes from DHCP option 12 sent by the client
+    const hostname = client.host_name || client.comment || '';
+
     return {
+      hostname,
       vendor,
-      ip: client.address || '0.0.0.0',
-      mac: client.mac_address || '00:00:00:00:00:00',
-      iface: client.interface || 'bridge',
+      ip:    client.address     || '0.0.0.0',
+      mac:   client.mac_address || '00:00:00:00:00:00',
+      iface: client.interface   || 'bridge',
       lease: leaseHours,
       tx: 0,
       rx: 0,
@@ -706,7 +757,7 @@ app.get('/api/dhcp-clients', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const data = await fetchDhcpClients(getConnection(sessionId));
     res.json(data.length > 0 ? data : [
-      { vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
+      { hostname: '', vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
     ]);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
@@ -1133,15 +1184,53 @@ app.get('/api/hotspot/users', async (req, res) => {
     const output = await conn.execute('/ip hotspot user print');
     const users = parseRouterOSOutput(output);
 
-    const data = users.map(u => ({
-      id: u.numbers || '',
-      name: u.name || '',
-      profile: u.profile || 'default',
-      disabled: u.disabled === 'true',
-      comment: u.comment || '',
-    }));
+    // Fetch active sessions to enrich with live IP and uptime
+    let activeSessions = [];
+    try {
+      activeSessions = parseRouterOSOutput(await conn.execute('/ip hotspot active print'));
+    } catch (e) { /* optional */ }
 
-    res.json(data);
+    const hsData = users.map(u => {
+      const active = activeSessions.find(a => a.user === u.name);
+      return {
+        id:       u.numbers || '',
+        name:     u.name || '',
+        type:     'hotspot',
+        profile:  u.profile || 'default',
+        disabled: u.disabled === 'true',
+        comment:  u.comment || '',
+        address:  active?.address || '',
+        uptime:   active?.uptime  || '',
+        bytesIn:  parseInt((active?.bytes_in || '').replace(/[\s,]/g, '')) || 0,
+      };
+    });
+
+    // Also merge PPPoE secrets so the PPPoE tab has data
+    let pppoeData = [];
+    try {
+      const pppoeRows = parseRouterOSOutput(await conn.execute('/ppp secret print'));
+      let pppoeActive = [];
+      try {
+        pppoeActive = parseRouterOSOutput(await conn.execute('/ppp active print'));
+      } catch (e) { /* optional */ }
+
+      pppoeData = pppoeRows.map(p => {
+        const active = pppoeActive.find(a => a.name === p.name);
+        return {
+          id:       `pppoe-${p.numbers || ''}`,
+          name:     p.name || '',
+          type:     'pppoe',
+          profile:  p.profile || 'default',
+          disabled: p.disabled === 'true',
+          comment:  p.comment || '',
+          address:  active?.address || '',
+          uptime:   active?.uptime  || '',
+          bytesIn:  0,
+        };
+      });
+    } catch (e) { /* PPPoE not configured */ }
+
+    res.json([...hsData, ...pppoeData]);
   } catch (err) {
     res.status(401).json({ error: err.message });
   }
@@ -1292,6 +1381,238 @@ app.get('/api/top-talkers', async (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', sessions: sessions.size, timestamp: new Date().toISOString() });
+});
+
+// ========== INTERFACE TOGGLE ==========
+
+app.post('/api/interfaces/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { name, disable } = req.body;
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'Interface name required' });
+
+    const action = disable ? 'disable' : 'enable';
+    await getConnection(sessionId).execute(`/interface ${action} "${name}"`);
+    res.json({ success: true, message: `Interface "${name}" ${action}d` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== FIREWALL — BLOCK DOMAIN ==========
+
+app.post('/api/firewall/block-domain', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { domain, method } = req.body;
+    if (!domain || typeof domain !== 'string') return res.status(400).json({ error: 'Domain required' });
+    // Basic domain/IP validation
+    if (!/^[a-zA-Z0-9._-]{1,253}$/.test(domain)) return res.status(400).json({ error: 'Invalid domain format' });
+
+    const conn = getConnection(sessionId);
+    const d = domain.toLowerCase().trim();
+
+    if (method === 'L7') {
+      await conn.execute(`/ip firewall layer7-protocol add name="block-${d}" regexp=".*${d}.*"`);
+      await conn.execute(`/ip firewall filter add chain=forward layer7-protocol="block-${d}" action=drop comment="netforge-block-${d}"`);
+    } else if (method === 'IP-list') {
+      await conn.execute(`/ip firewall address-list add list="blocklist" address=${d} comment="netforge-block"`);
+      // Ensure the blocking rule exists
+      try {
+        await conn.execute(`/ip firewall filter add chain=forward dst-address-list="blocklist" action=drop comment="netforge-blocklist"`);
+      } catch (e) { /* rule may already exist */ }
+    } else {
+      // Default: DNS-based block
+      await conn.execute(`/ip dns static add name="${d}" address=0.0.0.0 comment="netforge-block-${d}"`);
+    }
+
+    res.json({ success: true, message: `Domain "${d}" blocked via ${method || 'DNS'}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== BANDWIDTH — QUEUE MANAGEMENT ==========
+
+app.post('/api/bandwidth/queue/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { name, target, down, up, priority, burst } = req.body;
+    if (!name || !target) return res.status(400).json({ error: 'Name and target required' });
+    if (!/^[a-zA-Z0-9._\-/ ]{1,64}$/.test(name)) return res.status(400).json({ error: 'Invalid queue name' });
+
+    const prioMap = { high: 3, normal: 5, low: 7 };
+    const prioNum = prioMap[priority] || 5;
+    const maxLimit = `${down || '10M'}/${up || '10M'}`;
+
+    let cmd = `/queue simple add name="${name}" target=${target} max-limit=${maxLimit} priority=${prioNum}`;
+    if (burst) cmd += ' burst-time=8/8 burst-threshold=6M/6M burst-limit=20M/20M';
+
+    await getConnection(sessionId).execute(cmd);
+    res.json({ success: true, message: `Queue "${name}" created` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/bandwidth/queue/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Queue name required' });
+
+    await getConnection(sessionId).execute(`/queue simple remove [find name="${name}"]`);
+    res.json({ success: true, message: `Queue "${name}" removed` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== VPN — WIREGUARD PEER ==========
+
+app.post('/api/vpn/peer/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { name, allowedIps, interfaceName } = req.body;
+    if (!name) return res.status(400).json({ error: 'Peer name required' });
+
+    const conn = getConnection(sessionId);
+
+    // Find the WireGuard interface
+    const wgIfaces = parseRouterOSOutput(await conn.execute('/interface wireguard print'));
+    if (wgIfaces.length === 0) return res.status(404).json({ error: 'No WireGuard interface found. Configure WireGuard first.' });
+
+    const wgIface = interfaceName || wgIfaces[0].name;
+    const ips = allowedIps || '10.0.0.2/32';
+
+    await conn.execute(`/interface wireguard peers add interface=${wgIface} allowed-address=${ips} comment="${name}"`);
+    res.json({ success: true, message: `WireGuard peer "${name}" added to ${wgIface}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== BACKUP — CREATE ==========
+
+app.post('/api/backup/create', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const date = new Date().toISOString().replace(/[T:]/g, '-').substring(0, 16);
+    const name = `netforge-${date}`;
+
+    // Save binary backup
+    await conn.execute(`/system backup save name="${name}"`);
+    res.json({ success: true, message: `Backup saved as ${name}.backup` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== DHCP — MAKE LEASE STATIC (RESERVE IP) ==========
+
+app.post('/api/dhcp/reserve', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { mac, ip } = req.body;
+    if (!mac) return res.status(400).json({ error: 'MAC address required' });
+
+    const conn = getConnection(sessionId);
+
+    // Find the lease by MAC and make it static
+    const leases = parseRouterOSOutput(await conn.execute('/ip dhcp-server lease print'));
+    const lease = leases.find(l => l.mac_address === mac);
+    if (!lease) return res.status(404).json({ error: 'Lease not found for this MAC address' });
+
+    await conn.execute(`/ip dhcp-server lease make-static numbers=${lease.numbers}`);
+
+    // Optionally set a specific IP if provided
+    if (ip) {
+      await conn.execute(`/ip dhcp-server lease set [find mac-address="${mac}"] address=${ip}`);
+    }
+
+    res.json({ success: true, message: `IP reservation created for ${mac}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== WAN — APPLY LOAD BALANCE ==========
+
+app.post('/api/wan/apply-lb', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { wans, method, healthCheck } = req.body;
+    if (!Array.isArray(wans) || wans.length < 1) return res.status(400).json({ error: 'At least one WAN required' });
+
+    const conn = getConnection(sessionId);
+    const cmds = [];
+
+    if (method === 'failover') {
+      // Failover: set distances on default routes
+      for (let i = 0; i < wans.length; i++) {
+        const wan = wans[i];
+        cmds.push(`/ip route set [find gateway="${wan.gateway || wan.name}"] distance=${i + 1} comment="netforge-lb"`);
+      }
+    } else if (method === 'nth') {
+      // NTH round-robin via mangle
+      for (let i = 0; i < wans.length; i++) {
+        const wan = wans[i];
+        cmds.push(`/ip firewall mangle add chain=prerouting connection-state=new nth=${wans.length},1,${i} action=mark-connection new-connection-mark=wan${i+1}-conn passthrough=yes comment="netforge-lb"`);
+        cmds.push(`/ip firewall mangle add chain=prerouting connection-mark=wan${i+1}-conn action=mark-routing new-routing-mark=wan${i+1} passthrough=yes comment="netforge-lb"`);
+        if (wan.gateway) cmds.push(`/ip route add dst-address=0.0.0.0/0 gateway=${wan.gateway} routing-table=wan${i+1} comment="netforge-lb"`);
+      }
+    } else {
+      // PCC (default) — per-connection classifier
+      for (let i = 0; i < wans.length; i++) {
+        const wan = wans[i];
+        cmds.push(`/ip firewall mangle add chain=prerouting connection-state=new per-connection-classifier=src-address:${wans.length}/${i} action=mark-connection new-connection-mark=wan${i+1}-conn passthrough=yes comment="netforge-lb"`);
+        cmds.push(`/ip firewall mangle add chain=prerouting connection-mark=wan${i+1}-conn action=mark-routing new-routing-mark=wan${i+1} passthrough=yes comment="netforge-lb"`);
+        if (wan.gateway) cmds.push(`/ip route add dst-address=0.0.0.0/0 gateway=${wan.gateway} routing-table=wan${i+1} comment="netforge-lb"`);
+      }
+    }
+
+    if (healthCheck) {
+      for (let i = 0; i < wans.length; i++) {
+        const wan = wans[i];
+        if (wan.ip || wan.name) {
+          cmds.push(`/tool netwatch add host=1.1.1.1 interval=5s comment="netforge-lb-check-wan${i+1}"`);
+        }
+      }
+    }
+
+    for (const cmd of cmds) {
+      try { await conn.execute(cmd); } catch (e) { /* continue on individual failures */ }
+    }
+
+    res.json({ success: true, message: `Load balance (${method}) applied for ${wans.length} WAN(s)`, commandsApplied: cmds.length });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ========== SERVE STATIC FILES ==========

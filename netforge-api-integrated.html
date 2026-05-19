@@ -198,7 +198,6 @@ const API = {
     const response = await fetch(url, { ...options, headers });
 
     if (response.status === 401) {
-      // Broadcast session expiry so App can redirect to login
       window.dispatchEvent(new CustomEvent('netforge:session-expired'));
       throw new Error('Session expired. Please login again.');
     }
@@ -278,6 +277,59 @@ const API = {
 
   async getScriptOutput(sessionId, executionId) {
     return this.call(sessionId, `/api/scripts/${executionId}/output`);
+  },
+
+  async blockDomain(sessionId, domain, method) {
+    return this.call(sessionId, '/api/firewall/block-domain', {
+      method: 'POST',
+      body: JSON.stringify({ domain, method }),
+    });
+  },
+
+  async addBandwidthQueue(sessionId, name, target, down, up, priority, burst) {
+    return this.call(sessionId, '/api/bandwidth/queue/add', {
+      method: 'POST',
+      body: JSON.stringify({ name, target, down, up, priority, burst }),
+    });
+  },
+
+  async removeBandwidthQueue(sessionId, name) {
+    return this.call(sessionId, '/api/bandwidth/queue/remove', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  async addVpnPeer(sessionId, name, allowedIps, interfaceName) {
+    return this.call(sessionId, '/api/vpn/peer/add', {
+      method: 'POST',
+      body: JSON.stringify({ name, allowedIps, interfaceName }),
+    });
+  },
+
+  async createBackup(sessionId) {
+    return this.call(sessionId, '/api/backup/create', { method: 'POST', body: '{}' });
+  },
+
+  async reserveDhcpIp(sessionId, mac, ip) {
+    return this.call(sessionId, '/api/dhcp/reserve', {
+      method: 'POST',
+      body: JSON.stringify({ mac, ip }),
+    });
+  },
+
+  async applyLoadBalance(sessionId, wans, method, healthCheck) {
+    return this.call(sessionId, '/api/wan/apply-lb', {
+      method: 'POST',
+      body: JSON.stringify({ wans, method, healthCheck }),
+    });
+  },
+
+  async toggleInterface(sessionId, name, disable) {
+    return this.call(sessionId, '/api/interfaces/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ name, disable }),
+    });
   },
 
   // IP Addresses
@@ -1034,13 +1086,15 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
     try {
       const result = await API.login(host, port, username, password);
       const sid = result.sessionId;
-      // Persist session so page refresh doesn't require re-login
-      try { localStorage.setItem('netforge_session', JSON.stringify({ sessionId: sid, host, port: parseInt(port) || 22, username, ts: Date.now() })); } catch {}
+      try {
+        localStorage.setItem('netforge_session', JSON.stringify({
+          sessionId: sid, host, port: parseInt(port) || 22, username, ts: Date.now(),
+        }));
+      } catch {}
+      API.initWebSocket(sid); // background — no blocking
       if (saveCredentials) {
         saveRecent({ name: deviceLabel, host, port: parseInt(port) || 22, username, timestamp: Date.now() });
       }
-      // Init WebSocket in background — don't block navigation
-      API.initWebSocket(sid);
       setSessionId(sid);
       setRouter({ host, port: parseInt(port), username });
       setPage('Dashboard');
@@ -1432,20 +1486,37 @@ const InterfacesScreen = ({ sessionId }) => {
   const [interfaces, setInterfaces] = React.useState([]);
   const [loading, setLoading]       = React.useState(true);
   const [selected, setSelected]     = React.useState(null);
+  const [toggleMsg, setToggleMsg]   = React.useState('');
+
+  const reload = React.useCallback(async () => {
+    try { const d = await API.getInterfaces(sessionId); setInterfaces(d); } catch {}
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
     const fetch = async () => {
       setLoading(true);
-      try { const d = await API.getInterfaces(sessionId); setInterfaces(d); } catch {}
+      await reload();
       setLoading(false);
     };
     fetch();
-    const iv = setInterval(fetch, 5000);
+    const iv = setInterval(reload, 5000);
     return () => clearInterval(iv);
-  }, [sessionId]);
+  }, [sessionId, reload]);
 
   const sel = selected !== null ? interfaces[selected] : null;
+
+  const handleToggle = async () => {
+    if (!sel) return;
+    const disable = sel.status === 'up' && !sel.disabled;
+    setToggleMsg(disable ? 'Disabling…' : 'Enabling…');
+    try {
+      const r = await API.toggleInterface(sessionId, sel.name, disable);
+      setToggleMsg('✓ ' + r.message);
+      await reload();
+    } catch (e) { setToggleMsg('✗ ' + e.message); }
+    setTimeout(() => setToggleMsg(''), 3000);
+  };
 
   const fmtBytes = (b) => {
     if (!b) return '—';
@@ -1522,10 +1593,10 @@ const InterfacesScreen = ({ sessionId }) => {
                   <span style={{ fontSize: 11, color: A.text, fontFamily: row.mono ? A.mono : A.ui }}>{row.val}</span>
                 </div>
               ))}
-              <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
-                <ABtn kind="secondary">Disable</ABtn>
+              {toggleMsg && <div style={{ fontSize: 11, color: toggleMsg.includes('✓') ? A.good : toggleMsg.includes('✗') ? A.bad : A.textDim, marginTop: 10 }}>{toggleMsg}</div>}
+              <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                <ABtn kind="secondary" onClick={handleToggle}>{sel && (sel.status === 'up' && !sel.disabled) ? 'Disable' : 'Enable'}</ABtn>
                 <ABtn kind="ghost">Monitor</ABtn>
-                <ABtn kind="ghost">Edit</ABtn>
               </div>
             </ACard>
           </div>
@@ -1603,10 +1674,12 @@ const WANScreen = ({ sessionId }) => {
 
   const handleApply = async () => {
     setApplying(true); setApplyMsg('Applying rules…');
-    await new Promise(r => setTimeout(r, 1200));
-    setApplyMsg('✓ Load balance rules applied');
+    try {
+      const result = await API.applyLoadBalance(sessionId, activeWans, lbMethod, healthCheck);
+      setApplyMsg('✓ ' + result.message);
+    } catch (e) { setApplyMsg('✗ ' + e.message); }
     setApplying(false);
-    setTimeout(() => setApplyMsg(''), 4000);
+    setTimeout(() => setApplyMsg(''), 5000);
   };
 
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
@@ -1817,10 +1890,12 @@ const FirewallScreen = ({ sessionId }) => {
   const handleAdd  = async () => {
     if (!customDomain.trim()) return;
     setAddMsg('Adding rule…');
-    await new Promise(r => setTimeout(r, 600));
-    setAddMsg('✓ Rule added');
-    setCustomDomain('');
-    setTimeout(() => setAddMsg(''), 2000);
+    try {
+      const result = await API.blockDomain(sessionId, customDomain.trim(), ruleType);
+      setAddMsg('✓ ' + result.message);
+      setCustomDomain(''); setTestResult(null);
+    } catch (e) { setAddMsg('✗ ' + e.message); }
+    setTimeout(() => setAddMsg(''), 3000);
   };
 
   const activeCount  = firewall?.activeConnections ?? '—';
@@ -1997,10 +2072,14 @@ const BandwidthScreen = ({ sessionId }) => {
   const handleAdd = async () => {
     if (!qName.trim() || !qTarget.trim()) { setAddMsg('Name and target required'); return; }
     setAddMsg('Adding queue…');
-    await new Promise(r => setTimeout(r, 500));
-    setAddMsg('✓ Queue added');
-    setQName(''); setQTarget(''); setShowPanel(false);
-    setTimeout(() => setAddMsg(''), 2000);
+    try {
+      const result = await API.addBandwidthQueue(sessionId, qName.trim(), qTarget.trim(), qDown, qUp, qPrio, qBurst);
+      setAddMsg('✓ ' + result.message);
+      setQName(''); setQTarget(''); setShowPanel(false);
+      // Refresh queue list
+      try { const d = await API.getBandwidth(sessionId); setQueues(Array.isArray(d) ? d : []); } catch {}
+    } catch (e) { setAddMsg('✗ ' + e.message); }
+    setTimeout(() => setAddMsg(''), 3000);
   };
 
   const utilColor = (u) => u >= 90 ? A.bad : u >= 70 ? A.warn : A.accent;
@@ -2114,6 +2193,9 @@ const ClientsScreen = ({ sessionId }) => {
   const [loading, setLoading]   = React.useState(true);
   const [search, setSearch]     = React.useState('');
   const [reserveRow, setReserveRow] = React.useState(null);
+  const [reserveIp, setReserveIp]   = React.useState('');
+  const [reserveMsg, setReserveMsg] = React.useState('');
+  const [reserving, setReserving]   = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -2144,6 +2226,20 @@ const ClientsScreen = ({ sessionId }) => {
 
   const staticCount  = clients.filter(c => c.lease === 'static' || c['address-lists']).length;
   const activeCount  = clients.filter(c => c.status !== 'waiting').length;
+
+  const openReserve = (c) => { setReserveRow(c); setReserveIp(c.ip || ''); setReserveMsg(''); };
+
+  const handleReserve = async () => {
+    if (!reserveRow) return;
+    setReserving(true); setReserveMsg('Reserving…');
+    try {
+      const result = await API.reserveDhcpIp(sessionId, reserveRow.mac, reserveIp || undefined);
+      setReserveMsg('✓ ' + result.message);
+      await load();
+      setTimeout(() => setReserveRow(null), 1500);
+    } catch (e) { setReserveMsg('✗ ' + e.message); }
+    setReserving(false);
+  };
 
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
@@ -2205,11 +2301,30 @@ const ClientsScreen = ({ sessionId }) => {
               <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{c.lease || c['expires-after'] || '—'}</span>
               <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(c.rx || c.rxBytes)}</span>
               <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(c.tx || c.txBytes)}</span>
-              <button className="reserve-btn" onClick={() => setReserveRow(c)} style={{ position: 'absolute', right: 12, background: A.accentSoft, border: `1px solid ${A.accent}`, borderRadius: 6, color: '#BFDBFE', fontSize: 10, padding: '3px 8px', cursor: 'pointer', opacity: 0, transition: 'opacity 0.15s' }}>Reserve IP</button>
+              <button className="reserve-btn" onClick={() => openReserve(c)} style={{ position: 'absolute', right: 12, background: A.accentSoft, border: `1px solid ${A.accent}`, borderRadius: 6, color: '#BFDBFE', fontSize: 10, padding: '3px 8px', cursor: 'pointer', opacity: 0, transition: 'opacity 0.15s' }}>Reserve IP</button>
             </div>
           ))}
         </div>
       </div>
+
+      {/* Reserve IP modal overlay */}
+      {reserveRow && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={() => setReserveRow(null)}>
+          <div style={{ background: '#0F1825', border: `1px solid ${A.borderStrong}`, borderRadius: 14, padding: 24, width: 320, boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: A.text, marginBottom: 4 }}>Reserve IP</div>
+            <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 16, fontFamily: A.mono }}>{reserveRow.mac}</div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 6 }}>IP Address <span style={{ color: A.textFaint }}>(leave as-is to keep current)</span></div>
+              <input value={reserveIp} onChange={e => setReserveIp(e.target.value)} style={{ width: '100%', padding: '9px 11px', background: A.surface, border: `1px solid ${A.borderStrong}`, borderRadius: 9, fontFamily: A.mono, fontSize: 12, color: A.text, outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            {reserveMsg && <div style={{ fontSize: 11, color: reserveMsg.includes('✓') ? A.good : A.bad, marginBottom: 12 }}>{reserveMsg}</div>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <ABtn kind="secondary" onClick={() => setReserveRow(null)}>Cancel</ABtn>
+              <ABtn kind="primary" onClick={handleReserve} disabled={reserving} full>{reserving ? 'Reserving…' : 'Make Static'}</ABtn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2586,9 +2701,13 @@ const VpnScreen = ({ sessionId }) => {
   const handleCreate = async () => {
     if (!peerName.trim()) { setAddMsg('Peer name required'); return; }
     setAddMsg('Creating peer…');
-    await new Promise(r => setTimeout(r, 600));
-    setAddMsg('✓ Peer created — download .conf to activate');
-    setPeerName(''); setPeerIp('');
+    try {
+      const result = await API.addVpnPeer(sessionId, peerName.trim(), peerIp || '10.0.0.2/32', null);
+      setAddMsg('✓ ' + result.message);
+      setPeerName(''); setPeerIp('');
+      // Refresh VPN data
+      try { const d = await API.getVpn(sessionId); setVpn(Array.isArray(d) ? d : []); } catch {}
+    } catch (e) { setAddMsg('✗ ' + e.message); }
   };
 
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
@@ -3023,11 +3142,13 @@ const BackupScreen = ({ sessionId }) => {
 
   const handleBackupNow = async () => {
     setBackingUp(true); setBackupMsg('Saving backup to flash…');
-    await new Promise(r => setTimeout(r, 1200));
-    setBackupMsg('✓ Backup complete');
+    try {
+      const result = await API.createBackup(sessionId);
+      setBackupMsg('✓ ' + result.message);
+      await load();
+    } catch (e) { setBackupMsg('✗ ' + e.message); }
     setBackingUp(false);
-    await load();
-    setTimeout(() => setBackupMsg(''), 3000);
+    setTimeout(() => setBackupMsg(''), 4000);
   };
 
   const typeTone = (t) => {
@@ -3752,28 +3873,26 @@ const NatScreen = ({ sessionId }) => {
 // ========== MAIN APP ==========
 
 const App = () => {
-  // Restore session from localStorage so page refresh doesn't force re-login
+  // Restore session from localStorage on page refresh (6h TTL)
   const [sessionId, setSessionId] = React.useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('netforge_session') || 'null');
-      // Treat sessions older than 6 hours as stale
-      if (saved && saved.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) return saved.sessionId;
+      if (saved?.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) return saved.sessionId;
     } catch {}
     return null;
   });
   const [router, setRouter] = React.useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('netforge_session') || 'null');
-      if (saved && saved.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) {
+      if (saved?.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000)
         return { host: saved.host, port: saved.port, username: saved.username };
-      }
     } catch {}
     return null;
   });
   const [page, setPage] = React.useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('netforge_session') || 'null');
-      if (saved && saved.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) return 'Dashboard';
+      if (saved?.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) return 'Dashboard';
     } catch {}
     return 'Login';
   });
@@ -3818,34 +3937,34 @@ const App = () => {
     toggleHistory: () => setShowHistory(s => !s)
   };
 
-  // Listen for 401 session-expired events from API.call
+  // Handle session expiry (401 from any API call)
   React.useEffect(() => {
     const onExpired = () => {
       try { localStorage.removeItem('netforge_session'); } catch {}
-      if (API.wsManager) { try { API.wsManager.close(); } catch {}; API.wsManager = null; }
-      setSessionId(null);
-      setRouter(null);
-      setPage('Login');
+      if (API.wsManager) { try { API.wsManager.close(); } catch {} API.wsManager = null; }
+      setSessionId(null); setRouter(null); setPage('Login');
     };
     window.addEventListener('netforge:session-expired', onExpired);
     return () => window.removeEventListener('netforge:session-expired', onExpired);
   }, []);
 
-  // Redirect to Login if sessionId disappears while on a protected page
+  // Redirect to login if session is gone
   React.useEffect(() => {
     if (!sessionId && page !== 'Login') setPage('Login');
   }, [sessionId, page]);
 
   const handleLogout = async () => {
-    if (API.wsManager) { try { API.wsManager.close(); } catch {}; API.wsManager = null; }
-    try { if (sessionId) await API.logout(sessionId); } catch {}
     try { localStorage.removeItem('netforge_session'); } catch {}
-    setSessionId(null);
-    setRouter(null);
-    setPage('Login');
+    if (API.wsManager) {
+      try { API.wsManager.close(); } catch {}
+      API.wsManager = null;
+    }
+    try { if (sessionId) await API.logout(sessionId); } catch {}
+    setSessionId(null); setRouter(null); setPage('Login');
   };
 
   const renderScreen = () => {
+    if (!sessionId && page !== 'Login') return null;
     switch (page) {
       case 'Login':       return <LoginScreen setPage={setPage} setSessionId={setSessionId} setRouter={setRouter} />;
       case 'Dashboard':   return <DashboardScreen sessionId={sessionId} router={router} />;
