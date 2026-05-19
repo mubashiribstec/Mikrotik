@@ -1690,7 +1690,11 @@ const WANScreen = ({ sessionId }) => {
     const wList = selectedWans.length >= 2 ? selectedWans : activeWans.slice(0, 3);
     if (wList.length < 2) return '# add at least 2 active WAN interfaces';
 
-    if (lbMethod === 'pcc') {
+    // gateway is what the server detected (default route, DHCP, or PPPoE).
+    // Show a clear placeholder if missing so the user knows apply will fail.
+    const gwOf = w => w.gateway || '<no-gateway>';
+
+    if (lbMethod === 'pcc' || lbMethod === 'nth') {
       const S = wList.reduce((s, w) => s + (wanConfig[w.name]?.weight || 1), 0);
       let lines = [
         '# Remove previous netforge-lb rules',
@@ -1701,25 +1705,15 @@ const WANScreen = ({ sessionId }) => {
       wList.forEach(wan => {
         const w = wanConfig[wan.name]?.weight || 1;
         for (let k = 0; k < w; k++) {
-          lines.push(`/ip firewall mangle add chain=prerouting connection-state=new per-connection-classifier=both-addresses:${S}/${bucket} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+          if (lbMethod === 'nth') {
+            lines.push(`/ip firewall mangle add chain=prerouting connection-state=new nth=${S},${bucket + 1} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+          } else {
+            lines.push(`/ip firewall mangle add chain=prerouting connection-state=new per-connection-classifier=both-addresses:${S}/${bucket} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+          }
           bucket++;
         }
         lines.push(`/ip firewall mangle add chain=prerouting connection-mark=${wan.name}-conn action=mark-routing new-routing-mark=to-${wan.name} comment="netforge-lb"`);
-        lines.push(`/ip route add gateway=${wan.gateway || wan.ip || 'auto'} routing-mark=to-${wan.name} comment="netforge-lb"`);
-      });
-      return lines.join('\n');
-    }
-
-    if (lbMethod === 'nth') {
-      const S = wList.length;
-      let lines = [
-        '/ip firewall mangle remove [find comment="netforge-lb"]',
-        '/ip route remove [find comment="netforge-lb"]',
-      ];
-      wList.forEach((wan, idx) => {
-        lines.push(`/ip firewall mangle add chain=prerouting connection-state=new nth=${S},${idx+1} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
-        lines.push(`/ip firewall mangle add chain=prerouting connection-mark=${wan.name}-conn action=mark-routing new-routing-mark=to-${wan.name} comment="netforge-lb"`);
-        lines.push(`/ip route add gateway=${wan.gateway || wan.ip || 'auto'} routing-mark=to-${wan.name} comment="netforge-lb"`);
+        lines.push(`/ip route add gateway=${gwOf(wan)} routing-mark=to-${wan.name} comment="netforge-lb"`);
       });
       return lines.join('\n');
     }
@@ -1727,7 +1721,7 @@ const WANScreen = ({ sessionId }) => {
     // failover
     let lines = ['/ip route remove [find comment="netforge-lb"]'];
     wList.forEach((wan, idx) => {
-      lines.push(`/ip route add dst-address=0.0.0.0/0 gateway=${wan.gateway || wan.ip || 'auto'} distance=${idx+1} check-gateway=ping comment="netforge-lb"`);
+      lines.push(`/ip route add dst-address=0.0.0.0/0 gateway=${gwOf(wan)} distance=${idx+1} check-gateway=ping comment="netforge-lb"`);
     });
     if (healthCheck) {
       lines.push('/tool/netwatch add host=1.1.1.1 interval=5s comment="netforge-lb"');
@@ -1819,7 +1813,7 @@ const WANScreen = ({ sessionId }) => {
                       <APill tone={up ? 'good' : 'bad'}>{wan.status || 'down'}</APill>
                     </div>
                     <div style={{ fontSize: 10, color: A.textFaint, marginTop: 3, fontFamily: A.mono }}>
-                      {wan.ip || '—'} · {wan.util || 0}% used{wan.latency ? ` · ${wan.latency}ms` : ''}
+                      ip {wan.ip || '—'} · gw {wan.gateway || <span style={{ color: A.warn }}>none</span>}{wan.util ? ` · ${wan.util}% used` : ''}{wan.latency ? ` · ${wan.latency}ms` : ''}
                     </div>
                   </div>
                   {/* weight chips — only shown when not failover */}

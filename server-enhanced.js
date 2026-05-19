@@ -348,8 +348,7 @@ async function fetchWanStatus(conn) {
     const routeOutput = await conn.execute('/ip route print where dst-address=0.0.0.0/0');
     const routes = parseRouterOSOutput(routeOutput);
     routes.forEach(r => {
-      const dst = r.dst_address || r['dst_address'] || '';
-      const gw  = r.gateway || '';
+      const gw = r.gateway || '';
       if (!gw) return;
       // If gateway is an interface name directly (PPPoE, etc.)
       if (ifaces.find(i => i.name === gw)) {
@@ -365,6 +364,31 @@ async function fetchWanStatus(conn) {
       if (matchedAddr) ifaceGateway[matchedAddr.interface] = gw;
     });
   } catch {}
+
+  // DHCP client gateways — most common case for residential ISPs
+  try {
+    const dhcpOut = await conn.execute('/ip dhcp-client print detail');
+    const dhcpClients = parseRouterOSKeyValue(dhcpOut);
+    dhcpClients.forEach(d => {
+      const ifaceName = d.interface;
+      const gw = d.gateway;
+      if (ifaceName && gw && !ifaceGateway[ifaceName]) {
+        ifaceGateway[ifaceName] = gw;
+      }
+    });
+  } catch {}
+
+  // For PPPoE/L2TP/PPTP, the interface name itself is the gateway in RouterOS
+  ifaces.forEach(iface => {
+    const type = (iface.type || '').toLowerCase();
+    const name = (iface.name || '').toLowerCase();
+    if (!ifaceGateway[iface.name] && (
+      type === 'pppoe-out' || type === 'l2tp-out' || type === 'pptp-out' ||
+      /^pppoe/.test(name) || /^l2tp/.test(name) || /^pptp/.test(name)
+    )) {
+      ifaceGateway[iface.name] = iface.name;
+    }
+  });
 
   // Classify each interface as WAN candidate
   const wanNames = new Set();
@@ -1884,17 +1908,32 @@ app.post('/api/wan/apply-lb', async (req, res) => {
       return res.status(400).json({ error: 'At least 2 WANs required for load balancing' });
     }
 
+    // Validate gateways upfront — without them, route commands silently misbehave
+    const missing = wans.filter(w => !w.gateway || w.gateway === '—' || w.gateway === '');
+    if (missing.length > 0) {
+      return res.status(400).json({
+        error: `Gateway not detected for: ${missing.map(w => w.name).join(', ')}. Each WAN needs a default route or DHCP client lease.`,
+        missing: missing.map(w => w.name),
+      });
+    }
+
     const conn = getConnection(sessionId);
 
-    // Always clear previous netforge-lb rules before writing new ones (idempotent apply)
+    // Clean up previous netforge-lb rules — apply is idempotent
     try { await conn.execute('/ip firewall mangle remove [find comment="netforge-lb"]'); } catch {}
     try { await conn.execute('/ip route remove [find comment="netforge-lb"]'); } catch {}
     try { await conn.execute('/tool netwatch remove [find comment="netforge-lb"]'); } catch {}
 
     const applied = [];
+    const failed  = [];
 
+    // RouterOS app-errors come back as resolved strings; detect them with rosError()
     const exec = async (cmd) => {
       const out = await conn.execute(cmd);
+      if (rosError(out)) {
+        failed.push({ cmd, error: out.trim().split('\n')[0] });
+        return null;
+      }
       applied.push(cmd);
       return out;
     };
@@ -1902,11 +1941,15 @@ app.post('/api/wan/apply-lb', async (req, res) => {
     if (method === 'failover') {
       for (let i = 0; i < wans.length; i++) {
         const wan = wans[i];
-        const gw = wan.gateway || wan.ip?.split('/')[0];
-        if (!gw || gw === '—') continue;
-        await exec(`/ip route add dst-address=0.0.0.0/0 gateway="${gw}" distance=${i + 1} check-gateway=ping comment="netforge-lb"`);
+        await exec(`/ip route add dst-address=0.0.0.0/0 gateway="${wan.gateway}" distance=${i + 1} check-gateway=ping comment="netforge-lb"`);
       }
     } else {
+      // RouterOS 7+ requires routing tables to be declared first; v6 auto-creates
+      // We try and ignore: if table already exists or command isn't recognized, no harm
+      for (const wan of wans) {
+        try { await conn.execute(`/routing table add name=to-${wan.name} fib`); } catch {}
+      }
+
       // PCC or NTH — both use mangle mark-connection + mark-routing + route per WAN
       // Total bucket count respects per-WAN weight
       const S = wans.reduce((s, w) => s + (w.weight || 1), 0);
@@ -1927,19 +1970,29 @@ app.post('/api/wan/apply-lb', async (req, res) => {
         // Mark routing for this WAN's connections
         await exec(`/ip firewall mangle add chain=prerouting connection-mark=${wan.name}-conn action=mark-routing new-routing-mark=to-${wan.name} comment="netforge-lb"`);
 
-        // Add route for this routing-mark
-        const gw = wan.gateway || wan.ip?.split('/')[0];
-        if (gw && gw !== '—') {
-          await exec(`/ip route add gateway="${gw}" routing-mark=to-${wan.name} comment="netforge-lb"`);
-        }
+        // Add route in this WAN's routing table — use server-detected gateway only
+        await exec(`/ip route add gateway="${wan.gateway}" routing-mark=to-${wan.name} comment="netforge-lb"`);
       }
     }
 
     if (healthCheck) {
-      try { await exec('/tool netwatch add host=1.1.1.1 interval=5s comment="netforge-lb"'); } catch {}
+      await exec('/tool netwatch add host=1.1.1.1 interval=5s comment="netforge-lb"');
     }
 
-    res.json({ success: true, message: `${method.toUpperCase()} applied for ${wans.length} WANs — ${applied.length} rules written`, commandsApplied: applied.length });
+    if (failed.length > 0 && applied.length === 0) {
+      return res.status(500).json({
+        error: `All ${failed.length} commands failed. First error: ${failed[0].error}`,
+        applied: 0,
+        failed,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `${method.toUpperCase()} applied — ${applied.length} ok${failed.length ? `, ${failed.length} failed` : ''}`,
+      commandsApplied: applied.length,
+      failed: failed.length > 0 ? failed : undefined,
+    });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
