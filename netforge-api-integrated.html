@@ -283,10 +283,10 @@ const API = {
     return this.call(sessionId, '/api/firewall/service-status');
   },
 
-  async toggleFirewallService(sessionId, serviceId, domains, block) {
+  async toggleFirewallService(sessionId, serviceId, block) {
     return this.call(sessionId, '/api/firewall/service/toggle', {
       method: 'POST',
-      body: JSON.stringify({ serviceId, domains, block }),
+      body: JSON.stringify({ serviceId, block }),
     });
   },
 
@@ -1845,14 +1845,14 @@ const WANScreen = ({ sessionId }) => {
 };
 
 const BLOCK_SERVICES = [
-  { id: 'youtube',  label: 'YouTube',       category: 'Streaming',   domains: ['youtube.com','googlevideo.com','ytimg.com'], hits: 0 },
-  { id: 'facebook', label: 'Facebook',      category: 'Social',      domains: ['facebook.com','fbcdn.net','instagram.com'], hits: 0 },
-  { id: 'tiktok',   label: 'TikTok',        category: 'Social',      domains: ['tiktok.com','tiktokcdn.com','musical.ly'],  hits: 0 },
-  { id: 'netflix',  label: 'Netflix',       category: 'Streaming',   domains: ['netflix.com','nflxvideo.net','nflximg.net'],hits: 0 },
-  { id: 'adult',    label: 'Adult Content', category: 'Explicit',    domains: ['+ adult filter list (500+ domains)'],       hits: 0 },
-  { id: 'torrents', label: 'Torrents',      category: 'P2P',         domains: ['thepiratebay.org','1337x.to','rarbg.to'],   hits: 0 },
-  { id: 'gambling', label: 'Gambling',      category: 'Finance',     domains: ['bet365.com','pokerstars.com','888casino.com'],hits:0},
-  { id: 'crypto',   label: 'Crypto Mining', category: 'Mining',      domains: ['coinhive.com','coin-hive.com','cryptoloot.pro'],hits:0},
+  { id: 'youtube',  label: 'YouTube',       category: 'Streaming', method: 'dns',    domains: ['youtube.com','googlevideo.com','ytimg.com','youtu.be','yt3.ggpht.com','i.ytimg.com','s.ytimg.com','video.google.com'] },
+  { id: 'facebook', label: 'Facebook',      category: 'Social',    method: 'dns',    domains: ['facebook.com','fbcdn.net','instagram.com','fb.com','messenger.com'] },
+  { id: 'tiktok',   label: 'TikTok',        category: 'Social',    method: 'dns',    domains: ['tiktok.com','tiktokcdn.com','musical.ly','tiktokv.com','tiktokcdn-us.com'] },
+  { id: 'netflix',  label: 'Netflix',       category: 'Streaming', method: 'dns',    domains: ['netflix.com','nflxvideo.net','nflximg.net','nflxext.com','nflxso.net'] },
+  { id: 'adult',    label: 'Adult Content', category: 'Explicit',  method: 'dns',    domains: ['pornhub.com','xvideos.com','xnxx.com','xhamster.com','redtube.com','youporn.com'] },
+  { id: 'torrents', label: 'Torrents',      category: 'P2P',       method: 'layer7', domains: ['thepiratebay.org','1337x.to','rarbg.to','nyaa.si','kickasstorrents.to','torrentgalaxy.to'] },
+  { id: 'gambling', label: 'Gambling',      category: 'Finance',   method: 'dns',    domains: ['bet365.com','pokerstars.com','888casino.com','draftkings.com','fanduel.com'] },
+  { id: 'crypto',   label: 'Crypto Mining', category: 'Mining',    method: 'dns',    domains: ['coinhive.com','coin-hive.com','cryptoloot.pro','minero.cc','jsecoin.com'] },
 ];
 
 const APPLY_OPTS = [
@@ -1909,7 +1909,7 @@ const FirewallScreen = ({ sessionId }) => {
     setToggling(prev => ({ ...prev, [svc.id]: true }));
     setToggleMsg('');
     try {
-      await API.toggleFirewallService(sessionId, svc.id, svc.domains, newState);
+      await API.toggleFirewallService(sessionId, svc.id, newState);
       setToggleMsg(`✓ ${svc.label} ${newState ? 'blocked' : 'unblocked'}`);
     } catch (e) {
       // Revert on failure
@@ -1988,6 +1988,7 @@ const FirewallScreen = ({ sessionId }) => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
                       <span style={{ fontSize: 13, fontWeight: 500, color: A.text }}>{svc.label}</span>
                       <APill tone="dim">{svc.category}</APill>
+                      {svc.method === 'layer7' && <APill tone="accent">Layer-7</APill>}
                       {isBlocked && <APill tone="bad">Blocked</APill>}
                       {isToggling && <APill tone="dim">applying…</APill>}
                     </div>

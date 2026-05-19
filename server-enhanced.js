@@ -1404,68 +1404,163 @@ app.post('/api/interfaces/toggle', async (req, res) => {
 
 // ========== FIREWALL — SERVICE BLOCK/UNBLOCK ==========
 
-// Returns which service IDs are currently blocked (DNS static entries with netforge-svc comment)
+// Server-authoritative domain lists — never trust client-sent domains
+const BLOCK_SERVICE_DOMAINS = {
+  youtube:  ['youtube.com', 'googlevideo.com', 'ytimg.com', 'youtu.be',
+             'yt3.ggpht.com', 'i.ytimg.com', 's.ytimg.com', 'video.google.com', 'youtube-nocookie.com'],
+  facebook: ['facebook.com', 'fbcdn.net', 'instagram.com', 'fb.com', 'fbsbx.com', 'messenger.com'],
+  tiktok:   ['tiktok.com', 'tiktokcdn.com', 'musical.ly', 'tiktokv.com', 'tiktokcdn-us.com'],
+  netflix:  ['netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxext.com', 'nflxso.net'],
+  adult:    ['pornhub.com', 'xvideos.com', 'xnxx.com', 'xhamster.com', 'redtube.com', 'youporn.com'],
+  torrents: ['thepiratebay.org', '1337x.to', 'rarbg.to', 'nyaa.si', 'kickasstorrents.to', 'torrentgalaxy.to'],
+  gambling: ['bet365.com', 'pokerstars.com', '888casino.com', 'draftkings.com', 'fanduel.com', 'betway.com'],
+  crypto:   ['coinhive.com', 'coin-hive.com', 'cryptoloot.pro', 'minero.cc', 'jsecoin.com'],
+};
+
+// Standard RouterOS community Layer-7 bittorrent regexp
+// Escaping note: each \\ in this JS string becomes \ in the sent SSH command,
+// which RouterOS then interprets in its regexp engine.
+const L7_TORRENT_REGEXP = `^(\\\\x13bittorrent protocol|azver\\\\x01\\$|get /scrape\\\\\\?info_hash=get /announce\\\\\\?info_hash=|get /client/bitcomet/|GET /data\\\\\\?fid=)|d1:ad2:id20:|\\\\x08'7P\\\\)[RP]`;
+
+async function blockTorrentsL7(conn) {
+  const comment = 'netforge-svc-torrents';
+
+  // 1. Layer-7 protocol pattern
+  try {
+    await conn.execute(`/ip firewall layer7-protocol add name="netforge-layer7-torrent" comment="${comment}" regexp="${L7_TORRENT_REGEXP}"`);
+  } catch {
+    try { await conn.execute(`/ip firewall layer7-protocol set [find name="netforge-layer7-torrent"] regexp="${L7_TORRENT_REGEXP}" comment="${comment}"`); } catch {}
+  }
+
+  // 2. Mark L7-detected torrent sources into address list
+  try {
+    await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward layer7-protocol=netforge-layer7-torrent comment="${comment}"`);
+  } catch {}
+
+  // 3. Mark P2P-detected sources into address list
+  try {
+    await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward p2p=all-p2p comment="${comment}"`);
+  } catch {}
+
+  // 4. Drop TCP to non-standard ports for marked sources
+  try {
+    await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=tcp src-address-list=netforge-torrent-conn comment="${comment}"`);
+  } catch {}
+
+  // 5. Drop UDP to non-standard ports for marked sources
+  try {
+    await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=udp src-address-list=netforge-torrent-conn comment="${comment}"`);
+  } catch {}
+
+  // 6. Also DNS-block known torrent site domains
+  for (const domain of (BLOCK_SERVICE_DOMAINS.torrents || [])) {
+    try {
+      await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
+    } catch {
+      try { await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`); } catch {}
+    }
+  }
+}
+
+async function unblockTorrentsL7(conn) {
+  try { await conn.execute('/ip firewall filter remove [find comment="netforge-svc-torrents"]'); } catch {}
+  try { await conn.execute('/ip firewall layer7-protocol remove [find comment="netforge-svc-torrents"]'); } catch {}
+  try { await conn.execute('/ip firewall address-list remove [find list="netforge-torrent-conn"]'); } catch {}
+  try { await conn.execute('/ip dns static remove [find comment="netforge-svc-torrents"]'); } catch {}
+}
+
+// Returns which service IDs are currently blocked
 app.get('/api/firewall/service-status', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const conn = getConnection(sessionId);
-    const output = await conn.execute('/ip dns static print');
-    const entries = parseRouterOSOutput(output);
 
-    // Collect service IDs that have at least one DNS entry
-    const blocked = new Set();
-    for (const e of entries) {
-      const comment = e.comment || '';
-      const m = comment.match(/^netforge-svc-(.+)$/);
-      if (m) blocked.add(m[1]);
+    // Check Layer-7 rule for torrent blocking
+    const l7Out = await conn.execute('/ip firewall layer7-protocol print');
+    const torrentsBlocked = l7Out.includes('netforge-layer7-torrent') || l7Out.includes('netforge-svc-torrents');
+
+    // Check DNS static entries — use domain-name matching, NOT comment matching
+    // (tabular print omits the comment column; only 'print detail' shows it)
+    const dnsOut = await conn.execute('/ip dns static print');
+    const dnsEntries = parseRouterOSOutput(dnsOut);
+
+    const blockedDomains = new Set();
+    for (const e of dnsEntries) {
+      const addr = (e.address || e.data || '').trim();
+      if (addr === '0.0.0.0') blockedDomains.add((e.name || '').toLowerCase());
     }
 
-    res.json({ blocked: [...blocked] });
+    const blocked = [];
+    for (const [svcId, domains] of Object.entries(BLOCK_SERVICE_DOMAINS)) {
+      if (svcId === 'torrents') continue;
+      if (domains.some(d => blockedDomains.has(d.toLowerCase()))) blocked.push(svcId);
+    }
+    if (torrentsBlocked) blocked.push('torrents');
+
+    res.json({ blocked });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
 
-// Block or unblock an entire service (array of domains) via DNS static entries
+// Block or unblock a service
 app.post('/api/firewall/service/toggle', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
-    const { serviceId, domains, block } = req.body;
-    if (!serviceId || !Array.isArray(domains)) {
-      return res.status(400).json({ error: 'serviceId and domains[] required' });
-    }
+    const { serviceId, block } = req.body;
+    if (!serviceId) return res.status(400).json({ error: 'serviceId required' });
 
     const conn = getConnection(sessionId);
+
+    // Torrents use Layer-7 + firewall filter rules (DNS-only is ineffective for P2P)
+    if (serviceId === 'torrents') {
+      if (block) {
+        await blockTorrentsL7(conn);
+      } else {
+        await unblockTorrentsL7(conn);
+      }
+      try { await conn.execute('/ip dns cache flush'); } catch {}
+      return res.json({ success: true, message: `torrents ${block ? 'blocked via Layer-7 + DNS' : 'unblocked'}` });
+    }
+
+    // All other services use DNS static blocking
+    const domains = BLOCK_SERVICE_DOMAINS[serviceId];
+    if (!domains || domains.length === 0) {
+      return res.status(400).json({ error: `Unknown service: ${serviceId}` });
+    }
+
     const comment = `netforge-svc-${serviceId}`;
 
     if (block) {
-      // Add DNS static entry for each domain pointing to 0.0.0.0
+      // Ensure router DNS is serving to LAN clients
+      try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
+
+      // Force all client DNS traffic through the router (add only if not already present)
+      try {
+        const natOut = await conn.execute('/ip firewall nat print');
+        if (!natOut.includes('netforge-dns-redirect')) {
+          await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+          await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+        }
+      } catch {}
+
       for (const domain of domains) {
-        // Skip placeholder entries like '+ adult filter list (500+ domains)'
-        if (!domain || domain.startsWith('+') || !/^[a-zA-Z0-9._-]+$/.test(domain)) continue;
         try {
           await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
-        } catch (e) {
-          // Entry may already exist — try to update it
-          try {
-            await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
-          } catch { /* skip */ }
+        } catch {
+          try { await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`); } catch {}
         }
       }
     } else {
-      // Remove all DNS static entries tagged with this service comment
-      try {
-        await conn.execute(`/ip dns static remove [find comment="${comment}"]`);
-      } catch (e) { /* nothing to remove */ }
+      try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
     }
 
-    // Flush DNS cache so changes take effect immediately
-    try { await conn.execute('/ip dns cache flush'); } catch { /* optional */ }
+    try { await conn.execute('/ip dns cache flush'); } catch {}
 
     res.json({ success: true, message: `${serviceId} ${block ? 'blocked' : 'unblocked'}` });
   } catch (err) {
