@@ -21,10 +21,10 @@ const loginLimiter = rateLimit({
   skip: (req) => req.method !== 'POST',
 });
 
-// Rate limiting for all API calls
+// Rate limiting for all API calls — 600/min allows 5-sec polling on all screens
 const apiLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 100,
+  max: 600,
   message: 'Too many requests, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
@@ -40,48 +40,57 @@ class RouterConnection {
     this.conn = null;
     this.isConnected = false;
     this.lastActivity = Date.now();
+    this._connectPromise = null; // mutex: prevents parallel connect races
   }
 
   async connect() {
-    return new Promise((resolve, reject) => {
-      this.conn = new ssh2.Client();
+    // If a connect is already in progress, wait for it instead of spawning another
+    if (this._connectPromise) return this._connectPromise;
+
+    this._connectPromise = new Promise((resolve, reject) => {
+      const client = new ssh2.Client();
       let settled = false;
 
       const settle = (fn, arg) => {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
+          this._connectPromise = null;
           fn(arg);
         }
       };
 
       const timer = setTimeout(() => {
-        this.conn.end();
+        client.end();
         settle(reject, new Error('Connection timeout (30s)'));
       }, 30000);
 
-      this.conn.on('ready', () => {
+      client.on('ready', () => {
+        this.conn = client;
         this.isConnected = true;
         this.lastActivity = Date.now();
         settle(resolve);
       });
 
-      this.conn.on('error', (err) => {
+      client.on('error', (err) => {
         this.isConnected = false;
+        this._connectPromise = null;
         settle(reject, new Error(`SSH Connection failed: ${err.message}`));
       });
 
-      this.conn.on('close', () => {
+      client.on('close', () => {
         this.isConnected = false;
+        this._connectPromise = null;
       });
 
-      this.conn.connect({
+      client.connect({
         host: this.config.host,
         port: this.config.port,
         username: this.config.username,
         password: this.config.password,
         readyTimeout: 30000,
-        // RouterOS compatibility: allow legacy algorithms used by older firmware
+        keepaliveInterval: 15000, // prevent RouterOS idle timeout
+        keepaliveCountMax: 3,
         algorithms: {
           kex: [
             'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521',
@@ -99,6 +108,8 @@ class RouterConnection {
         },
       });
     });
+
+    return this._connectPromise;
   }
 
   async execute(command) {
@@ -111,12 +122,20 @@ class RouterConnection {
       let stderr = '';
 
       this.conn.exec(command, (err, stream) => {
-        if (err) return reject(err);
+        if (err) {
+          // SSH channel error — mark disconnected so next call reconnects
+          this.isConnected = false;
+          return reject(err);
+        }
+
+        const timeout = setTimeout(() => {
+          stream.destroy();
+          reject(new Error(`Command timed out: ${command}`));
+        }, 25000);
 
         stream.on('close', () => {
+          clearTimeout(timeout);
           this.lastActivity = Date.now();
-          // RouterOS often returns non-zero exit codes for valid commands.
-          // Resolve with combined output regardless of exit code.
           resolve(stdout + stderr);
         });
 
@@ -127,9 +146,11 @@ class RouterConnection {
   }
 
   async close() {
-    if (this.conn && this.isConnected) {
-      this.conn.end();
-      this.isConnected = false;
+    this.isConnected = false;
+    this._connectPromise = null;
+    if (this.conn) {
+      try { this.conn.end(); } catch {}
+      this.conn = null;
     }
   }
 }
@@ -282,19 +303,31 @@ async function fetchInterfaces(conn) {
   const output = await conn.execute('/interface print');
   const ifaces = parseRouterOSOutput(output);
 
-  // Get per-interface byte counters for utilisation
   let statsRows = [];
   try {
     const statsOut = await conn.execute('/interface print stats');
     statsRows = parseRouterOSOutput(statsOut);
   } catch (e) { /* optional */ }
 
+  // Fetch IP addresses to enrich each interface entry
+  let addrRows = [];
+  try {
+    addrRows = parseRouterOSOutput(await conn.execute('/ip address print'));
+  } catch (e) { /* optional */ }
+
   return ifaces.map(iface => {
     const stats = statsRows.find(s => s.name === iface.name) || {};
+    const addr  = addrRows.find(a => a.interface === iface.name) || {};
     return {
-      name: iface.name || 'unknown',
-      status: iface.running === 'true' ? 'up' : 'down',
-      util: 0, // rate requires two readings; set 0 here
+      name:       iface.name || 'unknown',
+      type:       iface.type || 'ether',
+      status:     iface.running === 'true' ? 'up' : 'down',
+      disabled:   iface.disabled === 'true',
+      comment:    iface.comment || '',
+      macAddress: iface.mac_address || '',
+      mtu:        iface.actual_mtu || iface.mtu || '',
+      address:    addr.address || '',
+      util: 0,
       rxBytes: parseInt(stats.rx_byte) || 0,
       txBytes: parseInt(stats.tx_byte) || 0,
     };
@@ -308,13 +341,33 @@ async function fetchWanStatus(conn) {
   const ifOutput = await conn.execute('/interface print');
   const ifaces = parseRouterOSOutput(ifOutput);
 
-  return addresses.map((addr, idx) => {
+  // Identify WAN interfaces by type, name convention, or comment
+  const wanNames = new Set();
+  ifaces.forEach(iface => {
+    const type    = (iface.type || '').toLowerCase();
+    const comment = (iface.comment || '').toLowerCase();
+    const name    = (iface.name || '').toLowerCase();
+    if (
+      type === 'pppoe-out' || type === 'l2tp-out' || type === 'pptp-out' ||
+      comment.includes('wan') || name.includes('wan') || name === 'ether1'
+    ) {
+      wanNames.add(iface.name);
+    }
+  });
+
+  const filtered = wanNames.size > 0
+    ? addresses.filter(a => wanNames.has(a.interface))
+    : addresses;
+
+  return (filtered.length > 0 ? filtered : addresses).map((addr, idx) => {
     const iface = ifaces.find(i => i.name === addr.interface);
     return {
-      name: addr.interface || `ether${idx + 2}`,
-      status: iface ? (iface.running === 'true' ? 'up' : 'down') : 'unknown',
-      util: 0,
-      ip: addr.address || '0.0.0.0/24',
+      name:    addr.interface || `WAN${idx + 1}`,
+      status:  iface ? (iface.running === 'true' ? 'up' : 'down') : 'unknown',
+      util:    0,
+      ip:      addr.address || '0.0.0.0/24',
+      comment: addr.comment || iface?.comment || '',
+      weight:  1,
     };
   });
 }
@@ -336,9 +389,18 @@ async function fetchFirewall(conn) {
   let droppedPackets = 0;
   try {
     const statsOut = await conn.execute('/ip firewall filter print stats');
-    for (const line of statsOut.split('\n')) {
-      if (line.includes('packets:')) {
-        droppedPackets += parseInt(line.split('packets:')[1]?.trim()) || 0;
+    const statsRows = parseRouterOSOutput(statsOut);
+    for (const statsRow of statsRows) {
+      // Stats output may or may not include the action column; fall back to matching rule
+      let action = (statsRow.action || '').toLowerCase();
+      if (!action) {
+        const matchingRule = rules.find(r => r.numbers === statsRow.numbers);
+        action = (matchingRule?.action || '').toLowerCase();
+      }
+      if (action === 'drop' || action === 'reject') {
+        // RouterOS formats large numbers with spaces: "16 543 045" → strip spaces
+        const pkts = parseInt((statsRow.packets || '').replace(/[\s,]/g, '')) || 0;
+        droppedPackets += pkts;
       }
     }
   } catch (e) { /* optional */ }
@@ -354,13 +416,19 @@ async function fetchBandwidth(conn) {
   const output = await conn.execute('/queue simple print');
   const queues = parseRouterOSOutput(output);
 
-  const data = queues.map(q => ({
-    name: q.name || 'queue',
-    target: q.target || 'all',
-    down: q.max_limit ? q.max_limit.split('/')[0] : 'unlimited',
-    up: q.max_limit ? q.max_limit.split('/')[1] : 'unlimited',
-    util: 0,
-  }));
+  const data = queues.map(q => {
+    // RouterOS priority: 1=highest…8=lowest. Map to label for the UI.
+    const prio = parseInt(q.priority) || 8;
+    const priorityLabel = prio <= 3 ? 'high' : prio <= 5 ? 'normal' : 'low';
+    return {
+      name:     q.name || 'queue',
+      target:   q.target || 'all',
+      down:     q.max_limit ? q.max_limit.split('/')[0] : 'unlimited',
+      up:       q.max_limit ? q.max_limit.split('/')[1] : 'unlimited',
+      priority: priorityLabel,
+      util:     0,
+    };
+  });
 
   return data.length > 0 ? data : [
     { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
@@ -376,7 +444,7 @@ async function fetchDhcpClients(conn) {
     arpData = parseRouterOSOutput(await conn.execute('/ip arp print'));
   } catch (e) { /* optional */ }
 
-  return clients.slice(0, 10).map(client => {
+  return clients.map(client => {
     // expires-after format: "23h59m55s" or "3d23h..."
     let leaseHours = '24h';
     if (client.expires_after) {
@@ -389,11 +457,15 @@ async function fetchDhcpClients(conn) {
     const arp = arpData.find(a => a.mac_address === client.mac_address);
     if (arp && arp.comment) vendor = arp.comment.substring(0, 20);
 
+    // host-name comes from DHCP option 12 sent by the client
+    const hostname = client.host_name || client.comment || '';
+
     return {
+      hostname,
       vendor,
-      ip: client.address || '0.0.0.0',
-      mac: client.mac_address || '00:00:00:00:00:00',
-      iface: client.interface || 'bridge',
+      ip:    client.address     || '0.0.0.0',
+      mac:   client.mac_address || '00:00:00:00:00:00',
+      iface: client.interface   || 'bridge',
       lease: leaseHours,
       tx: 0,
       rx: 0,
@@ -553,13 +625,14 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     }
 
     const config = { host, port: parseInt(port), username, password };
-    const testConn = new RouterConnection(config);
 
+    // Open the connection once and KEEP IT — don't open+close+open a second one
+    const conn = new RouterConnection(config);
     try {
-      await testConn.connect();
-      await testConn.execute('/system identity print');
-      await testConn.close();
+      await conn.connect();
+      await conn.execute('/system identity print'); // verify credentials work
     } catch (err) {
+      try { conn.close(); } catch {}
       return res.status(401).json({ error: `Connection failed: ${err.message}` });
     }
 
@@ -568,21 +641,20 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       sessionId, host, port: parseInt(port), username,
       createdAt: Date.now(), lastActivity: Date.now(),
     });
-
-    const conn = new RouterConnection(config);
     connections.set(sessionId, conn);
 
-    // Auto-cleanup after 1 hour of inactivity
-    setTimeout(() => {
+    // Periodic cleanup — check every 30 minutes, remove if inactive for 2 hours
+    const cleanupInterval = setInterval(() => {
       const sess = sessions.get(sessionId);
-      if (sess && Date.now() - sess.lastActivity > 3600000) {
+      if (!sess || Date.now() - sess.lastActivity > 7200000) {
+        clearInterval(cleanupInterval);
         const c = connections.get(sessionId);
         if (c) c.close();
         sessions.delete(sessionId);
         connections.delete(sessionId);
         trafficHistory.delete(sessionId);
       }
-    }, 3600000);
+    }, 30 * 60 * 1000);
 
     res.json({ sessionId, message: 'Connected successfully', router: `${host}:${port}` });
   } catch (err) {
@@ -685,7 +757,7 @@ app.get('/api/dhcp-clients', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const data = await fetchDhcpClients(getConnection(sessionId));
     res.json(data.length > 0 ? data : [
-      { vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
+      { hostname: '', vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
     ]);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
@@ -1112,15 +1184,53 @@ app.get('/api/hotspot/users', async (req, res) => {
     const output = await conn.execute('/ip hotspot user print');
     const users = parseRouterOSOutput(output);
 
-    const data = users.map(u => ({
-      id: u.numbers || '',
-      name: u.name || '',
-      profile: u.profile || 'default',
-      disabled: u.disabled === 'true',
-      comment: u.comment || '',
-    }));
+    // Fetch active sessions to enrich with live IP and uptime
+    let activeSessions = [];
+    try {
+      activeSessions = parseRouterOSOutput(await conn.execute('/ip hotspot active print'));
+    } catch (e) { /* optional */ }
 
-    res.json(data);
+    const hsData = users.map(u => {
+      const active = activeSessions.find(a => a.user === u.name);
+      return {
+        id:       u.numbers || '',
+        name:     u.name || '',
+        type:     'hotspot',
+        profile:  u.profile || 'default',
+        disabled: u.disabled === 'true',
+        comment:  u.comment || '',
+        address:  active?.address || '',
+        uptime:   active?.uptime  || '',
+        bytesIn:  parseInt((active?.bytes_in || '').replace(/[\s,]/g, '')) || 0,
+      };
+    });
+
+    // Also merge PPPoE secrets so the PPPoE tab has data
+    let pppoeData = [];
+    try {
+      const pppoeRows = parseRouterOSOutput(await conn.execute('/ppp secret print'));
+      let pppoeActive = [];
+      try {
+        pppoeActive = parseRouterOSOutput(await conn.execute('/ppp active print'));
+      } catch (e) { /* optional */ }
+
+      pppoeData = pppoeRows.map(p => {
+        const active = pppoeActive.find(a => a.name === p.name);
+        return {
+          id:       `pppoe-${p.numbers || ''}`,
+          name:     p.name || '',
+          type:     'pppoe',
+          profile:  p.profile || 'default',
+          disabled: p.disabled === 'true',
+          comment:  p.comment || '',
+          address:  active?.address || '',
+          uptime:   active?.uptime  || '',
+          bytesIn:  0,
+        };
+      });
+    } catch (e) { /* PPPoE not configured */ }
+
+    res.json([...hsData, ...pppoeData]);
   } catch (err) {
     res.status(401).json({ error: err.message });
   }
