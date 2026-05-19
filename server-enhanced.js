@@ -341,7 +341,27 @@ async function fetchWanStatus(conn) {
   const ifOutput = await conn.execute('/interface print');
   const ifaces = parseRouterOSOutput(ifOutput);
 
-  // Identify WAN interfaces by type, name convention, or comment
+  // Fetch default routes to identify gateway interfaces
+  let routeGatewayIfaces = new Set();
+  try {
+    const routeOutput = await conn.execute('/ip route print');
+    const routes = parseRouterOSOutput(routeOutput);
+    routes.forEach(r => {
+      if ((r['dst-address'] === '0.0.0.0/0' || r['dst-address'] === '0.0.0.0') && r.gateway) {
+        // gateway may be an IP — match back to address
+        const matchedAddr = addresses.find(a => {
+          if (!a.interface) return false;
+          const net = a.address ? a.address.split('/')[0] : '';
+          return r.gateway === net || r.gateway.startsWith(net.split('.').slice(0, 3).join('.'));
+        });
+        if (matchedAddr) routeGatewayIfaces.add(matchedAddr.interface);
+        // gateway may also be an interface name directly
+        if (ifaces.find(i => i.name === r.gateway)) routeGatewayIfaces.add(r.gateway);
+      }
+    });
+  } catch (e) { /* optional */ }
+
+  // Identify WAN interfaces by type, name convention, comment, or default-route gateway
   const wanNames = new Set();
   ifaces.forEach(iface => {
     const type    = (iface.type || '').toLowerCase();
@@ -349,7 +369,11 @@ async function fetchWanStatus(conn) {
     const name    = (iface.name || '').toLowerCase();
     if (
       type === 'pppoe-out' || type === 'l2tp-out' || type === 'pptp-out' ||
-      comment.includes('wan') || name.includes('wan') || name === 'ether1'
+      comment.includes('wan') || comment.includes('isp') ||
+      name.includes('wan') || name.includes('isp') ||
+      /^ether\d/.test(name) || /^lte\d/.test(name) || /^wlan\d/.test(name) ||
+      /^pppoe/.test(name) || /^pptp/.test(name) || /^l2tp/.test(name) ||
+      routeGatewayIfaces.has(iface.name)
     ) {
       wanNames.add(iface.name);
     }

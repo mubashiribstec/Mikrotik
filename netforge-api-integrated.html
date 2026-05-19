@@ -1669,12 +1669,14 @@ const WANScreen = ({ sessionId }) => {
       API.subscribe('/api/wan-status', handleData);
       unsubscribe = () => API.unsubscribe('/api/wan-status', handleData);
     } else {
-      const fetch = async () => {
-        setLoading(true);
-        try { const d = await API.getWanStatus(sessionId); handleData(d); } catch { setLoading(false); }
+      let firstLoad = true;
+      const poll = async () => {
+        if (firstLoad) setLoading(true);
+        try { const d = await API.getWanStatus(sessionId); handleData(d); } catch { if (firstLoad) setLoading(false); }
+        firstLoad = false;
       };
-      fetch();
-      interval = setInterval(fetch, 5000);
+      poll();
+      interval = setInterval(poll, 5000);
     }
     return () => { if (unsubscribe) unsubscribe(); if (interval) clearInterval(interval); };
   }, [sessionId]);
