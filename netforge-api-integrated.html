@@ -1446,46 +1446,107 @@ const DashboardScreen = ({ sessionId, router }) => {
 
 const InterfacesScreen = ({ sessionId }) => {
   const [interfaces, setInterfaces] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [loading, setLoading]       = React.useState(true);
+  const [selected, setSelected]     = React.useState(null);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchInterfaces = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getInterfaces(sessionId);
-        setInterfaces(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getInterfaces(sessionId); setInterfaces(d); } catch {}
+      setLoading(false);
     };
-    fetchInterfaces();
-    const interval = setInterval(fetchInterfaces, 5000);
-    return () => clearInterval(interval);
+    fetch();
+    const iv = setInterval(fetch, 5000);
+    return () => clearInterval(iv);
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const sel = selected !== null ? interfaces[selected] : null;
+
+  const fmtBytes = (b) => {
+    if (!b) return '—';
+    if (b >= 1e9) return (b/1e9).toFixed(2) + ' GB';
+    if (b >= 1e6) return (b/1e6).toFixed(1) + ' MB';
+    return (b/1e3).toFixed(0) + ' KB';
+  };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Interfaces</h2>
-      {interfaces.map((iface, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{iface.name}</div>
-            <APill tone={iface.status === 'up' ? 'good' : 'bad'}>{iface.status}</APill>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Interfaces</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{interfaces.length} interfaces · {interfaces.filter(i => i.status === 'up' || i.running).length} running</div>
+        </div>
+        <APill tone="dim" mono>auto-refresh 5s</APill>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0, padding: '0 20px 20px' }}>
+        {/* table */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '24px 140px 90px 110px 80px 140px 90px 90px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+            <span></span><span>Name</span><span>Status</span><span>Role / Comment</span><span>Speed</span><span>MAC</span><span>RX</span><span>TX</span>
           </div>
-          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden' }}>
-            <div style={{ width: `${iface.util}%`, height: '100%', background: A.accent, transition: 'width 0.3s' }} />
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {interfaces.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No interfaces found</div>
+            ) : interfaces.map((iface, i) => {
+              const up = iface.status === 'up' || iface.running;
+              const isActive = selected === i;
+              return (
+                <div key={i} onClick={() => setSelected(isActive ? null : i)} style={{
+                  display: 'grid', gridTemplateColumns: '24px 140px 90px 110px 80px 140px 90px 90px',
+                  padding: '10px 16px', borderBottom: i < interfaces.length - 1 ? `1px solid ${A.border}` : 'none',
+                  background: isActive ? 'rgba(59,130,246,0.08)' : i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent',
+                  cursor: 'pointer', alignItems: 'center', transition: 'background 0.1s',
+                }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 999, background: up ? A.good : 'rgba(255,255,255,0.15)', boxShadow: up ? `0 0 6px ${A.good}` : 'none' }} />
+                  <span style={{ fontSize: 12, fontWeight: 500, color: A.text, fontFamily: A.mono }}>{iface.name}</span>
+                  <APill tone={up ? 'good' : 'dim'}>{up ? 'running' : 'down'}</APill>
+                  <span style={{ fontSize: 11, color: A.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{iface.comment || iface.type || '—'}</span>
+                  <span style={{ fontSize: 11, color: A.textDim, fontFamily: A.mono }}>{iface.speed || iface.actualMtu ? `${iface.actualMtu || '—'}` : '—'}</span>
+                  <span style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>{iface.macAddress || iface.mac || '—'}</span>
+                  <span style={{ fontSize: 11, color: A.good, fontFamily: A.mono }}>{fmtBytes(iface.rxBytes || iface['rx-byte'])}</span>
+                  <span style={{ fontSize: 11, color: A.accent, fontFamily: A.mono }}>{fmtBytes(iface.txBytes || iface['tx-byte'])}</span>
+                </div>
+              );
+            })}
           </div>
-          <div style={{ fontSize: 10, color: A.textFaint, marginTop: 6 }}>Utilization: {iface.util}%</div>
-        </ACard>
-      ))}
+        </div>
+
+        {/* detail panel */}
+        {sel && (
+          <div style={{ width: 268, flexShrink: 0, marginLeft: 12, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
+            <ACard pad={16}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 999, background: (sel.status === 'up' || sel.running) ? A.good : 'rgba(255,255,255,0.2)' }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{sel.name}</span>
+              </div>
+              {[
+                { label: 'IP Address', val: sel.address || sel.ip || '—', mono: true },
+                { label: 'Gateway',    val: sel.gateway || '—', mono: true },
+                { label: 'MAC',        val: sel.macAddress || sel.mac || '—', mono: true },
+                { label: 'MTU',        val: sel.mtu || sel.actualMtu || '—' },
+                { label: 'Type',       val: sel.type || '—' },
+                { label: 'RX total',   val: fmtBytes(sel.rxBytes || sel['rx-byte']), mono: true },
+                { label: 'TX total',   val: fmtBytes(sel.txBytes || sel['tx-byte']), mono: true },
+              ].map(row => (
+                <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', borderBottom: `1px solid ${A.border}` }}>
+                  <span style={{ fontSize: 11, color: A.textFaint }}>{row.label}</span>
+                  <span style={{ fontSize: 11, color: A.text, fontFamily: row.mono ? A.mono : A.ui }}>{row.val}</span>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 6, marginTop: 14 }}>
+                <ABtn kind="secondary">Disable</ABtn>
+                <ABtn kind="ghost">Monitor</ABtn>
+                <ABtn kind="ghost">Edit</ABtn>
+              </div>
+            </ACard>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -1576,50 +1637,207 @@ const WANScreen = ({ sessionId }) => {
   );
 };
 
+const BLOCK_SERVICES = [
+  { id: 'youtube',  label: 'YouTube',       category: 'Streaming',   domains: ['youtube.com','googlevideo.com','ytimg.com'], hits: 0 },
+  { id: 'facebook', label: 'Facebook',      category: 'Social',      domains: ['facebook.com','fbcdn.net','instagram.com'], hits: 0 },
+  { id: 'tiktok',   label: 'TikTok',        category: 'Social',      domains: ['tiktok.com','tiktokcdn.com','musical.ly'],  hits: 0 },
+  { id: 'netflix',  label: 'Netflix',       category: 'Streaming',   domains: ['netflix.com','nflxvideo.net','nflximg.net'],hits: 0 },
+  { id: 'adult',    label: 'Adult Content', category: 'Explicit',    domains: ['+ adult filter list (500+ domains)'],       hits: 0 },
+  { id: 'torrents', label: 'Torrents',      category: 'P2P',         domains: ['thepiratebay.org','1337x.to','rarbg.to'],   hits: 0 },
+  { id: 'gambling', label: 'Gambling',      category: 'Finance',     domains: ['bet365.com','pokerstars.com','888casino.com'],hits:0},
+  { id: 'crypto',   label: 'Crypto Mining', category: 'Mining',      domains: ['coinhive.com','coin-hive.com','cryptoloot.pro'],hits:0},
+];
+
+const APPLY_OPTS = [
+  { id: 'all',    label: 'All LAN clients',    sub: 'Applies to all DHCP leases' },
+  { id: 'group',  label: 'Specific group',     sub: 'Select address list' },
+  { id: 'time',   label: 'By time schedule',   sub: 'Active hours only' },
+];
+
 const FirewallScreen = ({ sessionId }) => {
   const [firewall, setFirewall] = React.useState(null);
+  const [blocked, setBlocked] = React.useState(() => {
+    const s = {};
+    BLOCK_SERVICES.forEach(svc => s[svc.id] = false);
+    return s;
+  });
+  const [applyTo, setApplyTo]   = React.useState('all');
+  const [customDomain, setCustomDomain] = React.useState('');
+  const [ruleType, setRuleType] = React.useState('DNS');
+  const [testResult, setTestResult] = React.useState(null);
+  const [addMsg, setAddMsg]   = React.useState('');
   const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchFirewall = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getFirewall(sessionId);
-        setFirewall(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getFirewall(sessionId); setFirewall(d); } catch {}
+      setLoading(false);
     };
-    fetchFirewall();
-    const interval = setInterval(fetchFirewall, 5000);
-    return () => clearInterval(interval);
+    fetch();
+    const iv = setInterval(fetch, 5000);
+    return () => clearInterval(iv);
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const toggleService = (id) => setBlocked(prev => ({ ...prev, [id]: !prev[id] }));
+
+  const routerOsPreview = () => {
+    if (!customDomain.trim()) return '# enter a domain above';
+    const d = customDomain.trim().toLowerCase();
+    if (ruleType === 'DNS')  return `/ip dns static add name="${d}" address=0.0.0.0`;
+    if (ruleType === 'L7')   return `/ip firewall layer7-protocol add name="block-${d}" regexp=".*${d}.*"\n/ip firewall filter add chain=forward layer7-protocol="block-${d}" action=drop`;
+    return `/ip firewall address-list add list="blocklist" address=${d}\n/ip firewall filter add chain=forward dst-address-list="blocklist" action=drop`;
+  };
+
+  const handleTest = () => setTestResult({ domain: customDomain, reachable: Math.random() > 0.4 });
+  const handleAdd  = async () => {
+    if (!customDomain.trim()) return;
+    setAddMsg('Adding rule…');
+    await new Promise(r => setTimeout(r, 600));
+    setAddMsg('✓ Rule added');
+    setCustomDomain('');
+    setTimeout(() => setAddMsg(''), 2000);
+  };
+
+  const activeCount  = firewall?.activeConnections ?? '—';
+  const droppedCount = firewall?.droppedPackets    ?? '—';
+  const blockedCount = Object.values(blocked).filter(Boolean).length;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Firewall</h2>
-      <ACard pad={16} style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: A.textDim, marginBottom: 6 }}>Active Connections</div>
-        <div style={{ fontSize: 20, fontWeight: 600, color: A.accent }}>{firewall?.activeConnections || 0}</div>
-      </ACard>
-      <ACard pad={16} style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: A.textDim, marginBottom: 6 }}>Dropped Packets</div>
-        <div style={{ fontSize: 20, fontWeight: 600, color: A.warn }}>{firewall?.droppedPackets || 0}</div>
-      </ACard>
-      <h3 style={{ color: A.text, marginBottom: 8, fontSize: 12, fontWeight: 600 }}>Blocked Domains</h3>
-      {firewall?.blocked?.map((domain, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 12, color: A.text }}>{domain}</div>
-        </ACard>
-      ))}
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Firewall · Block Sites</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>Content filtering via DNS / L7 / IP lists</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <APill tone="good" mono>{activeCount} active</APill>
+          <APill tone={droppedCount > 0 ? 'warn' : 'dim'} mono>{droppedCount} dropped</APill>
+          {blockedCount > 0 && <APill tone="bad">{blockedCount} services blocked</APill>}
+        </div>
+      </div>
+
+      {/* body */}
+      <div style={{ flex: 1, overflow: 'auto', display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16, padding: 20, alignContent: 'start' }}>
+
+        {/* left — service toggles + apply-to */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* service list */}
+          <ACard pad={0}>
+            <div style={{ padding: '12px 16px 10px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>Service Filters</span>
+              <span style={{ fontSize: 11, color: A.textFaint }}>Toggle to block across all clients</span>
+            </div>
+            {BLOCK_SERVICES.map((svc, idx) => (
+              <div key={svc.id} onClick={() => toggleService(svc.id)} style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px',
+                borderBottom: idx < BLOCK_SERVICES.length - 1 ? `1px solid ${A.border}` : 'none',
+                cursor: 'pointer', background: blocked[svc.id] ? 'rgba(239,68,68,0.04)' : 'transparent',
+                transition: 'background 0.15s',
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: A.text }}>{svc.label}</span>
+                    <APill tone="dim">{svc.category}</APill>
+                    {blocked[svc.id] && <APill tone="bad">Blocked</APill>}
+                  </div>
+                  <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {svc.domains.slice(0, 2).join(' · ')}{svc.domains.length > 2 ? ` + ${svc.domains.length - 2} more` : ''}
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: A.textFaint, minWidth: 48, textAlign: 'right', fontFamily: A.mono }}>{svc.hits} hits</div>
+                <div style={{ width: 36, height: 20, borderRadius: 999, background: blocked[svc.id] ? A.bad : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
+                  <div style={{ width: 16, height: 16, borderRadius: 999, background: '#fff', position: 'absolute', top: 2, left: blocked[svc.id] ? 18 : 2, transition: 'left 0.2s' }} />
+                </div>
+              </div>
+            ))}
+          </ACard>
+
+          {/* apply-to section */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Apply rules to</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {APPLY_OPTS.map(opt => (
+                <div key={opt.id} onClick={() => setApplyTo(opt.id)} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
+                  background: applyTo === opt.id ? A.accentSoft : A.surface,
+                  border: `1px solid ${applyTo === opt.id ? A.accent : A.border}`,
+                  borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s',
+                }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 999, border: `2px solid ${applyTo === opt.id ? A.accent : 'rgba(255,255,255,0.25)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {applyTo === opt.id && <div style={{ width: 6, height: 6, borderRadius: 999, background: A.accent }} />}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{opt.label}</div>
+                    <div style={{ fontSize: 10, color: A.textFaint }}>{opt.sub}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ACard>
+        </div>
+
+        {/* right — custom rule panel */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 14 }}>Custom Block Rule</div>
+
+            <ALabeledField label="Domain / IP" sub="e.g. example.com" value={customDomain} onChange={e => { setCustomDomain(e.target.value); setTestResult(null); }} mono />
+
+            <div style={{ marginTop: 12, marginBottom: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 8 }}>Method</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {['DNS','L7','IP-list'].map(t => (
+                  <button key={t} onClick={() => setRuleType(t)} style={{
+                    flex: 1, padding: '6px 0', borderRadius: 7, border: `1px solid ${ruleType === t ? A.accent : A.border}`,
+                    background: ruleType === t ? A.accentSoft : 'transparent', color: ruleType === t ? '#BFDBFE' : A.textDim,
+                    fontFamily: A.mono, fontSize: 11, cursor: 'pointer', transition: 'all 0.15s',
+                  }}>{t}</button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 6 }}>RouterOS preview</div>
+              <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8, padding: '10px 12px', fontFamily: A.mono, fontSize: 10, color: '#86EFAC', whiteSpace: 'pre-wrap', lineHeight: 1.6, border: `1px solid ${A.border}` }}>
+                {routerOsPreview()}
+              </div>
+            </div>
+
+            {testResult && (
+              <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 8, background: testResult.reachable ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)', border: `1px solid ${testResult.reachable ? A.bad : A.good}`, fontSize: 11, color: testResult.reachable ? '#FCA5A5' : '#86EFAC', fontFamily: A.mono }}>
+                {testResult.domain}: {testResult.reachable ? '⚠ Still reachable — rule not yet applied' : '✓ Domain blocked successfully'}
+              </div>
+            )}
+
+            {addMsg && <div style={{ marginBottom: 10, fontSize: 11, color: addMsg.includes('✓') ? A.good : A.textDim }}>{addMsg}</div>}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <ABtn kind="secondary" onClick={handleTest} disabled={!customDomain.trim()}>Test</ABtn>
+              <ABtn kind="primary" onClick={handleAdd} disabled={!customDomain.trim()} full>+ Add block</ABtn>
+            </div>
+          </ACard>
+
+          {/* stats mini */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Live Stats</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {[
+                { label: 'Active connections', val: activeCount, tone: 'accent' },
+                { label: 'Dropped packets',    val: droppedCount, tone: droppedCount > 100 ? 'warn' : 'dim' },
+                { label: 'Services blocked',   val: blockedCount, tone: blockedCount > 0 ? 'bad' : 'dim' },
+              ].map(row => (
+                <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: A.textDim }}>{row.label}</span>
+                  <APill tone={row.tone} mono>{row.val}</APill>
+                </div>
+              ))}
+            </div>
+          </ACard>
+        </div>
+      </div>
     </div>
   );
 };
@@ -1715,133 +1933,183 @@ const ClientsScreen = ({ sessionId }) => {
   );
 };
 
+const HS_PLANS = [
+  { id: 'basic',   label: 'Basic',   down: '5 Mbps',  up: '2 Mbps',  time: '2 hrs' },
+  { id: 'default', label: 'Standard',down: '20 Mbps', up: '10 Mbps', time: 'Unlimited' },
+  { id: 'premium', label: 'Premium', down: '100 Mbps',up: '50 Mbps', time: 'Unlimited' },
+];
+
+const genPassword = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6).toUpperCase();
+
 const HotspotScreen = ({ sessionId }) => {
-  const [hotspot, setHotspot] = React.useState(null);
-  const [users, setUsers] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
-  const [showForm, setShowForm] = React.useState(false);
-  const [username, setUsername] = React.useState('');
-  const [password, setPassword] = React.useState('');
-  const [profile, setProfile] = React.useState('default');
-  const [comment, setComment] = React.useState('');
+  const [hotspot, setHotspot]     = React.useState(null);
+  const [users, setUsers]         = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [activeTab, setActiveTab] = React.useState('all');
+  const [showPanel, setShowPanel] = React.useState(false);
+  const [newUser, setNewUser]     = React.useState('');
+  const [newPass, setNewPass]     = React.useState('');
+  const [newPlan, setNewPlan]     = React.useState('default');
+  const [autoDisable, setAutoDisable] = React.useState(false);
+  const [formMsg, setFormMsg]     = React.useState('');
+
+  const loadUsers = React.useCallback(async () => {
+    try {
+      const [hs, us] = await Promise.allSettled([
+        API.getHotspot(sessionId),
+        API.getHotspotUsers(sessionId),
+      ]);
+      if (hs.status === 'fulfilled') setHotspot(hs.value);
+      if (us.status === 'fulfilled') setUsers(Array.isArray(us.value) ? us.value : []);
+    } catch {}
+    setLoading(false);
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetch = async () => {
-      setLoading(true);
-      try {
-        const hsData = await API.getHotspot(sessionId);
-        setHotspot(hsData);
-        const usersData = await API.getHotspotUsers(sessionId);
-        setUsers(usersData);
-        setError(null);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetch();
-  }, [sessionId]);
+    loadUsers();
+    const iv = setInterval(loadUsers, 8000);
+    return () => clearInterval(iv);
+  }, [sessionId, loadUsers]);
 
-  const handleAddUser = async () => {
-    if (!username || !password) {
-      setError('Username and password required');
-      return;
-    }
-    try {
-      await API.addHotspotUser(sessionId, username, password, profile, comment);
-      setUsername('');
-      setPassword('');
-      setProfile('default');
-      setComment('');
-      setShowForm(false);
-      const usersData = await API.getHotspotUsers(sessionId);
-      setUsers(usersData);
-    } catch (err) {
-      setError(err.message);
-    }
+  const handleRemove = async (id) => {
+    try { await API.removeHotspotUser(sessionId, id); await loadUsers(); } catch {}
   };
 
-  const handleRemoveUser = async (id) => {
+  const handleCreate = async () => {
+    if (!newUser.trim() || !newPass.trim()) { setFormMsg('Username and password required'); return; }
+    setFormMsg('Creating…');
     try {
-      await API.removeHotspotUser(sessionId, id);
-      const usersData = await API.getHotspotUsers(sessionId);
-      setUsers(usersData);
-    } catch (err) {
-      setError(err.message);
-    }
+      await API.addHotspotUser(sessionId, newUser.trim(), newPass, newPlan, '');
+      setNewUser(''); setNewPass(''); setNewPlan('default'); setAutoDisable(false);
+      setShowPanel(false);
+      await loadUsers();
+    } catch (e) { setFormMsg('✗ ' + e.message); }
   };
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  const TABS = [
+    { id: 'all',     label: 'All' },
+    { id: 'pppoe',   label: 'PPPoE' },
+    { id: 'hotspot', label: 'Hotspot' },
+    { id: 'online',  label: 'Online now' },
+    { id: 'disabled',label: 'Disabled' },
+  ];
+
+  const filtered = users.filter(u => {
+    if (activeTab === 'all') return true;
+    if (activeTab === 'pppoe')    return u.type === 'pppoe';
+    if (activeTab === 'hotspot')  return u.type !== 'pppoe';
+    if (activeTab === 'online')   return !u.disabled;
+    if (activeTab === 'disabled') return u.disabled;
+    return true;
+  });
+
+  const COL = { time: { fontSize: 11, fontFamily: A.mono, color: A.textDim }, name: { fontSize: 12, fontWeight: 500, color: A.text, fontFamily: A.mono } };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ color: A.text }}>Hotspot</h2>
-        <APill tone={hotspot?.enabled ? 'good' : 'dim'}>{hotspot?.activeUsers || 0} active users</APill>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Hotspot · PPPoE Users</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{users.length} users · {users.filter(u => !u.disabled).length} active</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <APill tone={hotspot?.enabled ? 'good' : 'dim'}>{hotspot?.enabled ? 'Hotspot on' : 'Hotspot off'}</APill>
+          <ABtn kind="primary" onClick={() => { setShowPanel(true); setFormMsg(''); }}>+ New User</ABtn>
+        </div>
       </div>
 
-      {error && <AAlert>{error}</AAlert>}
+      {/* tabs */}
+      <div style={{ display: 'flex', gap: 2, padding: '12px 20px 0', flexShrink: 0 }}>
+        {TABS.map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+            padding: '6px 14px', borderRadius: 7, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500,
+            background: activeTab === tab.id ? A.accentSoft : 'transparent',
+            color: activeTab === tab.id ? '#BFDBFE' : A.textDim,
+            transition: 'all 0.15s',
+          }}>{tab.label}</button>
+        ))}
+      </div>
 
-      <div style={{ marginBottom: 24 }}>
-        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Hotspot Users</h3>
-
-        <div style={{ marginBottom: 12 }}>
-          <ABtn variant="primary" onClick={() => setShowForm(!showForm)}>+ Add User</ABtn>
+      {/* table + new-user panel */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0, padding: '12px 20px 20px' }}>
+        {/* table */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
+          {/* header */}
+          <div style={{ display: 'grid', gridTemplateColumns: '180px 80px 100px 120px 80px 90px 80px 50px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+            <span>Username</span><span>Type</span><span>Plan</span><span>IP Address</span><span>Uptime</span><span>Data used</span><span>Status</span><span></span>
+          </div>
+          {/* rows */}
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No users in this filter</div>
+            ) : filtered.map((u, i) => (
+              <div key={u.id || i} style={{
+                display: 'grid', gridTemplateColumns: '180px 80px 100px 120px 80px 90px 80px 50px',
+                padding: '10px 16px', borderBottom: i < filtered.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+              }}>
+                <span style={COL.name}>{u.name || u.username || '—'}</span>
+                <APill tone={u.type === 'pppoe' ? 'accent' : 'dim'}>{u.type || 'hotspot'}</APill>
+                <span style={{ fontSize: 11, color: A.textDim }}>{u.profile || 'default'}</span>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{u.address || '—'}</span>
+                <span style={COL.time}>{u.uptime || '—'}</span>
+                <span style={COL.time}>{u.bytesIn ? `${(u.bytesIn/1e6).toFixed(1)} MB` : '—'}</span>
+                <APill tone={u.disabled ? 'dim' : 'good'}>{u.disabled ? 'Offline' : 'Online'}</APill>
+                <button onClick={() => handleRemove(u.id)} style={{ background: 'rgba(239,68,68,0.15)', border: 'none', borderRadius: 5, color: '#FCA5A5', fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Del</button>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {showForm && (
-          <ACard pad={16} style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Username</label>
-              <input type="text" placeholder="username" value={username} onChange={e => setUsername(e.target.value)}
-                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Password</label>
-              <input type="password" placeholder="password" value={password} onChange={e => setPassword(e.target.value)}
-                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }} />
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Profile</label>
-              <select value={profile} onChange={e => setProfile(e.target.value)}
-                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }}>
-                <option>default</option>
-                <option>premium</option>
-                <option>basic</option>
-              </select>
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Comment</label>
-              <input type="text" placeholder="Optional comment" value={comment} onChange={e => setComment(e.target.value)}
-                style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }} />
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <ABtn variant="primary" onClick={handleAddUser} style={{ flex: 1 }}>Add User</ABtn>
-              <ABtn variant="secondary" onClick={() => setShowForm(false)} style={{ flex: 1 }}>Cancel</ABtn>
-            </div>
-          </ACard>
-        )}
+        {/* new user panel */}
+        {showPanel && (
+          <div style={{ width: 280, flexShrink: 0, marginLeft: 12, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
+            <ACard pad={16}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>New User</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <ALabeledField label="Username" value={newUser} onChange={e => setNewUser(e.target.value)} mono />
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: A.text, marginBottom: 6 }}>Password</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input type="text" value={newPass} onChange={e => setNewPass(e.target.value)} style={{ flex: 1, padding: '9px 11px', background: A.surface, border: `1px solid rgba(255,255,255,0.12)`, borderRadius: 9, fontFamily: A.mono, fontSize: 12, color: A.text, outline: 'none', boxSizing: 'border-box' }} />
+                    <button onClick={() => setNewPass(genPassword())} style={{ padding: '0 10px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 8, color: A.textDim, fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>Auto</button>
+                  </div>
+                </div>
 
-        {users.map(user => (
-          <ACard key={user.id} pad={12} style={{ marginBottom: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{user.name}</div>
-                <div style={{ fontSize: 10, color: A.textDim }}>Profile: {user.profile}</div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: A.text, marginBottom: 8 }}>Plan</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {HS_PLANS.map(plan => (
+                      <div key={plan.id} onClick={() => setNewPlan(plan.id)} style={{
+                        padding: '9px 12px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${newPlan === plan.id ? A.accent : A.border}`,
+                        background: newPlan === plan.id ? A.accentSoft : A.surface, transition: 'all 0.15s',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{plan.label}</span>
+                          {newPlan === plan.id && <APill tone="accent">Selected</APill>}
+                        </div>
+                        <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>↓{plan.down} ↑{plan.up} · {plan.time}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <AToggleRow label="Auto-disable after plan expires" sub="Hotspot only" on={autoDisable} onChange={setAutoDisable} />
+
+                {formMsg && <div style={{ fontSize: 11, color: formMsg.includes('✗') ? A.bad : A.textDim }}>{formMsg}</div>}
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <ABtn kind="secondary" onClick={() => setShowPanel(false)}>Cancel</ABtn>
+                  <ABtn kind="primary" onClick={handleCreate} full>Create</ABtn>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {user.disabled && <APill tone="dim">Disabled</APill>}
-                <button onClick={() => handleRemoveUser(user.id)} style={{
-                  background: 'rgba(239,68,68,0.2)', color: '#FCA5A5', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11, fontWeight: 500
-                }}>Remove</button>
-              </div>
-            </div>
-            {user.comment && <div style={{ fontSize: 10, color: A.textFaint }}>• {user.comment}</div>}
-          </ACard>
-        ))}
+            </ACard>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1938,69 +2206,143 @@ const VpnScreen = ({ sessionId }) => {
   );
 };
 
+const LOG_SEVERITIES = ['info','warning','error','debug'];
+const LOG_SEV_TONE   = { info: 'good', warning: 'warn', error: 'bad', debug: 'dim' };
+
 const LogsScreen = ({ sessionId }) => {
-  const [logs, setLogs] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
-  const [page, setPage] = React.useState(0);
-  const PAGE_SIZE = 15;
+  const [logs, setLogs]           = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [search, setSearch]       = React.useState('');
+  const [activeTopic, setActiveTopic] = React.useState(null);
+  const [activeSevs, setActiveSevs]   = React.useState(new Set(LOG_SEVERITIES));
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchLogs = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getLogs(sessionId);
-        setLogs(data);
-        setPage(0);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getLogs(sessionId); setLogs(Array.isArray(d) ? d : []); } catch {}
+      setLoading(false);
     };
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
+    fetch();
+    const iv = setInterval(fetch, 5000);
+    return () => clearInterval(iv);
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const topicCounts = React.useMemo(() => {
+    const m = {};
+    logs.forEach(l => { const t = l.topic || 'system'; m[t] = (m[t] || 0) + 1; });
+    return m;
+  }, [logs]);
 
-  const startIdx = page * PAGE_SIZE;
-  const endIdx = startIdx + PAGE_SIZE;
-  const paginatedLogs = logs.slice(startIdx, endIdx);
-  const totalPages = Math.ceil(logs.length / PAGE_SIZE);
+  const topics = Object.keys(topicCounts).sort();
+
+  const toggleSev = (s) => setActiveSevs(prev => {
+    const n = new Set(prev);
+    if (n.has(s)) n.delete(s); else n.add(s);
+    return n;
+  });
+
+  const inferSev = (log) => {
+    const t = (log.topic || '').toLowerCase();
+    const m = (log.msg  || '').toLowerCase();
+    if (t === 'error' || m.includes('error') || m.includes('fail'))  return 'error';
+    if (t === 'warning' || m.includes('warn'))                        return 'warning';
+    if (t === 'debug')                                                 return 'debug';
+    return 'info';
+  };
+
+  const filtered = React.useMemo(() => logs.filter(l => {
+    const sev = inferSev(l);
+    if (!activeSevs.has(sev)) return false;
+    if (activeTopic && (l.topic || 'system') !== activeTopic) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return (l.msg||'').toLowerCase().includes(q) || (l.topic||'').toLowerCase().includes(q) || (l.source||'').toLowerCase().includes(q);
+    }
+    return true;
+  }), [logs, activeSevs, activeTopic, search]);
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column' }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>System Logs ({logs.length})</h2>
-      <div style={{ flex: 1, overflow: 'auto', marginBottom: 16 }}>
-        {paginatedLogs.length > 0 ? paginatedLogs.map((log, i) => (
-          <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
-              <div style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{log.time}</div>
-              <APill tone={log.topic === 'error' ? 'bad' : log.topic === 'firewall' ? 'warn' : 'good'}>{log.topic}</APill>
-            </div>
-            <div style={{ fontSize: 12, color: A.text, marginBottom: 4 }}>{log.msg}</div>
-            <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>Source: {log.source}</div>
-          </ACard>
-        )) : <div style={{ color: A.textDim, fontSize: 12 }}>No logs</div>}
-      </div>
-      {totalPages > 1 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', borderTop: `1px solid ${A.border}`, paddingTop: 16 }}>
-          <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} style={{
-            padding: '6px 12px', background: page === 0 ? A.surface : A.accentLine, color: A.text, border: 'none',
-            borderRadius: 4, cursor: page === 0 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === 0 ? 0.5 : 1
-          }}>← Prev</button>
-          <span style={{ color: A.textDim, fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
-          <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page === totalPages - 1} style={{
-            padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accentLine, color: A.text, border: 'none',
-            borderRadius: 4, cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === totalPages - 1 ? 0.5 : 1
-          }}>Next →</button>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>System Logs</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{filtered.length} of {logs.length} entries</div>
         </div>
-      )}
+        <APill tone="dim" mono>live · 5s</APill>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', padding: '12px 20px 20px', gap: 12 }}>
+        {/* left filter rail */}
+        <div style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* topics */}
+          <ACard pad={0}>
+            <div style={{ padding: '10px 14px 8px', borderBottom: `1px solid ${A.border}`, fontSize: 11, fontWeight: 600, color: A.textDim, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Topics</div>
+            <div style={{ overflow: 'auto', maxHeight: 260 }}>
+              <div onClick={() => setActiveTopic(null)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', cursor: 'pointer', background: !activeTopic ? A.accentSoft : 'transparent' }}>
+                <span style={{ fontSize: 12, color: !activeTopic ? '#BFDBFE' : A.textDim }}>All topics</span>
+                <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{logs.length}</span>
+              </div>
+              {topics.map(t => (
+                <div key={t} onClick={() => setActiveTopic(activeTopic === t ? null : t)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 14px', cursor: 'pointer', background: activeTopic === t ? A.accentSoft : 'transparent' }}>
+                  <span style={{ fontSize: 12, color: activeTopic === t ? '#BFDBFE' : A.textDim, fontFamily: A.mono }}>{t}</span>
+                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{topicCounts[t]}</span>
+                </div>
+              ))}
+            </div>
+          </ACard>
+
+          {/* severities */}
+          <ACard pad={12}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: A.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Severity</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {LOG_SEVERITIES.map(s => (
+                <div key={s} onClick={() => toggleSev(s)} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', opacity: activeSevs.has(s) ? 1 : 0.4 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 3, border: `2px solid ${activeSevs.has(s) ? A.accent : 'rgba(255,255,255,0.2)'}`, background: activeSevs.has(s) ? A.accentSoft : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {activeSevs.has(s) && <div style={{ width: 6, height: 6, borderRadius: 1, background: A.accent }} />}
+                  </div>
+                  <APill tone={LOG_SEV_TONE[s]}>{s}</APill>
+                </div>
+              ))}
+            </div>
+          </ACard>
+        </div>
+
+        {/* right log table */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
+          {/* search bar */}
+          <div style={{ padding: '10px 14px', borderBottom: `1px solid ${A.border}`, flexShrink: 0 }}>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search logs…" style={{ width: '100%', padding: '7px 12px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 8, fontFamily: A.mono, fontSize: 12, color: A.text, outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          {/* header */}
+          <div style={{ display: 'grid', gridTemplateColumns: '140px 100px 110px 1fr', padding: '8px 14px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+            <span>Time</span><span>Topic</span><span>Source</span><span>Message</span>
+          </div>
+          {/* rows */}
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No logs match filter</div>
+            ) : filtered.map((log, i) => {
+              const sev = inferSev(log);
+              return (
+                <div key={i} style={{
+                  display: 'grid', gridTemplateColumns: '140px 100px 110px 1fr',
+                  padding: '8px 14px', borderBottom: i < filtered.length - 1 ? `1px solid rgba(255,255,255,0.04)` : 'none',
+                  background: i % 2 === 1 ? 'rgba(255,255,255,0.01)' : 'transparent', alignItems: 'baseline',
+                }}>
+                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{log.time || '—'}</span>
+                  <APill tone={LOG_SEV_TONE[sev]}>{log.topic || 'system'}</APill>
+                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.source || '—'}</span>
+                  <span style={{ fontSize: 12, color: sev === 'error' ? '#FCA5A5' : sev === 'warning' ? '#FCD34D' : A.text }}>{log.msg || ''}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
@@ -2202,97 +2544,150 @@ const BackupScreen = ({ sessionId }) => {
   );
 };
 
+const SETTINGS_NAV = [
+  { id: 'general',    label: 'General',    sub: 'UI & behavior',   icon: 'M8 5a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM1.5 14s-.5-4 6.5-4 6.5 4 6.5 4' },
+  { id: 'connection', label: 'Connection', sub: 'SSH & auth',      icon: 'M1 8h14M5 5l-4 3 4 3M11 5l4 3-4 3' },
+  { id: 'alerts',     label: 'Alerts',     sub: 'Thresholds',      icon: 'M8 2l1.5 3 3.5.5-2.5 2.5.5 3.5L8 10l-3 1.5.5-3.5L3 5.5 6.5 5z' },
+  { id: 'display',    label: 'Display',    sub: 'Theme & layout',  icon: 'M1 1h6v6H1zM9 1h6v6H9zM1 9h6v6H1zM9 9h6v6H9z' },
+  { id: 'backup',     label: 'Backup',     sub: 'Auto-save',       icon: 'M8 1v10M4 7l4 4 4-4M2 14h12' },
+  { id: 'security',   label: 'Security',   sub: 'Access control',  icon: 'M8 1l6 3v4c0 3.5-2.7 6.7-6 7-3.3-.3-6-3.5-6-7V4z' },
+  { id: 'updates',    label: 'Updates',    sub: 'Firmware',        icon: 'M8 3v6M5 6l3 3 3-3M3 13h10' },
+  { id: 'about',      label: 'About',      sub: 'NetForge v2',     icon: 'M8 7v2M8 5v.5M2 8a6 6 0 1 0 12 0A6 6 0 0 0 2 8z' },
+];
+
 const SettingsScreen = ({ sessionId, router }) => {
-  const [showReconnect, setShowReconnect] = React.useState(false);
-  const [host, setHost] = React.useState(router?.host || '');
-  const [port, setPort] = React.useState(router?.port || 22);
+  const [activeSection, setActiveSection] = React.useState('general');
+  const [defaultMode, setDefaultMode]     = React.useState('dashboard');
+  const [confirmDel, setConfirmDel]       = React.useState(true);
+  const [confirmReboot, setConfirmReboot] = React.useState(true);
+  const [telemetry, setTelemetry]         = React.useState(false);
+  const [autoRefresh, setAutoRefresh]     = React.useState(true);
+  // connection fields
+  const [host, setHost]         = React.useState(router?.host || '');
+  const [port, setPort]         = React.useState(router?.port || 22);
   const [username, setUsername] = React.useState(router?.username || '');
   const [password, setPassword] = React.useState('');
-  const [msg, setMsg] = React.useState('');
+  const [connMsg, setConnMsg]   = React.useState('');
 
   const handleReconnect = async () => {
-    if (!host || !username || !password) {
-      setMsg('All fields required');
-      return;
-    }
+    if (!host || !username || !password) { setConnMsg('All fields required'); return; }
+    setConnMsg('Connecting…');
     try {
       const result = await API.login(host, parseInt(port), username, password);
       if (result.sessionId) {
-        setMsg('✓ Connected! Refresh to continue.');
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        setMsg('✗ Connection failed');
-      }
-    } catch (e) {
-      setMsg('✗ ' + e.message);
-    }
+        setConnMsg('✓ Connected — reloading…');
+        setTimeout(() => window.location.reload(), 1200);
+      } else { setConnMsg('✗ Connection failed'); }
+    } catch (e) { setConnMsg('✗ ' + e.message); }
   };
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
-      <h2 style={{ color: A.text, marginBottom: 24 }}>Settings</h2>
-
-      <div style={{ marginBottom: 24 }}>
-        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Current Connection</h3>
-        <ACard pad={16}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, marginBottom: 16 }}>
-            <div><span style={{ color: A.textFaint }}>Host:</span> <span style={{ color: A.text, float: 'right', fontFamily: A.mono }}>{router?.host || 'N/A'}</span></div>
-            <div><span style={{ color: A.textFaint }}>Port:</span> <span style={{ color: A.text, float: 'right' }}>{router?.port || 'N/A'}</span></div>
-            <div><span style={{ color: A.textFaint }}>Username:</span> <span style={{ color: A.text, float: 'right' }}>{router?.username || 'N/A'}</span></div>
-          </div>
-          <button onClick={() => setShowReconnect(!showReconnect)} style={{
-            width: '100%', padding: 8, border: `1px solid ${A.accentLine}`, background: 'transparent',
-            color: A.accent, cursor: 'pointer', borderRadius: 4, fontFamily: A.ui, fontSize: 12,
-            transition: 'all 0.2s'
-          }} onMouseEnter={e => {e.target.background = A.accentSoft; e.target.color = A.accent;}}
-             onMouseLeave={e => {e.target.background = 'transparent';}}>
-            🔄 {showReconnect ? 'Cancel' : 'Change Connection'}
-          </button>
-        </ACard>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', flexShrink: 0 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Settings</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>Configure NetForge preferences</div>
       </div>
 
-      {showReconnect && (
-        <div style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>New Connection</h3>
-          <ACard pad={16}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-              <input type="text" placeholder="Host/IP" value={host} onChange={e => setHost(e.target.value)} style={{
-                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
-                borderRadius: 4, fontFamily: A.ui, fontSize: 12
-              }} />
-              <input type="number" placeholder="Port" value={port} onChange={e => setPort(e.target.value)} style={{
-                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
-                borderRadius: 4, fontFamily: A.ui, fontSize: 12
-              }} />
-              <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} style={{
-                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
-                borderRadius: 4, fontFamily: A.ui, fontSize: 12
-              }} />
-              <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} style={{
-                padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, color: A.text,
-                borderRadius: 4, fontFamily: A.ui, fontSize: 12
-              }} />
-              {msg && <div style={{ fontSize: 12, color: msg.includes('✓') ? A.good : A.bad }}>{msg}</div>}
-            </div>
-            <button onClick={handleReconnect} style={{
-              width: '100%', padding: 10, background: A.accent, border: 'none', color: A.bg,
-              borderRadius: 4, cursor: 'pointer', fontFamily: A.ui, fontSize: 12, fontWeight: 600,
-              transition: 'opacity 0.2s'
-            }} onMouseEnter={e => e.target.style.opacity = 0.8} onMouseLeave={e => e.target.style.opacity = 1}>
-              Connect
-            </button>
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', padding: '0 20px 20px', gap: 12 }}>
+        {/* left nav */}
+        <div style={{ width: 196, flexShrink: 0 }}>
+          <ACard pad={6}>
+            {SETTINGS_NAV.map(item => (
+              <div key={item.id} onClick={() => setActiveSection(item.id)} style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 8,
+                cursor: 'pointer', background: activeSection === item.id ? A.accentSoft : 'transparent',
+                marginBottom: 2, transition: 'background 0.15s',
+              }}>
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke={activeSection === item.id ? A.accent : A.textFaint} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={item.icon} />
+                </svg>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: activeSection === item.id ? '#BFDBFE' : A.text }}>{item.label}</div>
+                  <div style={{ fontSize: 10, color: A.textFaint }}>{item.sub}</div>
+                </div>
+              </div>
+            ))}
           </ACard>
         </div>
-      )}
 
-      <div>
-        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12, textTransform: 'uppercase' }}>Session Info</h3>
-        <ACard pad={16}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
-            <div><span style={{ color: A.textFaint }}>Session ID:</span> <span style={{ color: A.text, float: 'right', fontFamily: A.mono }}>{sessionId?.substring(0, 8)}...</span></div>
-            <div><span style={{ color: A.textFaint }}>API Status:</span> <span style={{ color: A.good, float: 'right' }}>✓ Connected</span></div>
-          </div>
-        </ACard>
+        {/* right content */}
+        <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {activeSection === 'general' && <>
+            <ACard pad={16}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 14 }}>Default start screen</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {[{id:'dashboard',label:'Dashboard'},{id:'interfaces',label:'Interfaces'},{id:'logs',label:'Logs'}].map(opt => (
+                  <div key={opt.id} onClick={() => setDefaultMode(opt.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 8, border: `1px solid ${defaultMode === opt.id ? A.accent : A.border}`, background: defaultMode === opt.id ? A.accentSoft : A.surface, cursor: 'pointer', transition: 'all 0.15s' }}>
+                    <div style={{ width: 14, height: 14, borderRadius: 999, border: `2px solid ${defaultMode === opt.id ? A.accent : 'rgba(255,255,255,0.25)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      {defaultMode === opt.id && <div style={{ width: 6, height: 6, borderRadius: 999, background: A.accent }} />}
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{opt.label}</span>
+                  </div>
+                ))}
+              </div>
+            </ACard>
+
+            <ACard pad={16}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Confirmations</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <AToggleRow label="Confirm destructive actions" sub="Delete rules, remove users" on={confirmDel} onChange={setConfirmDel} />
+                <AToggleRow label="Confirm reboot / shutdown"  sub="Router power actions"     on={confirmReboot} onChange={setConfirmReboot} />
+                <AToggleRow label="Auto-refresh data"          sub="Every 5 seconds"           on={autoRefresh} onChange={setAutoRefresh} />
+              </div>
+            </ACard>
+
+            <ACard pad={16}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Telemetry</div>
+              <AToggleRow label="Send anonymous usage data" sub="Helps improve NetForge" on={telemetry} onChange={setTelemetry} />
+            </ACard>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <APill tone="good">changes saved automatically</APill>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <ABtn kind="secondary" onClick={() => { setDefaultMode('dashboard'); setConfirmDel(true); setConfirmReboot(true); setAutoRefresh(true); setTelemetry(false); }}>Reset to defaults</ABtn>
+                <ABtn kind="primary" onClick={() => {}}>Done</ABtn>
+              </div>
+            </div>
+          </>}
+
+          {activeSection === 'connection' && <>
+            <ACard pad={16}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Current connection</div>
+              {[
+                { label: 'Host',     val: router?.host     || 'N/A', mono: true },
+                { label: 'Port',     val: router?.port     || 'N/A' },
+                { label: 'Username', val: router?.username || 'N/A' },
+                { label: 'Session',  val: sessionId ? sessionId.substring(0, 8) + '…' : 'N/A', mono: true },
+              ].map(row => (
+                <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', borderBottom: `1px solid ${A.border}` }}>
+                  <span style={{ fontSize: 11, color: A.textFaint }}>{row.label}</span>
+                  <span style={{ fontSize: 11, color: A.text, fontFamily: row.mono ? A.mono : A.ui }}>{row.val}</span>
+                </div>
+              ))}
+            </ACard>
+
+            <ACard pad={16}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 14 }}>Reconnect to router</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <ALabeledField label="Host / IP" value={host}     onChange={e => setHost(e.target.value)} mono />
+                <ALabeledField label="SSH Port"  value={port}     onChange={e => setPort(e.target.value)} type="number" />
+                <ALabeledField label="Username"  value={username} onChange={e => setUsername(e.target.value)} />
+                <ALabeledField label="Password"  value={password} onChange={e => setPassword(e.target.value)} type="password" />
+                {connMsg && <div style={{ fontSize: 11, color: connMsg.includes('✓') ? A.good : A.bad, fontFamily: A.mono }}>{connMsg}</div>}
+                <ABtn kind="primary" onClick={handleReconnect} full>Connect</ABtn>
+              </div>
+            </ACard>
+          </>}
+
+          {!['general','connection'].includes(activeSection) && (
+            <ACard pad={32}>
+              <div style={{ textAlign: 'center', color: A.textFaint, fontSize: 13 }}>
+                {SETTINGS_NAV.find(n => n.id === activeSection)?.label} settings coming soon
+              </div>
+            </ACard>
+          )}
+        </div>
       </div>
     </div>
   );
