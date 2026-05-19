@@ -1477,29 +1477,43 @@ app.get('/api/firewall/service-status', async (req, res) => {
 
     const conn = getConnection(sessionId);
 
-    // Check Layer-7 rule for torrent blocking
-    const l7Out = await conn.execute('/ip firewall layer7-protocol print');
-    const torrentsBlocked = l7Out.includes('netforge-layer7-torrent') || l7Out.includes('netforge-svc-torrents');
+    // Collect what's blocked via each method
+    const methods = {}; // svcId → 'dns'|'mangle'|'layer7'
 
-    // Check DNS static entries — use domain-name matching, NOT comment matching
-    // (tabular print omits the comment column; only 'print detail' shows it)
+    // --- DNS check: domain-name matching (tabular print omits comment column) ---
     const dnsOut = await conn.execute('/ip dns static print');
     const dnsEntries = parseRouterOSOutput(dnsOut);
-
     const blockedDomains = new Set();
     for (const e of dnsEntries) {
       const addr = (e.address || e.data || '').trim();
       if (addr === '0.0.0.0') blockedDomains.add((e.name || '').toLowerCase());
     }
 
+    // --- Mangle/address-list check ---
+    const alOut = await conn.execute('/ip firewall address-list print');
+
+    // --- Layer-7 check ---
+    const l7Out = await conn.execute('/ip firewall layer7-protocol print');
+
     const blocked = [];
     for (const [svcId, domains] of Object.entries(BLOCK_SERVICE_DOMAINS)) {
-      if (svcId === 'torrents') continue;
-      if (domains.some(d => blockedDomains.has(d.toLowerCase()))) blocked.push(svcId);
-    }
-    if (torrentsBlocked) blocked.push('torrents');
+      const comment = `netforge-svc-${svcId}`;
 
-    res.json({ blocked });
+      // Check DNS
+      if (domains.some(d => blockedDomains.has(d.toLowerCase()))) {
+        blocked.push(svcId); methods[svcId] = 'dns'; continue;
+      }
+      // Check address-list (mangle method)
+      if (alOut.includes(comment)) {
+        blocked.push(svcId); methods[svcId] = 'mangle'; continue;
+      }
+      // Check Layer-7
+      if (l7Out.includes(comment)) {
+        blocked.push(svcId); methods[svcId] = 'layer7'; continue;
+      }
+    }
+
+    res.json({ blocked, methods });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1512,68 +1526,90 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
-    const { serviceId, block } = req.body;
+    const { serviceId, block, blockMethod = 'dns' } = req.body;
     if (!serviceId) return res.status(400).json({ error: 'serviceId required' });
 
-    const conn = getConnection(sessionId);
-
-    // Torrents use Layer-7 + firewall filter rules (DNS-only is ineffective for P2P)
-    if (serviceId === 'torrents') {
-      if (block) {
-        await blockTorrentsL7(conn);
-      } else {
-        await unblockTorrentsL7(conn);
-      }
-      try { await conn.execute('/ip dns cache flush'); } catch {}
-      return res.json({ success: true, message: `torrents ${block ? 'blocked via Layer-7 + DNS' : 'unblocked'}` });
-    }
-
-    // All other services use DNS static blocking
     const domains = BLOCK_SERVICE_DOMAINS[serviceId];
     if (!domains || domains.length === 0) {
       return res.status(400).json({ error: `Unknown service: ${serviceId}` });
     }
 
+    const conn = getConnection(sessionId);
     const comment = `netforge-svc-${serviceId}`;
 
     if (block) {
-      // Ensure router DNS is serving to LAN clients
-      try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
-
-      // Force all client DNS traffic through the router (add only if not already present)
-      try {
-        const natOut = await conn.execute('/ip firewall nat print');
-        if (!natOut.includes('netforge-dns-redirect')) {
-          await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
-          await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
-        }
-      } catch {}
-
-      let added = 0;
-      const errors = [];
-      for (const domain of domains) {
-        // conn.execute() resolves even when RouterOS rejects — check output for error text
-        const addOut = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
-        if (rosError(addOut)) {
-          // Entry likely already exists — update it
-          const setOut = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
-          if (rosError(setOut)) {
-            errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
-          } else {
-            added++;
-          }
+      if (blockMethod === 'layer7') {
+        // For torrents use the precise bittorrent regexp; for others use domain-pattern regexp
+        const isLargeBitTorrent = serviceId === 'torrents';
+        if (isLargeBitTorrent) {
+          await blockTorrentsL7(conn);
         } else {
-          added++;
+          const domainPattern = domains.slice(0, 6)
+            .map(d => d.replace(/\./g, '\\.'))
+            .join('|');
+          const regexp = `.*\\.?(${domainPattern}).*`;
+          const l7Out = await conn.execute(`/ip firewall layer7-protocol add name="${comment}" comment="${comment}" regexp="${regexp}"`);
+          if (rosError(l7Out)) {
+            await conn.execute(`/ip firewall layer7-protocol set [find name="${comment}"] regexp="${regexp}" comment="${comment}"`);
+          }
+          const fOut = await conn.execute(`/ip firewall filter add chain=forward layer7-protocol="${comment}" action=drop comment="${comment}"`);
+          if (rosError(fOut)) { /* rule already exists */ }
         }
-      }
-      if (added === 0) {
-        return res.status(500).json({ error: `Failed to add any DNS entries. RouterOS errors: ${errors.slice(0, 2).join('; ') || 'unknown'}` });
+
+      } else if (blockMethod === 'mangle') {
+        // Add each domain to a named address-list (RouterOS 7 resolves domain→IP automatically)
+        let added = 0;
+        for (const domain of domains) {
+          const out = await conn.execute(`/ip firewall address-list add list="${comment}" address="${domain}" comment="${comment}"`);
+          if (!rosError(out)) added++;
+        }
+        // Add a single forward-drop rule for the address list
+        const fOut = await conn.execute(`/ip firewall filter add chain=forward dst-address-list="${comment}" action=drop comment="${comment}"`);
+        if (rosError(fOut) && added === 0) {
+          return res.status(500).json({ error: `Failed to create address-list entries for ${serviceId}` });
+        }
+
+      } else {
+        // DNS method (default)
+        try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
+
+        // Force all client DNS through router so 8.8.8.8 bypass is blocked
+        try {
+          const natOut = await conn.execute('/ip firewall nat print');
+          if (!natOut.includes('netforge-dns-redirect')) {
+            await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+            await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+          }
+        } catch {}
+
+        let added = 0;
+        const errors = [];
+        for (const domain of domains) {
+          const addOut = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
+          if (rosError(addOut)) {
+            const setOut = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
+            if (rosError(setOut)) {
+              errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
+            } else { added++; }
+          } else { added++; }
+        }
+        if (added === 0) {
+          return res.status(500).json({ error: `Failed to add DNS entries. RouterOS: ${errors.slice(0, 2).join('; ') || 'unknown'}` });
+        }
       }
     } else {
+      // Unblock — clean up all methods so switching methods leaves no orphan rules
       try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
+      // Also clean torrent-specific rules if serviceId is torrents
+      if (serviceId === 'torrents') await unblockTorrentsL7(conn);
     }
 
     try { await conn.execute('/ip dns cache flush'); } catch {}
+
+    res.json({ success: true, message: `${serviceId} ${block ? `blocked via ${blockMethod}` : 'unblocked'}` });
 
     res.json({ success: true, message: `${serviceId} ${block ? 'blocked' : 'unblocked'}` });
   } catch (err) {

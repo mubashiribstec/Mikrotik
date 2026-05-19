@@ -283,10 +283,10 @@ const API = {
     return this.call(sessionId, '/api/firewall/service-status');
   },
 
-  async toggleFirewallService(sessionId, serviceId, block) {
+  async toggleFirewallService(sessionId, serviceId, block, blockMethod = 'dns') {
     return this.call(sessionId, '/api/firewall/service/toggle', {
       method: 'POST',
-      body: JSON.stringify({ serviceId, block }),
+      body: JSON.stringify({ serviceId, block, blockMethod }),
     });
   },
 
@@ -1625,6 +1625,7 @@ const LB_METHODS = [
 
 const WANScreen = ({ sessionId }) => {
   const [wans, setWans]           = React.useState([]);
+  const [wanConfig, setWanConfig] = React.useState({});
   const [loading, setLoading]     = React.useState(true);
   const [lbMethod, setLbMethod]   = React.useState('pcc');
   const [pinBanking, setPinBanking]   = React.useState(true);
@@ -1648,7 +1649,21 @@ const WANScreen = ({ sessionId }) => {
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const handleData = (data) => { setWans(data); setLoading(false); checkWanStatus(data); };
+    const handleData = (data) => {
+      setWans(data);
+      setLoading(false);
+      checkWanStatus(data);
+      // merge into wanConfig, keeping existing selections
+      setWanConfig(prev => {
+        const next = { ...prev };
+        data.forEach(wan => {
+          if (!next[wan.name]) {
+            next[wan.name] = { selected: wan.status === 'up', weight: 1 };
+          }
+        });
+        return next;
+      });
+    };
     let unsubscribe, interval;
     if (API.wsManager?.isConnected) {
       API.subscribe('/api/wan-status', handleData);
@@ -1664,36 +1679,89 @@ const WANScreen = ({ sessionId }) => {
     return () => { if (unsubscribe) unsubscribe(); if (interval) clearInterval(interval); };
   }, [sessionId]);
 
-  const activeWans = wans.filter(w => w.status === 'up');
-  const totalUtil  = activeWans.reduce((s, w) => s + (w.util || 0), 0);
+  const selectedWans = wans.filter(w => wanConfig[w.name]?.selected);
+  const activeWans   = wans.filter(w => w.status === 'up');
 
   const routerOsPreview = () => {
-    const wList = activeWans.slice(0, 3);
+    const wList = selectedWans.length >= 2 ? selectedWans : activeWans.slice(0, 3);
     if (wList.length < 2) return '# add at least 2 active WAN interfaces';
+
     if (lbMethod === 'pcc') {
-      return wList.map((w, i) =>
-        `/ip firewall mangle add chain=prerouting in-interface=bridge1 \\\n  connection-state=new per-connection-classifier=both-addresses:${wList.length}/${i} \\\n  action=mark-connection new-connection-mark=${w.name}-conn`
-      ).join('\n') + '\n' + wList.map(w => `/ip route add gateway=${w.gateway || w.ip || '0.0.0.0'} routing-mark=${w.name}`).join('\n');
+      const S = wList.reduce((s, w) => s + (wanConfig[w.name]?.weight || 1), 0);
+      let lines = [
+        '# Remove previous netforge-lb rules',
+        '/ip firewall mangle remove [find comment="netforge-lb"]',
+        '/ip route remove [find comment="netforge-lb"]',
+      ];
+      let bucket = 0;
+      wList.forEach(wan => {
+        const w = wanConfig[wan.name]?.weight || 1;
+        for (let k = 0; k < w; k++) {
+          lines.push(`/ip firewall mangle add chain=prerouting connection-state=new per-connection-classifier=both-addresses:${S}/${bucket} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+          bucket++;
+        }
+        lines.push(`/ip firewall mangle add chain=prerouting connection-mark=${wan.name}-conn action=mark-routing new-routing-mark=to-${wan.name} comment="netforge-lb"`);
+        lines.push(`/ip route add gateway=${wan.gateway || wan.ip || 'auto'} routing-mark=to-${wan.name} comment="netforge-lb"`);
+      });
+      return lines.join('\n');
     }
+
     if (lbMethod === 'nth') {
-      return wList.map((w, i) =>
-        `/ip firewall mangle add chain=prerouting nth=${wList.length},${i+1} \\\n  action=mark-connection new-connection-mark=${w.name}-conn`
-      ).join('\n');
+      const S = wList.length;
+      let lines = [
+        '/ip firewall mangle remove [find comment="netforge-lb"]',
+        '/ip route remove [find comment="netforge-lb"]',
+      ];
+      wList.forEach((wan, idx) => {
+        lines.push(`/ip firewall mangle add chain=prerouting connection-state=new nth=${S},${idx+1} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+        lines.push(`/ip firewall mangle add chain=prerouting connection-mark=${wan.name}-conn action=mark-routing new-routing-mark=to-${wan.name} comment="netforge-lb"`);
+        lines.push(`/ip route add gateway=${wan.gateway || wan.ip || 'auto'} routing-mark=to-${wan.name} comment="netforge-lb"`);
+      });
+      return lines.join('\n');
     }
-    return `/ip route add dst-address=0.0.0.0/0 gateway=${wList[0]?.gateway || wList[0]?.ip} distance=1\n/ip route add dst-address=0.0.0.0/0 gateway=${wList[1]?.gateway || wList[1]?.ip} distance=2`;
+
+    // failover
+    let lines = ['/ip route remove [find comment="netforge-lb"]'];
+    wList.forEach((wan, idx) => {
+      lines.push(`/ip route add dst-address=0.0.0.0/0 gateway=${wan.gateway || wan.ip || 'auto'} distance=${idx+1} check-gateway=ping comment="netforge-lb"`);
+    });
+    if (healthCheck) {
+      lines.push('/tool/netwatch add host=1.1.1.1 interval=5s comment="netforge-lb"');
+    }
+    return lines.join('\n');
   };
 
   const handleApply = async () => {
     setApplying(true); setApplyMsg('Applying rules…');
     try {
-      const result = await API.applyLoadBalance(sessionId, activeWans, lbMethod, healthCheck);
+      const wansWithWeights = selectedWans.map(w => ({ ...w, weight: wanConfig[w.name]?.weight || 1 }));
+      const result = await API.applyLoadBalance(sessionId, wansWithWeights, lbMethod, healthCheck);
       setApplyMsg('✓ ' + result.message);
     } catch (e) { setApplyMsg('✗ ' + e.message); }
     setApplying(false);
     setTimeout(() => setApplyMsg(''), 5000);
   };
 
+  const toggleWanSelected = (name) => {
+    setWanConfig(prev => ({ ...prev, [name]: { ...prev[name], selected: !prev[name]?.selected } }));
+  };
+
+  const setWanWeight = (name, weight) => {
+    setWanConfig(prev => ({ ...prev, [name]: { ...prev[name], weight } }));
+  };
+
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
+
+  // stacked bar segments for selected wans
+  const barColors = [A.accent, A.good, A.warn];
+  const totalWeight = selectedWans.reduce((s, w) => s + (wanConfig[w.name]?.weight || 1), 0);
+  const barSegments = selectedWans.map((wan, i) => {
+    const weight = wanConfig[wan.name]?.weight || 1;
+    const util   = wan.util || 0;
+    const score  = weight * util;
+    return { wan, score, color: barColors[i % barColors.length] };
+  });
+  const totalScore = barSegments.reduce((s, seg) => s + seg.score, 0) || 1;
 
   return (
     <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -1704,8 +1772,9 @@ const WANScreen = ({ sessionId }) => {
           <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>combine multiple ISPs · pcc · nth · failover</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {selectedWans.length < 2 && <span style={{ fontSize: 11, color: A.warn, fontFamily: A.mono }}>Pick ≥ 2 WANs</span>}
           {applyMsg && <span style={{ fontSize: 11, color: applyMsg.includes('✓') ? A.good : A.textDim, fontFamily: A.mono }}>{applyMsg}</span>}
-          <ABtn kind="primary" onClick={handleApply} disabled={applying || activeWans.length < 2}>{applying ? 'Applying…' : 'Apply'}</ABtn>
+          <ABtn kind="primary" onClick={handleApply} disabled={applying || selectedWans.length < 2}>{applying ? 'Applying…' : 'Apply'}</ABtn>
         </div>
       </div>
 
@@ -1725,9 +1794,19 @@ const WANScreen = ({ sessionId }) => {
             {wans.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No WAN interfaces detected</div>
             ) : wans.map((wan, i) => {
-              const up = wan.status === 'up';
+              const up       = wan.status === 'up';
+              const cfg      = wanConfig[wan.name] || { selected: false, weight: 1 };
+              const selected = cfg.selected;
               return (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: i < wans.length - 1 ? `1px solid ${A.border}` : 'none', background: up ? 'transparent' : 'rgba(239,68,68,0.03)' }}>
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: i < wans.length - 1 ? `1px solid ${A.border}` : 'none', background: selected ? 'rgba(59,130,246,0.04)' : up ? 'transparent' : 'rgba(239,68,68,0.03)', cursor: 'pointer' }}
+                  onClick={() => toggleWanSelected(wan.name)}>
+                  {/* drag handle */}
+                  <span style={{ fontSize: 14, color: A.textFaint, flexShrink: 0, cursor: 'grab', userSelect: 'none' }}>≡</span>
+                  {/* checkbox */}
+                  <div style={{ width: 16, height: 16, borderRadius: 3, border: `2px solid ${selected ? A.accent : 'rgba(255,255,255,0.25)'}`, background: selected ? A.accent : 'transparent', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s' }}>
+                    {selected && <div style={{ width: 8, height: 8, borderRadius: 1, background: '#fff' }} />}
+                  </div>
+                  {/* status dot */}
                   <div style={{ width: 9, height: 9, borderRadius: 999, background: up ? A.good : 'rgba(255,255,255,0.15)', boxShadow: up ? `0 0 6px ${A.good}` : 'none', flexShrink: 0 }} />
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1739,12 +1818,14 @@ const WANScreen = ({ sessionId }) => {
                       {wan.ip || '—'} · {wan.util || 0}% used{wan.latency ? ` · ${wan.latency}ms` : ''}
                     </div>
                   </div>
-                  {/* weight chips */}
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    {[1,2,3].map(w => (
-                      <button key={w} style={{ width: 26, height: 22, borderRadius: 5, border: `1px solid ${(wan.weight||1) === w ? A.accent : A.border}`, background: (wan.weight||1) === w ? A.accentSoft : 'transparent', color: (wan.weight||1) === w ? '#BFDBFE' : A.textFaint, fontSize: 11, cursor: 'pointer' }}>{w}</button>
-                    ))}
-                  </div>
+                  {/* weight chips — only shown when not failover */}
+                  {lbMethod !== 'failover' && (
+                    <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                      {[1,2,3].map(w => (
+                        <button key={w} onClick={() => setWanWeight(wan.name, w)} style={{ width: 26, height: 22, borderRadius: 5, border: `1px solid ${cfg.weight === w ? A.accent : A.border}`, background: cfg.weight === w ? A.accentSoft : 'transparent', color: cfg.weight === w ? '#BFDBFE' : A.textFaint, fontSize: 11, cursor: 'pointer', fontFamily: A.mono }}>{w}x</button>
+                      ))}
+                    </div>
+                  )}
                   {/* usage mini bar */}
                   <div style={{ width: 60 }}>
                     <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
@@ -1757,22 +1838,20 @@ const WANScreen = ({ sessionId }) => {
             })}
           </ACard>
 
-          {/* Step 2: Distribution method */}
+          {/* Step 2: Distribution method — horizontal 3-column cards */}
           <ACard pad={16}>
             <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>2 · Distribution method</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
               {LB_METHODS.map(m => (
-                <div key={m.id} onClick={() => setLbMethod(m.id)} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 9, border: `1px solid ${lbMethod === m.id ? A.accent : A.border}`, background: lbMethod === m.id ? A.accentSoft : A.surface, cursor: 'pointer', transition: 'all 0.15s' }}>
-                  <div style={{ width: 15, height: 15, borderRadius: 999, border: `2px solid ${lbMethod === m.id ? A.accent : 'rgba(255,255,255,0.25)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>
-                    {lbMethod === m.id && <div style={{ width: 7, height: 7, borderRadius: 999, background: A.accent }} />}
-                  </div>
-                  <div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{m.label}</span>
-                      <APill tone="dim">{m.sub}</APill>
+                <div key={m.id} onClick={() => setLbMethod(m.id)} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderRadius: 9, border: `1px solid ${lbMethod === m.id ? A.accent : A.border}`, background: lbMethod === m.id ? A.accentSoft : A.surface, cursor: 'pointer', transition: 'all 0.15s' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 15, height: 15, borderRadius: 999, border: `2px solid ${lbMethod === m.id ? A.accent : 'rgba(255,255,255,0.25)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      {lbMethod === m.id && <div style={{ width: 7, height: 7, borderRadius: 999, background: A.accent }} />}
                     </div>
-                    <div style={{ fontSize: 10, color: A.textFaint, marginTop: 3 }}>{m.desc}</div>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{m.label}</span>
                   </div>
+                  <APill tone="dim">{m.sub}</APill>
+                  <div style={{ fontSize: 10, color: A.textFaint, lineHeight: 1.4 }}>{m.desc}</div>
                 </div>
               ))}
             </div>
@@ -1795,30 +1874,37 @@ const WANScreen = ({ sessionId }) => {
           {/* live distribution */}
           <ACard pad={16}>
             <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Live distribution</div>
-            {activeWans.length === 0 ? (
-              <div style={{ fontSize: 11, color: A.textFaint }}>No active WAN links</div>
-            ) : activeWans.map((wan, i) => {
-              const pct = totalUtil > 0 ? Math.round(((wan.util || 0) / totalUtil) * 100) : Math.round(100 / activeWans.length);
-              const colors = [A.accent, A.good, A.warn];
-              const col = colors[i % colors.length];
-              return (
-                <div key={wan.name} style={{ marginBottom: 12 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                      <div style={{ width: 8, height: 8, borderRadius: 2, background: col }} />
-                      <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{wan.name}</span>
-                      {wan.comment && <span style={{ fontSize: 10, color: A.textFaint }}>· {wan.comment}</span>}
-                    </div>
-                    <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{pct}%</span>
-                  </div>
-                  <div style={{ height: 6, background: 'rgba(255,255,255,0.07)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: col, transition: 'width 0.5s' }} />
-                  </div>
+            {selectedWans.length === 0 ? (
+              <div style={{ fontSize: 11, color: A.textFaint }}>No WANs selected</div>
+            ) : (
+              <>
+                {/* stacked bar */}
+                <div style={{ height: 10, borderRadius: 5, overflow: 'hidden', display: 'flex', marginBottom: 12 }}>
+                  {barSegments.map((seg, i) => (
+                    <div key={seg.wan.name} style={{ flex: seg.score / totalScore, background: seg.color, transition: 'flex 0.5s' }} title={`${seg.wan.name}: w${wanConfig[seg.wan.name]?.weight || 1} × ${seg.wan.util || 0}%`} />
+                  ))}
                 </div>
-              );
-            })}
+                {/* legend */}
+                {selectedWans.map((wan, i) => {
+                  const pct = totalWeight > 0 ? Math.round(((wanConfig[wan.name]?.weight || 1) / totalWeight) * 100) : Math.round(100 / selectedWans.length);
+                  const col = barColors[i % barColors.length];
+                  return (
+                    <div key={wan.name} style={{ marginBottom: 8 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: 2, background: col }} />
+                          <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{wan.name}</span>
+                          {wan.comment && <span style={{ fontSize: 10, color: A.textFaint }}>· {wan.comment}</span>}
+                        </div>
+                        <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{pct}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
             <div style={{ marginTop: 4, paddingTop: 10, borderTop: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint }}>
-              Will run on Apply: Mangle + Routing · {lbMethod} · {activeWans.length} wans
+              Will run on Apply: Mangle + Routing · {lbMethod} · {selectedWans.length} wans
             </div>
           </ACard>
 
@@ -1868,6 +1954,11 @@ const FirewallScreen = ({ sessionId }) => {
     BLOCK_SERVICES.forEach(svc => s[svc.id] = false);
     return s;
   });
+  const [blockMethods, setBlockMethods] = React.useState(() => {
+    const m = {};
+    BLOCK_SERVICES.forEach(svc => { m[svc.id] = svc.method || 'dns'; });
+    return m;
+  });
   const [toggling, setToggling]   = React.useState({}); // serviceId → true while API call in flight
   const [toggleMsg, setToggleMsg] = React.useState('');
   const [applyTo, setApplyTo]     = React.useState('all');
@@ -1890,6 +1981,9 @@ const FirewallScreen = ({ sessionId }) => {
         BLOCK_SERVICES.forEach(svc => { next[svc.id] = svcRes.value.blocked.includes(svc.id); });
         return next;
       });
+      if (svcRes.value.methods) {
+        setBlockMethods(prev => ({ ...prev, ...svcRes.value.methods }));
+      }
     }
   }, [sessionId]);
 
@@ -1904,16 +1998,16 @@ const FirewallScreen = ({ sessionId }) => {
   const toggleService = async (svc) => {
     if (toggling[svc.id]) return;
     const newState = !blocked[svc.id];
+    const method = blockMethods[svc.id] || svc.method || 'dns';
     setBlocked(prev => ({ ...prev, [svc.id]: newState }));
     setToggling(prev => ({ ...prev, [svc.id]: true }));
     setToggleMsg('');
     try {
-      await API.toggleFirewallService(sessionId, svc.id, newState);
-      setToggleMsg(`✓ ${svc.label} ${newState ? 'blocked' : 'unblocked'}`);
+      await API.toggleFirewallService(sessionId, svc.id, newState, method);
+      setToggleMsg(`✓ ${svc.label} ${newState ? 'blocked' : 'unblocked'} via ${method}`);
       setTimeout(() => setToggleMsg(''), 4000);
     } catch (e) {
       setBlocked(prev => ({ ...prev, [svc.id]: !newState }));
-      // Keep error visible for 8 seconds so user can read it
       setToggleMsg(`✗ ${svc.label}: ${e.message}`);
       setTimeout(() => setToggleMsg(''), 8000);
     }
@@ -1988,13 +2082,23 @@ const FirewallScreen = ({ sessionId }) => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
                       <span style={{ fontSize: 13, fontWeight: 500, color: A.text }}>{svc.label}</span>
                       <APill tone="dim">{svc.category}</APill>
-                      {svc.method === 'layer7' && <APill tone="accent">Layer-7</APill>}
                       {isBlocked && <APill tone="bad">Blocked</APill>}
                       {isToggling && <APill tone="dim">applying…</APill>}
                     </div>
                     <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {svc.domains.filter(d => !d.startsWith('+')).slice(0, 3).join(' · ')}{svc.domains.length > 3 ? ` + ${svc.domains.length - 3} more` : ''}
                     </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 3, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                    {['dns', 'mangle', 'layer7'].map(m => (
+                      <button key={m} onClick={() => setBlockMethods(prev => ({ ...prev, [svc.id]: m }))} style={{
+                        padding: '3px 7px', borderRadius: 5, fontSize: 10, fontFamily: A.mono,
+                        border: `1px solid ${blockMethods[svc.id] === m ? A.accent : A.border}`,
+                        background: blockMethods[svc.id] === m ? A.accentSoft : 'transparent',
+                        color: blockMethods[svc.id] === m ? '#BFDBFE' : A.textFaint,
+                        cursor: 'pointer', transition: 'all 0.15s',
+                      }}>{m}</button>
+                    ))}
                   </div>
                   <div style={{ width: 36, height: 20, borderRadius: 999, background: isBlocked ? A.bad : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
                     <div style={{ width: 16, height: 16, borderRadius: 999, background: '#fff', position: 'absolute', top: 2, left: isBlocked ? 18 : 2, transition: 'left 0.2s' }} />
