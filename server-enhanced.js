@@ -1058,13 +1058,20 @@ app.post('/api/dns/update', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
-    const { servers, allowRemoteRequests } = req.body;
+    const { servers, allowRemoteRequests, flush } = req.body;
+    const conn = getConnection(sessionId);
+
+    if (flush) {
+      await conn.execute('/ip dns cache flush');
+      return res.json({ success: true, message: 'DNS cache flushed' });
+    }
+
     if (!Array.isArray(servers) || servers.length === 0) {
       return res.status(400).json({ error: 'At least one DNS server required' });
     }
 
     const cmd = `/ip dns set servers=${servers.join(',')} allow-remote-requests=${allowRemoteRequests ? 'yes' : 'no'}`;
-    await getConnection(sessionId).execute(cmd);
+    await conn.execute(cmd);
     res.json({ success: true, message: 'DNS settings updated' });
   } catch (err) {
     res.status(401).json({ error: err.message });
@@ -2188,6 +2195,360 @@ app.post('/api/wan/apply-lb', async (req, res) => {
     }
 
     res.json({ success: true, message: `Load balance (${method}) applied for ${wans.length} WAN(s)`, commandsApplied: cmds.length });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== SCHEDULER / AUTOMATION ==========
+
+app.get('/api/scheduler', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/system scheduler print');
+    const entries = parseRouterOSOutput(out);
+    res.json(entries.map(e => ({
+      id: e.numbers || '',
+      name: e.name || '',
+      startDate: e.start_date || '',
+      startTime: e.start_time || '',
+      interval: e.interval || '00:00:00',
+      onEvent: e.on_event || '',
+      policy: e.policy || '',
+      runCount: parseInt(e.run_count) || 0,
+      disabled: e.disabled === 'true',
+      comment: e.comment || '',
+      nextRun: e.next_run || '',
+    })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/scheduler/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, onEvent, startTime = '00:00:00', interval = '1d', comment, disabled = false } = req.body;
+    if (!name || !onEvent) return res.status(400).json({ error: 'name and onEvent required' });
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name)) return res.status(400).json({ error: 'Invalid scheduler name' });
+    const conn = getConnection(sessionId);
+    let cmd = `/system scheduler add name="${name}" on-event="${onEvent.replace(/"/g, '\\"')}" start-time=${startTime} interval=${interval} policy="read,write,policy,test"`;
+    if (comment) cmd += ` comment="${comment}"`;
+    if (disabled) cmd += ' disabled=yes';
+    const out = await conn.execute(cmd);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Scheduler task "${name}" created` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/scheduler/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Scheduler name required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/system scheduler remove [find name="${name}"]`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Scheduler task "${name}" removed` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/scheduler/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, disabled } = req.body;
+    if (!name) return res.status(400).json({ error: 'Scheduler name required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/system scheduler set [find name="${name}"] disabled=${disabled ? 'yes' : 'no'}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Task "${name}" ${disabled ? 'disabled' : 'enabled'}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Deploy a pre-built automation recipe — creates script + scheduler entry
+app.post('/api/automation/deploy-recipe', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { recipeId } = req.body;
+    if (!recipeId) return res.status(400).json({ error: 'recipeId required' });
+
+    const conn = getConnection(sessionId);
+    const steps = [];
+
+    if (recipeId === 'daily-backup') {
+      const scriptSrc = `/system backup save name=("auto-backup-" . [/system clock get date]);`;
+      await conn.execute(`/system script remove [find name="nf-daily-backup"]`).catch(() => {});
+      const sOut = await conn.execute(`/system script add name="nf-daily-backup" policy="read,write,policy,test" source="${scriptSrc}"`);
+      if (!rosError(sOut)) steps.push('Script nf-daily-backup created');
+      await conn.execute(`/system scheduler remove [find name="nf-daily-backup"]`).catch(() => {});
+      const schOut = await conn.execute(`/system scheduler add name="nf-daily-backup" on-event="nf-daily-backup" start-time=02:00:00 interval=1d policy="read,write,policy,test" comment="NetForge: daily backup"`);
+      if (!rosError(schOut)) steps.push('Scheduler: runs daily at 02:00');
+
+    } else if (recipeId === 'wan-health-check') {
+      // Netwatch: restart PPPoE/LTE on failure
+      const ifaces = parseRouterOSOutput(await conn.execute('/interface print'));
+      const wanIface = ifaces.find(i => {
+        const t = (i.type || '').toLowerCase(); const n = (i.name || '').toLowerCase();
+        return t === 'pppoe-out' || t === 'lte' || n.includes('wan') || n.includes('pppoe');
+      });
+      const target = '1.1.1.1';
+      const downScript = wanIface
+        ? `/interface disable "${wanIface.name}";\n:delay 2;\n/interface enable "${wanIface.name}";\n/log info "NetForge: restarted ${wanIface.name} on WAN failure";`
+        : `/log warning "NetForge: WAN health check failed - no auto-restart (no PPPoE iface found)";`;
+      await conn.execute(`/system script remove [find name="nf-wan-down"]`).catch(() => {});
+      await conn.execute(`/system script add name="nf-wan-down" policy="read,write,policy,test" source="${downScript}"`);
+      await conn.execute(`/tool netwatch remove [find comment="netforge-wan-health"]`).catch(() => {});
+      const nwOut = await conn.execute(`/tool netwatch add host=${target} interval=10s up-script="" down-script="nf-wan-down" comment="netforge-wan-health"`);
+      if (rosError(nwOut)) return res.status(500).json({ error: nwOut.trim().split('\n')[0] });
+      steps.push(`Netwatch: pings ${target} every 10s`);
+      steps.push(wanIface ? `On failure: restarts ${wanIface.name}` : 'On failure: logs warning');
+
+    } else if (recipeId === 'log-rotation') {
+      const scriptSrc = `/log info "NetForge: log rotation check";\n/system logging action set [find type=memory] memory-lines=300;`;
+      await conn.execute(`/system script remove [find name="nf-log-rotation"]`).catch(() => {});
+      await conn.execute(`/system script add name="nf-log-rotation" policy="read,write,policy,test" source="${scriptSrc}"`);
+      await conn.execute(`/system scheduler remove [find name="nf-log-rotation"]`).catch(() => {});
+      await conn.execute(`/system scheduler add name="nf-log-rotation" on-event="nf-log-rotation" start-time=03:00:00 interval=7d policy="read,write,policy,test" comment="NetForge: weekly log rotation"`);
+      steps.push('Weekly log rotation at 03:00 Sunday');
+
+    } else if (recipeId === 'block-office-hours') {
+      // Block social media during office hours Mon-Fri 9am-5pm
+      const domains = [...(BLOCK_SERVICE_DOMAINS.youtube || []), ...(BLOCK_SERVICE_DOMAINS.facebook || []), ...(BLOCK_SERVICE_DOMAINS.tiktok || [])];
+      const blockScript = `/ip dns static remove [find comment="nf-office-block"];\n` +
+        domains.map(d => `/ip dns static add name="${d}" address=0.0.0.0 match-subdomain=yes comment="nf-office-block";`).join('\n') +
+        `\n/log info "NetForge: office-hours content block activated";`;
+      const unblockScript = `/ip dns static remove [find comment="nf-office-block"];\n/ip dns cache flush;\n/log info "NetForge: office-hours content block deactivated";`;
+      for (const n of ['nf-office-block', 'nf-office-unblock']) await conn.execute(`/system script remove [find name="${n}"]`).catch(() => {});
+      await conn.execute(`/system script add name="nf-office-block" policy="read,write,policy,test" source="${blockScript}"`);
+      await conn.execute(`/system script add name="nf-office-unblock" policy="read,write,policy,test" source="${unblockScript}"`);
+      for (const n of ['nf-block-weekday', 'nf-unblock-weekday']) await conn.execute(`/system scheduler remove [find name="${n}"]`).catch(() => {});
+      await conn.execute(`/system scheduler add name="nf-block-weekday" on-event="nf-office-block" start-time=09:00:00 interval=1d day-of-week=mon,tue,wed,thu,fri policy="read,write,policy,test" comment="NetForge: block at 9am weekdays"`);
+      await conn.execute(`/system scheduler add name="nf-unblock-weekday" on-event="nf-office-unblock" start-time=17:00:00 interval=1d day-of-week=mon,tue,wed,thu,fri policy="read,write,policy,test" comment="NetForge: unblock at 5pm weekdays"`);
+      steps.push(`Content block: ${domains.length} domains`);
+      steps.push('Active: Mon-Fri 09:00 to 17:00');
+
+    } else if (recipeId === 'interface-watchdog') {
+      // Monitor all ethernet interfaces, restart if down for >30s
+      const scriptSrc = `:foreach i in=[/interface find type=ether disabled=no] do={\n  :if ([/interface get $i running] = false) do={\n    /interface disable $i;\n    :delay 3;\n    /interface enable $i;\n    /log warning ("NetForge: restarted iface " . [/interface get $i name]);\n  };\n};`;
+      await conn.execute(`/system script remove [find name="nf-iface-watchdog"]`).catch(() => {});
+      await conn.execute(`/system script add name="nf-iface-watchdog" policy="read,write,policy,test" source="${scriptSrc}"`);
+      await conn.execute(`/system scheduler remove [find name="nf-iface-watchdog"]`).catch(() => {});
+      await conn.execute(`/system scheduler add name="nf-iface-watchdog" on-event="nf-iface-watchdog" start-time=startup interval=1m policy="read,write,policy,test" comment="NetForge: interface watchdog"`);
+      steps.push('Checks all ethernet interfaces every 60s');
+      steps.push('Auto-restarts any interface that is down');
+
+    } else if (recipeId === 'bandwidth-alert') {
+      // Alert when CPU > 85% or memory > 90%
+      const scriptSrc = `:local cpu [/system resource get cpu-load];\n:local mem [/system resource get free-memory];\n:local totMem [/system resource get total-memory];\n:local memPct (100 - (($mem * 100) / $totMem));\n:if ($cpu > 85) do={ /log warning ("NetForge CPU alert: " . $cpu . "%"); };\n:if ($memPct > 90) do={ /log warning ("NetForge MEM alert: " . $memPct . "%"); };`;
+      await conn.execute(`/system script remove [find name="nf-resource-alert"]`).catch(() => {});
+      await conn.execute(`/system script add name="nf-resource-alert" policy="read" source="${scriptSrc}"`);
+      await conn.execute(`/system scheduler remove [find name="nf-resource-alert"]`).catch(() => {});
+      await conn.execute(`/system scheduler add name="nf-resource-alert" on-event="nf-resource-alert" start-time=startup interval=5m policy="read,write,policy,test" comment="NetForge: resource alert"`);
+      steps.push('Checks CPU & memory every 5 minutes');
+      steps.push('Logs warning when CPU > 85% or memory > 90%');
+
+    } else {
+      return res.status(400).json({ error: `Unknown recipe: ${recipeId}` });
+    }
+
+    res.json({ success: true, steps, message: `Recipe "${recipeId}" deployed (${steps.length} steps)` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/automation/remove-recipe', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { recipeId } = req.body;
+    const conn = getConnection(sessionId);
+    const prefixMap = {
+      'daily-backup':        ['nf-daily-backup'],
+      'wan-health-check':    ['nf-wan-down'],
+      'log-rotation':        ['nf-log-rotation'],
+      'block-office-hours':  ['nf-office-block', 'nf-office-unblock', 'nf-block-weekday', 'nf-unblock-weekday'],
+      'interface-watchdog':  ['nf-iface-watchdog'],
+      'bandwidth-alert':     ['nf-resource-alert'],
+    };
+    const names = prefixMap[recipeId] || [];
+    for (const n of names) {
+      await conn.execute(`/system scheduler remove [find name="${n}"]`).catch(() => {});
+      await conn.execute(`/system script remove [find name="${n}"]`).catch(() => {});
+    }
+    await conn.execute(`/ip dns static remove [find comment="nf-office-block"]`).catch(() => {});
+    await conn.execute(`/tool netwatch remove [find comment="netforge-wan-health"]`).catch(() => {});
+    res.json({ success: true, message: `Recipe "${recipeId}" removed` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== NETWORK HEALTH & DIAGNOSTICS ==========
+
+// In-memory ping history per session (max 60 samples per target)
+const pingHistory = new Map();
+
+app.post('/api/network/ping', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { host = '1.1.1.1', count = 5, size = 56 } = req.body;
+    if (!/^[\w.\-:]+$/.test(host)) return res.status(400).json({ error: 'Invalid host' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/tool ping address=${host} count=${Math.min(count, 10)} size=${size} once`);
+    // Parse RouterOS ping output: extract avg/min/max
+    const lines = out.split('\n').filter(l => l.trim());
+    const stats = {};
+    for (const line of lines) {
+      const avgMatch = line.match(/avg-rtt=([.\d]+)ms/i) || line.match(/avg[=:]\s*([.\d]+)/i);
+      if (avgMatch) stats.avg = parseFloat(avgMatch[1]);
+      const minMatch = line.match(/min-rtt=([.\d]+)ms/i) || line.match(/min[=:]\s*([.\d]+)/i);
+      if (minMatch) stats.min = parseFloat(minMatch[1]);
+      const maxMatch = line.match(/max-rtt=([.\d]+)ms/i) || line.match(/max[=:]\s*([.\d]+)/i);
+      if (maxMatch) stats.max = parseFloat(maxMatch[1]);
+      const lossMatch = line.match(/packet-loss=(\d+)/i) || line.match(/(\d+)%.*loss/i);
+      if (lossMatch) stats.loss = parseInt(lossMatch[1]);
+      const sentMatch = line.match(/sent=(\d+)/i);
+      if (sentMatch) stats.sent = parseInt(sentMatch[1]);
+      const recvMatch = line.match(/received=(\d+)/i);
+      if (recvMatch) stats.received = parseInt(recvMatch[1]);
+    }
+    stats.host = host;
+    stats.raw = out.trim().split('\n').slice(-5).join('\n');
+
+    // Store in history
+    if (!pingHistory.has(sessionId)) pingHistory.set(sessionId, new Map());
+    const sh = pingHistory.get(sessionId);
+    if (!sh.has(host)) sh.set(host, []);
+    const h = sh.get(host);
+    h.push({ ts: Date.now(), avg: stats.avg || 0, loss: stats.loss || 0 });
+    if (h.length > 60) h.shift();
+
+    res.json({ ...stats, history: sh.get(host) });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/network/traceroute', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { host } = req.body;
+    if (!host || !/^[\w.\-:]+$/.test(host)) return res.status(400).json({ error: 'Invalid host' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/tool traceroute address=${host} max-hops=20 once`);
+    const hops = [];
+    for (const line of out.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+([\d.]+)\s+([.\d]+)ms/);
+      if (m) hops.push({ hop: parseInt(m[1]), address: m[2], rtt: parseFloat(m[3]) });
+    }
+    res.json({ host, hops, raw: out.trim() });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/netwatch', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/tool netwatch print');
+    const rows = parseRouterOSOutput(out);
+    res.json(rows.map(r => ({
+      id: r.numbers || '',
+      host: r.host || '',
+      interval: r.interval || '10s',
+      status: r.status || 'unknown',
+      sinceTime: r.since || '',
+      disabled: r.disabled === 'true',
+      comment: r.comment || '',
+      upScript: r.up_script || '',
+      downScript: r.down_script || '',
+    })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/netwatch/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { host, interval = '10s', upScript = '', downScript = '', comment = '' } = req.body;
+    if (!host || !/^[\w.\-:]+$/.test(host)) return res.status(400).json({ error: 'Invalid host' });
+    const conn = getConnection(sessionId);
+    let cmd = `/tool netwatch add host=${host} interval=${interval}`;
+    if (upScript) cmd += ` up-script="${upScript.replace(/"/g, '\\"')}"`;
+    if (downScript) cmd += ` down-script="${downScript.replace(/"/g, '\\"')}"`;
+    if (comment) cmd += ` comment="${comment}"`;
+    const out = await conn.execute(cmd);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Netwatch added for ${host}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/netwatch/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID required' });
+    const conn = getConnection(sessionId);
+    await conn.execute(`/tool netwatch remove numbers=${id}`);
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== PORT FORWARD WIZARD ==========
+
+app.post('/api/nat/port-forward', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { externalPort, internalIp, internalPort, protocol = 'tcp', comment = '', wanInterface = '' } = req.body;
+    if (!externalPort || !internalIp) return res.status(400).json({ error: 'externalPort and internalIp required' });
+
+    const intPort = internalPort || externalPort;
+    const conn = getConnection(sessionId);
+    const label = comment || `port-forward-${externalPort}`;
+
+    let cmd = `/ip firewall nat add chain=dstnat protocol=${protocol} dst-port=${externalPort} action=dst-nat to-addresses=${internalIp} to-ports=${intPort} comment="netforge-${label}"`;
+    if (wanInterface) cmd += ` in-interface="${wanInterface}"`;
+
+    const out = await conn.execute(cmd);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Port forward ${externalPort}→${internalIp}:${intPort} (${protocol}) created` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
