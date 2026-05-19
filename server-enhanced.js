@@ -1592,14 +1592,17 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
     const conn = getConnection(sessionId);
     const comment = `netforge-svc-${serviceId}`;
 
-    // Always remove any existing entries for this service first so toggling
-    // between methods, or re-applying, never silently fails on duplicates.
+    // Always remove existing entries for this service first so toggling between
+    // methods or re-applying never silently fails on duplicates. The raw chain
+    // is also cleaned here because that's where our drop rules now live.
     if (block) {
       try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall raw remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall mangle remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}-src"]`); } catch {}
     }
 
     const report = { method: blockMethod, steps: [] };
@@ -1607,38 +1610,49 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
     if (block) {
       // --------------------------------------------------------------------
       // LAYER-7 METHOD
+      // L7 cannot run in /ip firewall raw (raw is pre-conntrack). So:
+      //   1. /ip firewall layer7-protocol — add the pattern
+      //   2. /ip firewall mangle prerouting — when L7 matches, add SOURCE to
+      //      a per-service address list with 30m timeout
+      //   3. /ip firewall raw prerouting    — drop everything from that list
+      // This is the standard MikroTik wiki pattern for L7 domain blocking.
       // --------------------------------------------------------------------
       if (blockMethod === 'layer7') {
         if (serviceId === 'torrents') {
           await blockTorrentsL7(conn);
           report.steps.push({ ok: true, name: 'torrent L7+P2P rules installed' });
         } else {
-          // Simple regex that matches the domain bytes in unencrypted protocol fields
-          // (HTTP host header, TLS SNI). RouterOS only inspects the first ~10 packets
-          // / 2 KB per connection, so the SNI in TLS ClientHello is reachable.
+          // Match keyword bytes (e.g. 'youtube') in HTTP host header / TLS SNI
           const pattern = domains.slice(0, 5)
-            .map(d => d.split('.')[0])     // match the keyword, not full FQDN
+            .map(d => d.split('.')[0])
             .filter(Boolean)
             .join('|');
           const regexp = `(${pattern})`;
+          const srcList = `${comment}-src`;
 
-          // 1. Layer-7 protocol
+          // 1. L7 protocol
           const l7Out = await conn.execute(`/ip firewall layer7-protocol add name="${comment}" comment="${comment}" regexp="${regexp}"`);
           if (rosError(l7Out)) {
-            report.steps.push({ ok: false, name: 'add L7 protocol', error: l7Out.trim().split('\n')[0] });
             return res.status(500).json({ error: `Failed to add Layer-7 protocol: ${l7Out.trim().split('\n')[0]}`, report });
           }
-          report.steps.push({ ok: true, name: `Layer-7 protocol "${comment}" added (regex: ${regexp})` });
+          report.steps.push({ ok: true, name: `Layer-7 protocol added (regex: ${regexp})` });
 
-          // 2. Add filter at the TOP of forward chain so it fires before defconf accept rules
-          const fOut = await conn.execute(`/ip firewall filter add chain=forward layer7-protocol="${comment}" action=drop comment="${comment}" place-before=0`);
-          if (rosError(fOut)) {
-            report.steps.push({ ok: false, name: 'add drop rule', error: fOut.trim().split('\n')[0] });
-            return res.status(500).json({ error: `Failed to add drop rule: ${fOut.trim().split('\n')[0]}`, report });
+          // 2. Mangle: when L7 detects pattern, add source IP to short-term block list
+          const mOut = await conn.execute(`/ip firewall mangle add chain=prerouting layer7-protocol="${comment}" action=add-src-to-address-list address-list="${srcList}" address-list-timeout=30m comment="${comment}"`);
+          if (rosError(mOut)) {
+            return res.status(500).json({ error: `Mangle rule failed: ${mOut.trim().split('\n')[0]}`, report });
           }
-          report.steps.push({ ok: true, name: `forward-drop rule placed at top of chain` });
+          report.steps.push({ ok: true, name: `mangle: L7 match → ${srcList} (30m TTL)` });
 
-          // 3. Belt-and-suspenders: also DNS-block since L7 misses encrypted DoH/DoT
+          // 3. Raw drop: kills traffic from any source on the block list.
+          // Raw is processed BEFORE filter / defconf rules — no positioning needed.
+          const rOut = await conn.execute(`/ip firewall raw add chain=prerouting src-address-list="${srcList}" action=drop comment="${comment}"`);
+          if (rosError(rOut)) {
+            return res.status(500).json({ error: `Raw drop rule failed: ${rOut.trim().split('\n')[0]}`, report });
+          }
+          report.steps.push({ ok: true, name: 'raw-drop rule installed (pre-conntrack)' });
+
+          // 4. DNS fallback — L7 only inspects ~10 packets / 2KB and misses DoH/DoT
           for (const domain of domains) {
             await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
           }
@@ -1647,6 +1661,9 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
 
       // --------------------------------------------------------------------
       // MANGLE / ADDRESS-LIST METHOD
+      // Use /ip firewall raw instead of /ip firewall filter for the drop rule.
+      // Raw is processed BEFORE conntrack and the filter chain, so we don't
+      // need place-before (which fails on RouterOS 7 with 'no such item').
       // --------------------------------------------------------------------
       } else if (blockMethod === 'mangle') {
         let alAdded = 0;
@@ -1665,46 +1682,49 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
           return res.status(500).json({ error: `Could not add any domains to address-list. RouterOS: ${alErrors[0] || 'unknown'}`, report });
         }
 
-        // Add drop rule at TOP of forward chain (critical — default chain has accept rules above)
-        const fOut = await conn.execute(`/ip firewall filter add chain=forward dst-address-list="${comment}" action=drop comment="${comment}" place-before=0`);
-        if (rosError(fOut)) {
-          report.steps.push({ ok: false, name: 'add forward-drop rule', error: fOut.trim().split('\n')[0] });
-          return res.status(500).json({ error: `Address list created but DROP rule failed: ${fOut.trim().split('\n')[0]}`, report });
+        // Raw drop rule — chain is empty by default, no place-before needed
+        const rOut = await conn.execute(`/ip firewall raw add chain=prerouting dst-address-list="${comment}" action=drop comment="${comment}"`);
+        if (rosError(rOut)) {
+          return res.status(500).json({ error: `Address list created but DROP rule failed: ${rOut.trim().split('\n')[0]}`, report });
         }
-        report.steps.push({ ok: true, name: 'forward-drop rule placed at top of chain' });
+        report.steps.push({ ok: true, name: 'raw-drop rule installed (pre-conntrack, no chain-order dependency)' });
 
       // --------------------------------------------------------------------
       // DNS METHOD (default)
+      // Multi-layered: DNS static + NAT-redirect to force-through router DNS
+      // + DROP external DNS (so 8.8.8.8 / 1.1.1.1 don't bypass)
+      // No place-before — RouterOS 7 throws 'no such item' on empty chains.
       // --------------------------------------------------------------------
       } else {
-        // Ensure router DNS serves clients
         try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
 
-        // Force LAN clients through router DNS so 8.8.8.8 bypass is intercepted.
-        // Place at TOP of dstnat chain so it fires before masquerade or other rules.
-        try {
-          const natOut = await conn.execute('/ip firewall nat print');
-          if (!natOut.includes('netforge-dns-redirect')) {
-            await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect" place-before=0');
-            await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect" place-before=0');
-            report.steps.push({ ok: true, name: 'DNS port-53 NAT redirect installed' });
+        // Force LAN DNS traffic through the router (intercepts clients using 8.8.8.8 directly)
+        const natOut = await conn.execute('/ip firewall nat print');
+        if (!natOut.includes('netforge-dns-redirect')) {
+          const n1 = await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+          const n2 = await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+          if (rosError(n1) || rosError(n2)) {
+            report.steps.push({ ok: false, name: 'NAT redirect failed', error: (rosError(n1) ? n1 : n2).trim().split('\n')[0] });
+          } else {
+            report.steps.push({ ok: true, name: 'DNS NAT redirect installed (port-53 intercept)' });
           }
-        } catch {}
+        } else {
+          report.steps.push({ ok: true, name: 'DNS NAT redirect already in place' });
+        }
 
+        // Add static entries
         let added = 0;
         const errors = [];
         for (const domain of domains) {
-          // type=A is required in some RouterOS versions to ensure A-record
           const addOut = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
           if (rosError(addOut)) {
             const setOut = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 type=A comment="${comment}"`);
-            if (rosError(setOut)) {
-              errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
-            } else { added++; }
+            if (rosError(setOut)) errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
+            else added++;
           } else { added++; }
         }
 
-        // Verify entries actually exist on the router
+        // Verify by re-reading the router state
         const verifyOut = await conn.execute('/ip dns static print');
         const verifyEntries = parseRouterOSOutput(verifyOut);
         const verified = verifyEntries.filter(e =>
@@ -1718,12 +1738,15 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
         }
       }
     } else {
-      // UNBLOCK — clean all three methods so switching never leaves orphans
+      // UNBLOCK — clean all four chains (raw, filter, mangle, layer7) and both
+      // address lists (`comment` and the `-src` list used by the L7 method)
       try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall raw remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall mangle remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find list="${comment}-src"]`); } catch {}
       if (serviceId === 'torrents') await unblockTorrentsL7(conn);
     }
 
