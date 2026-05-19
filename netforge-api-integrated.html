@@ -33,7 +33,7 @@ const AuthCtx = React.createContext({
   router: null,
   setRouter: () => {},
   logout: () => {},
-  apiBaseUrl: 'http://localhost:4444'
+  apiBaseUrl: window.location.origin
 });
 const AlertCtx = React.createContext({
   alerts: [],
@@ -159,7 +159,7 @@ class WebSocketManagerClass {
 
 // ========== API HELPER ==========
 const API = {
-  baseUrl: 'http://localhost:4444',
+  baseUrl: window.location.origin,
   wsManager: null,
 
   initWebSocket(sessionId) {
@@ -527,6 +527,134 @@ const AAlert = ({ children, tone = 'error' }) => {
 
 const ASkeleton = () => (
   <div style={{ background: A.surface, borderRadius: 12, padding: 12, height: 80, animation: 'shimmer 2s infinite' }} />
+);
+
+// ========== CHART HELPERS ==========
+
+const pathFromValues = (vals, w, h, fill) => {
+  if (!vals || vals.length < 2) return fill ? `M0,${h} L${w},${h} Z` : '';
+  const max = Math.max(...vals, 1);
+  const stepX = w / (vals.length - 1);
+  const pts = vals.map((v, i) => `${(i * stepX).toFixed(1)},${(h - (v / max) * (h - 6) - 3).toFixed(1)}`);
+  const line = 'M' + pts.join(' L');
+  return fill ? `${line} L${w},${h} L0,${h} Z` : line;
+};
+
+const LineChart = ({ values = [], w = 200, h = 32, stroke = A.accent, fill }) => {
+  const f = fill || `${stroke}22`;
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: 'block' }}>
+      <path d={pathFromValues(values, w, h, true)} fill={f} />
+      <path d={pathFromValues(values, w, h, false)} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+};
+
+// ========== LAYOUT COMPONENTS ==========
+
+const ATitleBar = ({ title }) => (
+  <div style={{ height: 32, display: 'flex', alignItems: 'center', flex: '0 0 auto', borderBottom: `1px solid ${A.border}`, background: 'rgba(7,11,20,0.5)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', color: A.textDim, fontSize: 12 }}>
+      <NetForgeMark size={14} color={A.accent} />
+      <span style={{ fontWeight: 500, color: A.text }}>NetForge</span>
+      <span style={{ color: A.textFaint }}>·</span>
+      <span>{title}</span>
+    </div>
+    <div style={{ flex: 1 }} />
+  </div>
+);
+
+const ATopBar = ({ title, sub, right }) => (
+  <div style={{ height: 56, padding: '0 22px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: `1px solid ${A.border}`, flex: '0 0 auto' }}>
+    <div>
+      <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.015em' }}>{title}</div>
+      {sub && <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono, marginTop: 2 }}>{sub}</div>}
+    </div>
+    <span style={{ flex: 1 }} />
+    {right}
+  </div>
+);
+
+const NAV_ITEMS = [
+  { label: 'Dashboard',         page: 'Dashboard',    sub: 'overview',              icon: 'M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z' },
+  { label: 'Interfaces',        page: 'Interfaces',   sub: 'ethernet · sfp',        icon: 'M1 8h14M5 5l-4 3 4 3M11 5l4 3-4 3' },
+  { label: 'IP Addresses',      page: 'IP Addresses', sub: 'ip · cidr',             icon: 'M8 1l1.5 3h3l-2.5 2 1 3L8 7.5 5 9l1-3L3.5 4h3z' },
+  { label: 'Routes',            page: 'Routes',       sub: 'routing',               icon: 'M2 13l4-8 4 4 4-8' },
+  { label: 'DNS',               page: 'DNS',          sub: 'resolver · cache',      icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM2 8h12M8 2c-2 3-2 7 0 12M8 2c2 3 2 7 0 12' },
+  { label: 'NAT',               page: 'NAT',          sub: 'srcnat · dstnat',       icon: 'M2 5h12M2 11h12M5 2l-3 3 3 3M11 14l3-3-3-3' },
+  { label: 'WAN & Load Balance',page: 'WAN',          sub: 'pcc · nth · failover',  icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM2 8h12M8 2c-2 3-2 7 0 12' },
+  { label: 'Firewall',          page: 'Firewall',     sub: 'rules · L7 · NAT',      icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z' },
+  { label: 'Bandwidth',         page: 'Bandwidth',    sub: 'simple queue · pcq',    icon: 'M1 12l3-6 3 3 3-6 3 3 2-4' },
+  { label: 'DHCP & Clients',    page: 'Clients',      sub: 'leases · arp',          icon: 'M11 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 14s-1-5 4-5M14 14s1-5-4-5' },
+  { label: 'Hotspot / PPPoE',   page: 'Hotspot',      sub: 'users · profiles',      icon: 'M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 14s1-6 6-6 6 6' },
+  { label: 'Wireless',          page: 'Wireless',     sub: 'capsman · wifi',        icon: 'M8 12.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM5 10a4 4 0 0 1 6 0M3 7.5a6.5 6.5 0 0 1 10 0M1 5a9 9 0 0 1 14 0' },
+  { label: 'VPN',               page: 'VPN',          sub: 'wg · l2tp · ovpn',     icon: 'M8 1l2 3h3l-2 2.5 1 3L8 8 4 9.5l1-3L3 4h3z' },
+  { label: 'Logs',              page: 'Logs',         sub: 'system · firewall',     icon: 'M3 4h10M3 8h10M3 12h6' },
+  { label: 'Scripts',           page: 'Scripts',      sub: 'scheduler',             icon: 'M2 2h12v12H2zM5 6h6M5 9h4' },
+  { label: 'Backup',            page: 'Backup',       sub: 'export · restore',      icon: 'M13 8v5H3V8M8 1v8M5 6l3 3 3-3' },
+];
+
+const ASidebar = ({ active, router, onNavigate, onLogout, alertCount }) => (
+  <aside style={{ width: 232, flex: '0 0 232px', borderRight: `1px solid ${A.border}`, display: 'flex', flexDirection: 'column', background: 'rgba(7,11,20,0.35)', overflow: 'hidden' }}>
+    {/* Device info card */}
+    <div style={{ padding: '14px 14px 10px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 8px', borderRadius: 9, background: A.surface, border: `1px solid ${A.border}` }}>
+        <div style={{ width: 26, height: 26, borderRadius: 7, background: 'linear-gradient(135deg,#3B82F6,#6366F1)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+          <NetForgeMark size={14} color="#fff" />
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{router?.model || 'MikroTik Router'}</div>
+          <div style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{router?.host || '—'}</div>
+        </div>
+      </div>
+    </div>
+
+    {/* Search bar */}
+    <div style={{ padding: '0 8px 6px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.025)', border: `1px solid ${A.border}` }}>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={A.textFaint} strokeWidth="1.5" strokeLinecap="round"><circle cx="7" cy="7" r="4"/><path d="M11 11l3 3"/></svg>
+        <span style={{ fontSize: 12, color: A.textFaint, flex: 1 }}>Search or run command</span>
+        <span style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, border: `1px solid ${A.border}`, borderRadius: 4, padding: '1px 5px' }}>Ctrl K</span>
+      </div>
+    </div>
+
+    {/* Nav items */}
+    <nav style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }}>
+      {NAV_ITEMS.map(item => {
+        const isActive = item.page === active;
+        return (
+          <div key={item.page} onClick={() => onNavigate(item.page)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', borderRadius: 8, marginBottom: 1, background: isActive ? 'rgba(59,130,246,0.16)' : 'transparent', borderLeft: `2px solid ${isActive ? A.accent : 'transparent'}`, cursor: 'pointer' }}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={isActive ? A.accent : A.textFaint} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <path d={item.icon} />
+            </svg>
+            <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: isActive ? 600 : 500, color: isActive ? '#fff' : A.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>
+              <span style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{item.sub}</span>
+            </span>
+          </div>
+        );
+      })}
+    </nav>
+
+    {/* User card */}
+    <div style={{ padding: '8px 10px', borderTop: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', gap: 9, flexShrink: 0 }}>
+      <div style={{ width: 26, height: 26, borderRadius: 999, background: '#374151', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>
+        {(router?.username || 'A')[0].toUpperCase()}
+      </div>
+      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.15 }}>
+        <div style={{ fontSize: 12, fontWeight: 500 }}>{router?.username || 'admin'}</div>
+        <div style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>full access</div>
+      </div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {alertCount > 0 && (
+          <div style={{ width: 18, height: 18, borderRadius: 999, background: A.warn, display: 'grid', placeItems: 'center', fontSize: 9, fontWeight: 700, color: '#000' }}>{alertCount}</div>
+        )}
+        <div onClick={onLogout} title="Logout" style={{ color: A.textFaint, cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M10 11l4-3-4-3M14 8H6"/></svg>
+        </div>
+      </div>
+    </div>
+  </aside>
 );
 
 // ========== ALERT SYSTEM ==========
@@ -1059,109 +1187,258 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
   );
 };
 
-const DashboardScreen = ({ sessionId }) => {
-  const [stats, setStats] = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+const DashboardScreen = ({ sessionId, router }) => {
+  const [stats,       setStats]       = React.useState(null);
+  const [traffic,     setTraffic]     = React.useState({ rx: Array(28).fill(0), tx: Array(28).fill(0) });
+  const [wans,        setWans]        = React.useState([]);
+  const [clientCount, setClientCount] = React.useState(0);
+  const [talkers,     setTalkers]     = React.useState([]);
+  const [loading,     setLoading]     = React.useState(true);
+  const [refreshing,  setRefreshing]  = React.useState(false);
   const alertCtx = React.useContext(AlertCtx);
-  const alertStateCache = React.useRef(new Map()); // Track alert state, not just timing
+  const alertStateCache = React.useRef(new Map());
 
   const checkThresholds = (data) => {
     if (!data) return;
-
-    const checkMetric = (metric, value, thresholds) => {
-      const stateKey = `${metric}-state`;
-      const prevLevel = alertStateCache.current.get(stateKey) || 'ok';
-
-      let currentLevel = 'ok';
-      if (value > thresholds.critical) {
-        currentLevel = 'critical';
-      } else if (value > thresholds.warn) {
-        currentLevel = 'warn';
-      }
-
-      // Only alert on TRANSITION to warn/critical (not every poll)
-      if (currentLevel !== prevLevel && currentLevel !== 'ok') {
-        alertCtx.addAlert(
-          metric,
-          value,
-          currentLevel === 'critical' ? thresholds.critical : thresholds.warn,
-          currentLevel
-        );
-      }
-
-      alertStateCache.current.set(stateKey, currentLevel);
+    const check = (metric, value, thresholds) => {
+      const key = `${metric}-state`;
+      const prev = alertStateCache.current.get(key) || 'ok';
+      const cur = value > thresholds.critical ? 'critical' : value > thresholds.warn ? 'warn' : 'ok';
+      if (cur !== prev && cur !== 'ok') alertCtx.addAlert(metric, value, cur === 'critical' ? thresholds.critical : thresholds.warn, cur);
+      alertStateCache.current.set(key, cur);
     };
-
-    checkMetric('cpu', data.cpu, ALERT_THRESHOLDS.cpu);
-    checkMetric('memory', data.memory, ALERT_THRESHOLDS.memory);
-    checkMetric('storage', data.storage, ALERT_THRESHOLDS.storage);
+    check('cpu',     data.cpu,     ALERT_THRESHOLDS.cpu);
+    check('memory',  data.memory,  ALERT_THRESHOLDS.memory);
+    check('storage', data.storage, ALERT_THRESHOLDS.storage);
   };
+
+  const fetchAll = React.useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true);
+    try {
+      const [sRes, tRes, wRes, dRes, kRes] = await Promise.allSettled([
+        API.getSystemStats(sessionId),
+        API.call(sessionId, '/api/traffic'),
+        API.getWanStatus(sessionId),
+        API.getDhcpClients(sessionId),
+        API.call(sessionId, '/api/top-talkers'),
+      ]);
+      if (sRes.status === 'fulfilled') { setStats(sRes.value); checkThresholds(sRes.value); }
+      if (tRes.status === 'fulfilled') setTraffic(tRes.value);
+      if (wRes.status === 'fulfilled') setWans(wRes.value);
+      if (dRes.status === 'fulfilled') setClientCount(Array.isArray(dRes.value) ? dRes.value.length : 0);
+      if (kRes.status === 'fulfilled') setTalkers(Array.isArray(kRes.value) ? kRes.value : []);
+      setLoading(false);
+    } catch {}
+    if (isManual) setRefreshing(false);
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
+    fetchAll();
+    const iv = setInterval(fetchAll, 5000);
+    return () => clearInterval(iv);
+  }, [sessionId, fetchAll]);
 
-    const handleData = (data) => {
-      setStats(data);
-      setLoading(false);
-      setError(null);
-      checkThresholds(data);
-    };
+  // Kbps → human-readable
+  const fmtKbps = (kbps) => {
+    if (kbps >= 1024 * 1024) return `${(kbps / 1024 / 1024).toFixed(1)} Gbps`;
+    if (kbps >= 1024)        return `${(kbps / 1024).toFixed(1)} Mbps`;
+    return `${kbps} Kbps`;
+  };
 
-    let unsubscribe;
-    let interval;
+  const rxNow = traffic.rx[traffic.rx.length - 1] || 0;
+  const txNow = traffic.tx[traffic.tx.length - 1] || 0;
 
-    // Check if WebSocket is available
-    const useWS = API.wsManager?.isConnected;
+  const kpiTone = (val, warn, bad) => val >= bad ? 'bad' : val >= warn ? 'warn' : 'good';
+  const cpuTone   = kpiTone(stats?.cpu    || 0, 70, 90);
+  const memTone   = kpiTone(stats?.memory || 0, 80, 95);
+  const diskTone  = kpiTone(stats?.storage|| 0, 80, 95);
 
-    if (useWS) {
-      // Use WebSocket subscription
-      API.subscribe('/api/system-stats', handleData);
-      unsubscribe = () => API.unsubscribe('/api/system-stats', handleData);
-    } else {
-      // Fallback to REST polling
-      const fetchStats = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-          const data = await API.getSystemStats(sessionId);
-          handleData(data);
-        } catch (err) {
-          setError(err.message);
-          setLoading(false);
-        }
-      };
-
-      fetchStats();
-      interval = setInterval(fetchStats, 5000);
-    }
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-      if (interval) clearInterval(interval);
-    };
-  }, [sessionId]);
-
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
-
-  const items = [
-    { label: 'CPU', value: stats?.cpu || 0, unit: '%' },
-    { label: 'Memory', value: stats?.memory || 0, unit: '%' },
-    { label: 'Storage', value: stats?.storage || 0, unit: '%' },
-    { label: 'Uptime', value: stats?.uptime || 'N/A', unit: '' },
-  ];
+  if (loading) return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <ATopBar title="Dashboard" sub="loading…" />
+      <div style={{ flex: 1, padding: 18, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14 }}>
+        {[1,2,3,4].map(i => <ASkeleton key={i} />)}
+      </div>
+    </div>
+  );
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Dashboard</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
-        {items.map(item => (
-          <ACard key={item.label} pad={16}>
-            <div style={{ fontSize: 11, color: A.textDim, marginBottom: 8 }}>{item.label}</div>
-            <div style={{ fontSize: 24, fontWeight: 600, color: A.accent }}>{item.value}{item.unit}</div>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+      {/* ── Top bar ── */}
+      <div style={{ height: 56, padding: '0 22px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: `1px solid ${A.border}`, flex: '0 0 auto' }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.015em' }}>
+            {router?.model || `Router · ${router?.host || '—'}`}
+          </div>
+          <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono, marginTop: 2 }}>
+            connected · uptime {stats?.uptime || '—'} · cpu {stats?.cpu || 0}%
+          </div>
+        </div>
+        <span style={{ flex: 1 }} />
+        <ABtn kind="secondary" onClick={() => fetchAll(true)} disabled={refreshing}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ marginRight: 4 }}><path d="M13.5 2.5A6.5 6.5 0 1 1 8 1.5M13.5 2.5V6M13.5 2.5H10"/></svg>
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </ABtn>
+      </div>
+
+      {/* ── Grid ── */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14, minWidth: 900 }}>
+
+          {/* ── KPI cards ── */}
+          {[
+            { label: 'CPU load',      plain: 'processor',   val: stats?.cpu    || 0,  unit: '%',  trend: traffic.rx, tone: cpuTone,  detail: null },
+            { label: 'Memory',        plain: 'ram in use',  val: stats?.memory || 0,  unit: '%',  trend: null,       tone: memTone,  detail: stats?.memoryDetail || null },
+            { label: 'Storage',       plain: 'flash',       val: stats?.storage|| 0,  unit: '%',  trend: null,       tone: diskTone, detail: stats?.storageDetail || null },
+            { label: 'Active clients',plain: 'dhcp + arp',  val: clientCount,         unit: '',   trend: null,       tone: 'accent', detail: null },
+          ].map(({ label, plain, val, unit, trend, tone, detail }) => {
+            const toneColor = { good: A.good, warn: A.warn, bad: A.bad, accent: A.accent, dim: A.textDim }[tone] || A.accent;
+            return (
+              <ACard key={label} pad={14} style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 110 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
+                  <span style={{ flex: 1 }} />
+                  <span style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{plain}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                  <span style={{ fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em', fontFamily: A.mono, color: toneColor }}>{val}</span>
+                  <span style={{ fontSize: 13, color: A.textDim }}>{unit}</span>
+                </div>
+                <div style={{ marginTop: 'auto' }}>
+                  {trend
+                    ? <LineChart values={trend} w={200} h={32} stroke={toneColor} />
+                    : <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{detail || ' '}</div>}
+                </div>
+              </ACard>
+            );
+          })}
+
+          {/* ── Traffic chart (span 2) ── */}
+          <ACard pad={0} style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px 8px' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>Traffic · all interfaces</div>
+                <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>last 28 samples · realtime</div>
+              </div>
+              <span style={{ flex: 1 }} />
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: A.textDim }}>
+                <span style={{ width: 8, height: 2, background: A.accent, display: 'inline-block', borderRadius: 2 }} />
+                RX <span style={{ fontFamily: A.mono, color: A.text, marginLeft: 4 }}>{fmtKbps(rxNow)}</span>
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: A.textDim }}>
+                <span style={{ width: 8, height: 2, background: '#A78BFA', display: 'inline-block', borderRadius: 2 }} />
+                TX <span style={{ fontFamily: A.mono, color: A.text, marginLeft: 4 }}>{fmtKbps(txNow)}</span>
+              </span>
+            </div>
+            <div style={{ flex: 1, padding: '4px 12px 12px', minHeight: 120 }}>
+              <svg width="100%" height="120" viewBox="0 0 480 120" preserveAspectRatio="none" style={{ display: 'block' }}>
+                {[0,1,2,3].map(i => <line key={i} x1="0" x2="480" y1={i*30+5} y2={i*30+5} stroke="rgba(255,255,255,0.04)" strokeWidth="1" />)}
+                <path d={pathFromValues(traffic.rx, 480, 120, true)}  fill="rgba(59,130,246,0.18)" />
+                <path d={pathFromValues(traffic.rx, 480, 120, false)} fill="none" stroke={A.accent} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                <path d={pathFromValues(traffic.tx, 480, 120, true)}  fill="rgba(167,139,250,0.10)" />
+                <path d={pathFromValues(traffic.tx, 480, 120, false)} fill="none" stroke="#A78BFA" strokeWidth="1.4" strokeDasharray="4 3" strokeLinecap="round" />
+              </svg>
+            </div>
           </ACard>
-        ))}
+
+          {/* ── WAN status (span 2) ── */}
+          <ACard pad={0} style={{ gridColumn: 'span 2' }}>
+            <div style={{ display: 'flex', alignItems: 'center', padding: '14px 16px 10px' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>WAN & load balance</div>
+                <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>
+                  {wans.filter(w => w.status === 'up').length} of {wans.length || '—'} links active
+                </div>
+              </div>
+              <span style={{ flex: 1 }} />
+            </div>
+            <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {wans.length === 0 ? (
+                <div style={{ color: A.textFaint, fontSize: 12, padding: '8px 0', textAlign: 'center' }}>No WAN links</div>
+              ) : wans.map((w, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 9 }}>
+                  <div style={{ width: 26, height: 26, borderRadius: 7, display: 'grid', placeItems: 'center', background: w.status === 'down' ? 'rgba(239,68,68,0.10)' : 'rgba(59,130,246,0.10)', color: w.status === 'down' ? A.bad : A.accent, flexShrink: 0 }}>
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c-2 3-2 7 0 12M8 2c2 3 2 7 0 12"/></svg>
+                  </div>
+                  <div style={{ minWidth: 100 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500 }}>{w.name}</div>
+                    <div style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{w.ip || '—'}</div>
+                  </div>
+                  <div style={{ flex: 1, height: 6, borderRadius: 4, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(100, w.util || 0)}%`, height: '100%', background: w.status === 'down' ? A.bad : A.accent, transition: 'width 0.5s' }} />
+                  </div>
+                  <div style={{ fontFamily: A.mono, fontSize: 11.5, minWidth: 60, textAlign: 'right', color: A.text }}>{w.util || 0}%</div>
+                  <APill tone={w.status === 'up' ? 'good' : 'bad'}>{w.status || 'unknown'}</APill>
+                </div>
+              ))}
+            </div>
+          </ACard>
+
+          {/* ── One-click actions (span 2) ── */}
+          <ACard style={{ gridColumn: 'span 2' }}>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>One-click actions</div>
+              <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>preset rules · idempotent</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
+              {[
+                { title: 'Block YouTube',    sub: 'L7 + DNS rules',    icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
+                { title: 'Block Facebook',   sub: 'L7 + DNS rules',    icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
+                { title: 'Block TikTok',     sub: 'L7 + DNS rules',    icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
+                { title: 'Limit speed',      sub: 'simple queue',      icon: 'M1 12l3-6 3 3 3-6 3 3 2-4' },
+                { title: 'Add load balance', sub: 'pcc 2-wan',         icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM2 8h12' },
+                { title: 'Safe-search',      sub: 'dns rewrite',       icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z' },
+                { title: 'Speed test',       sub: 'bandwidth-test',    icon: 'M8 3v2M8 11v2M3 8H1M15 8h-2M4.6 4.6l1.4 1.4M10 10l1.4 1.4M4.6 11.4L6 10M10 6l1.4-1.4M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z' },
+                { title: 'Custom rule',      sub: 'from snippet',      icon: 'M8 1v14M1 8h14' },
+              ].map(a => (
+                <div key={a.title} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 11px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 9, cursor: 'pointer' }}
+                  onClick={() => alertCtx.addAlert('action', 0, 0, 'warn')}>
+                  <div style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.04)', color: A.accent, flexShrink: 0 }}>
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={a.icon}/></svg>
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.title}</div>
+                    <div style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{a.sub}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ACard>
+
+          {/* ── Top talkers (span 2) ── */}
+          <ACard style={{ gridColumn: 'span 2' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>Top talkers</div>
+                <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>dhcp leases · ip</div>
+              </div>
+              <span style={{ flex: 1 }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {talkers.length === 0 ? (
+                <div style={{ color: A.textFaint, fontSize: 12, padding: '8px 0', textAlign: 'center' }}>No data</div>
+              ) : talkers.map((t, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 6px', borderBottom: i < talkers.length - 1 ? `1px solid ${A.border}` : 'none' }}>
+                  <div style={{ width: 6, height: 6, borderRadius: 999, background: A.accent, flexShrink: 0 }} />
+                  <div style={{ minWidth: 130 }}>
+                    <div style={{ fontSize: 12.5 }}>{t.host || t.mac || '—'}</div>
+                    <div style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{t.ip}</div>
+                  </div>
+                  <div style={{ flex: 1 }} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, fontFamily: A.mono, color: A.text }}>
+                    <span style={{ color: A.accent }}>↓</span>{fmtKbps(t.rx || 0)}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, fontFamily: A.mono, color: A.text, minWidth: 70 }}>
+                    <span style={{ color: '#A78BFA' }}>↑</span>{fmtKbps(t.tx || 0)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ACard>
+
+        </div>
       </div>
     </div>
   );
@@ -2547,26 +2824,6 @@ const App = () => {
     toggleHistory: () => setShowHistory(s => !s)
   };
 
-  const navItems = [
-    { name: 'Dashboard', icon: '📊' },
-    { name: 'Interfaces', icon: '🔗' },
-    { name: 'IP Addresses', icon: '🏷️' },
-    { name: 'Routes', icon: '🛣️' },
-    { name: 'DNS', icon: '🔍' },
-    { name: 'NAT', icon: '🔄' },
-    { name: 'WAN', icon: '🌐' },
-    { name: 'Firewall', icon: '🛡️' },
-    { name: 'Bandwidth', icon: '📈' },
-    { name: 'Clients', icon: '👥' },
-    { name: 'Hotspot', icon: '📡' },
-    { name: 'Wireless', icon: '📶' },
-    { name: 'VPN', icon: '🔐' },
-    { name: 'Logs', icon: '📋' },
-    { name: 'Scripts', icon: '⚙️' },
-    { name: 'Backup', icon: '💾' },
-    { name: 'Settings', icon: '⚡' },
-  ];
-
   const handleLogout = async () => {
     // Close WebSocket connection first
     if (API.wsManager) {
@@ -2588,93 +2845,66 @@ const App = () => {
   };
 
   const renderScreen = () => {
-    if (!sessionId && page !== 'Login') {
-      setPage('Login');
-      return null;
-    }
-
+    if (!sessionId && page !== 'Login') { setPage('Login'); return null; }
     switch (page) {
-      case 'Login': return <LoginScreen setPage={setPage} setSessionId={setSessionId} setRouter={setRouter} />;
-      case 'Dashboard': return <DashboardScreen sessionId={sessionId} />;
-      case 'Interfaces': return <InterfacesScreen sessionId={sessionId} />;
-      case 'IP Addresses': return <IpAddressesScreen sessionId={sessionId} />;
-      case 'Routes': return <RoutesScreen sessionId={sessionId} />;
-      case 'DNS': return <DnsScreen sessionId={sessionId} />;
-      case 'NAT': return <NatScreen sessionId={sessionId} />;
-      case 'WAN': return <WANScreen sessionId={sessionId} />;
-      case 'Firewall': return <FirewallScreen sessionId={sessionId} />;
-      case 'Bandwidth': return <BandwidthScreen sessionId={sessionId} />;
-      case 'Clients': return <ClientsScreen sessionId={sessionId} />;
-      case 'Hotspot': return <HotspotScreen sessionId={sessionId} />;
-      case 'Wireless': return <WirelessScreen sessionId={sessionId} />;
-      case 'VPN': return <VpnScreen sessionId={sessionId} />;
-      case 'Logs': return <LogsScreen sessionId={sessionId} />;
-      case 'Scripts': return <ScriptsScreen sessionId={sessionId} />;
-      case 'Backup': return <BackupScreen sessionId={sessionId} />;
-      case 'Settings': return <SettingsScreen sessionId={sessionId} router={router} />;
-      default: return null;
+      case 'Login':       return <LoginScreen setPage={setPage} setSessionId={setSessionId} setRouter={setRouter} />;
+      case 'Dashboard':   return <DashboardScreen sessionId={sessionId} router={router} />;
+      case 'Interfaces':  return <InterfacesScreen sessionId={sessionId} />;
+      case 'IP Addresses':return <IpAddressesScreen sessionId={sessionId} />;
+      case 'Routes':      return <RoutesScreen sessionId={sessionId} />;
+      case 'DNS':         return <DnsScreen sessionId={sessionId} />;
+      case 'NAT':         return <NatScreen sessionId={sessionId} />;
+      case 'WAN':         return <WANScreen sessionId={sessionId} />;
+      case 'Firewall':    return <FirewallScreen sessionId={sessionId} />;
+      case 'Bandwidth':   return <BandwidthScreen sessionId={sessionId} />;
+      case 'Clients':     return <ClientsScreen sessionId={sessionId} />;
+      case 'Hotspot':     return <HotspotScreen sessionId={sessionId} />;
+      case 'Wireless':    return <WirelessScreen sessionId={sessionId} />;
+      case 'VPN':         return <VpnScreen sessionId={sessionId} />;
+      case 'Logs':        return <LogsScreen sessionId={sessionId} />;
+      case 'Scripts':     return <ScriptsScreen sessionId={sessionId} />;
+      case 'Backup':      return <BackupScreen sessionId={sessionId} />;
+      case 'Settings':    return <SettingsScreen sessionId={sessionId} router={router} />;
+      default:            return null;
     }
   };
 
-  if (page === 'Login') {
-    return renderScreen();
-  }
+  if (page === 'Login') return renderScreen();
+
+  const pageLabelMap = Object.fromEntries(NAV_ITEMS.map(i => [i.page, i.label]));
+  const pageLabel = pageLabelMap[page] || page;
 
   return (
     <AlertCtx.Provider value={alertCtxValue}>
-      <div style={{ width: '100%', height: '100%', background: A.bg, color: A.text, display: 'flex', flexDirection: 'column', fontFamily: A.ui, fontSize: 13 }}>
-        {/* Title Bar */}
-        <div style={{ height: 32, display: 'flex', alignItems: 'center', borderBottom: `1px solid ${A.border}`, padding: '0 12px', background: 'rgba(7,11,20,0.5)' }}>
-          <div style={{ fontSize: 12, color: A.textDim }}>NetForge · {page}</div>
+      <div style={{ width: '100%', height: '100%', background: A.bgLayered, color: A.text, display: 'flex', flexDirection: 'column', fontFamily: A.ui, fontSize: 13, letterSpacing: '-0.005em', overflow: 'hidden' }}>
+
+        {/* ── Title bar ── */}
+        <div style={{ height: 32, display: 'flex', alignItems: 'center', flex: '0 0 auto', borderBottom: `1px solid ${A.border}`, background: 'rgba(7,11,20,0.5)', padding: '0 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: A.textDim, fontSize: 12 }}>
+            <NetForgeMark size={14} color={A.accent} />
+            <span style={{ fontWeight: 500, color: A.text }}>NetForge</span>
+            <span style={{ color: A.textFaint }}>·</span>
+            <span>{pageLabel}</span>
+          </div>
           <div style={{ flex: 1 }} />
-          <button
-            onClick={() => setShowHistory(!showHistory)}
-            style={{
-              background: history.length > 0 ? A.accent : 'transparent',
-              color: history.length > 0 ? '#fff' : A.textDim,
-              border: 'none',
-              borderRadius: 6,
-              padding: '4px 10px',
-              cursor: 'pointer',
-              fontSize: 11,
-              fontWeight: 500,
-              marginRight: 12,
-              transition: 'all 0.2s'
-            }}
-          >
-            🔔 {history.length > 0 ? history.length : ''}
+          <button onClick={() => setShowHistory(!showHistory)} style={{ background: 'none', border: 'none', color: alerts.length > 0 ? A.warn : A.textFaint, cursor: 'pointer', fontSize: 11, padding: '2px 8px', borderRadius: 6, fontFamily: A.ui, position: 'relative' }}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M8 1a5 5 0 0 1 5 5v2l1 2H2l1-2V6a5 5 0 0 1 5-5zM6 13a2 2 0 0 0 4 0"/></svg>
+            {alerts.length > 0 && <span style={{ position: 'absolute', top: 0, right: 4, width: 7, height: 7, borderRadius: 999, background: A.warn, border: `2px solid rgba(7,11,20,0.9)` }} />}
           </button>
-          {router && <span style={{ fontSize: 11, color: A.textFaint }}>@ {router.host}:{router.port}</span>}
         </div>
 
-        {/* Main Layout */}
+        {/* ── Main layout ── */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-          {/* Sidebar */}
-          <div style={{ width: 180, borderRight: `1px solid ${A.border}`, padding: 8, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-            {navItems.map(item => (
-              <button key={item.name} onClick={() => setPage(item.name)} style={{
-                flex: '0 0 auto', padding: 10, marginBottom: 4, border: 'none', background: page === item.name ? A.accent : 'transparent',
-                color: page === item.name ? '#fff' : A.textDim, cursor: 'pointer', borderRadius: 6, fontFamily: A.ui, fontSize: 12,
-                transition: 'all 0.2s', fontWeight: page === item.name ? 500 : 400
-              }}>
-                <span style={{ marginRight: 6 }}>{item.icon}</span>
-                {item.name}
-              </button>
-            ))}
-            <div style={{ flex: 1 }} />
-            <button onClick={handleLogout} style={{
-              width: '100%', padding: 10, border: 'none', background: 'transparent', color: A.textDim,
-              cursor: 'pointer', borderRadius: 6, fontFamily: A.ui, fontSize: 12, borderTop: `1px solid ${A.border}`,
-              transition: 'color 0.2s'
-            }} onMouseEnter={e => e.target.style.color = A.text} onMouseLeave={e => e.target.style.color = A.textDim}>
-              🚪 Logout
-            </button>
-          </div>
-
-          {/* Content */}
-          <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+          <ASidebar
+            active={page}
+            router={router}
+            onNavigate={setPage}
+            onLogout={handleLogout}
+            alertCount={alerts.length}
+          />
+          <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             {renderScreen()}
-          </div>
+          </main>
         </div>
 
         {/* Toast Container */}
