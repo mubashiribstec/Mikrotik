@@ -404,43 +404,99 @@ const API = {
 // ========== ATOMS ==========
 
 const ABase = ({ children }) => (
-  <div style={{ width: '100%', height: '100%', background: A.bg, color: A.text, fontFamily: A.ui }}>
+  <div style={{ width: '100%', height: '100%', background: A.bgLayered, color: A.text, fontFamily: A.ui, fontSize: 13, lineHeight: 1.45, letterSpacing: '-0.005em', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
     {children}
   </div>
 );
 
-const APill = ({ children, tone = 'dim' }) => {
+const APill = ({ children, tone = 'dim', mono = false }) => {
   const tones = {
-    dim: { bg: 'rgba(255,255,255,0.05)', fg: A.textDim },
-    good: { bg: 'rgba(34,197,94,0.12)', fg: '#86EFAC' },
-    warn: { bg: 'rgba(245,158,11,0.12)', fg: '#FCD34D' },
-    bad: { bg: 'rgba(239,68,68,0.12)', fg: '#FCA5A5' },
-  }[tone];
-  return <span style={{ display: 'inline-flex', gap: 6, padding: '3px 8px', borderRadius: 999, background: tones.bg, fontSize: 11, color: tones.fg, fontWeight: 500 }}>{children}</span>;
+    dim:    { bg: 'rgba(255,255,255,0.05)',  fg: A.textDim,  dot: A.textFaint },
+    good:   { bg: 'rgba(34,197,94,0.12)',    fg: '#86EFAC',  dot: A.good },
+    warn:   { bg: 'rgba(245,158,11,0.12)',   fg: '#FCD34D',  dot: A.warn },
+    bad:    { bg: 'rgba(239,68,68,0.12)',    fg: '#FCA5A5',  dot: A.bad },
+    accent: { bg: 'rgba(59,130,246,0.16)',   fg: '#BFDBFE',  dot: A.accent },
+  }[tone] || { bg: 'rgba(255,255,255,0.05)', fg: A.textDim, dot: A.textFaint };
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 9px 3px 8px', borderRadius: 999, background: tones.bg, fontFamily: mono ? A.mono : A.ui, fontSize: 11, color: tones.fg, fontWeight: 500, flexShrink: 0 }}>
+      <span style={{ width: 6, height: 6, borderRadius: 999, background: tones.dot, flexShrink: 0 }} />
+      {children}
+    </span>
+  );
 };
 
-const ACard = ({ children, pad = 12 }) => (
-  <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, padding: pad, animation: 'slideIn 0.4s ease-out' }}>
+const ACard = ({ children, pad = 12, style }) => (
+  <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, padding: pad, backdropFilter: 'blur(8px)', ...style }}>
     {children}
   </div>
 );
 
-const ABtn = ({ children, variant = 'primary', onClick, disabled = false }) => {
-  const styles = {
-    primary: { bg: A.accent, fg: '#fff', border: 'none' },
-    secondary: { bg: A.surface, fg: A.text, border: `1px solid ${A.border}` },
-    ghost: { bg: 'transparent', fg: A.textDim, border: 'none' },
-  }[variant];
+const ABtn = ({ children, kind, variant, icon, onClick, disabled = false, full = false }) => {
+  const k = kind || variant || 'ghost';
+  const s = {
+    primary:   { bg: A.accent,        fg: '#fff',    border: 'transparent',  shadow: '0 1px 0 rgba(255,255,255,0.15) inset, 0 4px 14px rgba(59,130,246,0.35)' },
+    secondary: { bg: 'rgba(255,255,255,0.06)', fg: A.text, border: 'rgba(255,255,255,0.12)', shadow: 'none' },
+    ghost:     { bg: 'transparent',   fg: A.textDim, border: 'transparent',  shadow: 'none' },
+  }[k] || { bg: 'transparent', fg: A.textDim, border: 'transparent', shadow: 'none' };
   return (
     <button onClick={onClick} disabled={disabled} style={{
-      padding: '8px 14px', borderRadius: 8, fontFamily: A.ui, fontSize: 12, fontWeight: 500,
-      background: styles.bg, color: styles.fg, border: styles.border, cursor: disabled ? 'not-allowed' : 'pointer',
-      opacity: disabled ? 0.5 : 1, transition: 'all 0.2s'
-    }} onMouseEnter={e => !disabled && (e.target.style.opacity = '0.85')} onMouseLeave={e => !disabled && (e.target.style.opacity = '1')}>
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+      padding: '7px 13px', borderRadius: 8, border: `1px solid ${s.border}`,
+      background: s.bg, color: s.fg, fontFamily: A.ui, fontSize: 13, fontWeight: 500,
+      cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: s.shadow,
+      opacity: disabled ? 0.5 : 1, transition: 'opacity 0.15s',
+      width: full ? '100%' : undefined,
+    }}>
+      {icon && <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{icon}</span>}
       {children}
     </button>
   );
 };
+
+// ===== NEW DESIGN COMPONENTS =====
+
+const NetForgeMark = ({ size = 16, color = 'currentColor' }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="5.5" y="1" width="5" height="3.5" rx="1" />
+    <rect x="1" y="11.5" width="4.5" height="3.5" rx="1" />
+    <rect x="10.5" y="11.5" width="4.5" height="3.5" rx="1" />
+    <path d="M8 4.5V7.2M3.25 11.5L8 7.2M12.75 11.5L8 7.2" />
+  </svg>
+);
+
+const ALabeledField = ({ label, sub, value, onChange, type = 'text', mono = false }) => (
+  <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+      <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
+      {sub && <span style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{sub}</span>}
+    </span>
+    <input
+      type={type}
+      value={value}
+      onChange={onChange}
+      style={{
+        padding: '9px 11px', background: A.surface, border: `1px solid rgba(255,255,255,0.12)`,
+        borderRadius: 9, fontFamily: mono || type === 'password' ? A.mono : A.ui,
+        fontSize: 13, color: A.text, outline: 'none', width: '100%', boxSizing: 'border-box',
+        transition: 'border-color 0.15s',
+      }}
+      onFocus={e => e.target.style.borderColor = A.accent}
+      onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.12)'}
+    />
+  </label>
+);
+
+const AToggleRow = ({ label, sub, on, onChange }) => (
+  <div onClick={() => onChange && onChange(!on)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 9, cursor: 'pointer', userSelect: 'none' }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{label}</div>
+      <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{sub}</div>
+    </div>
+    <div style={{ width: 32, height: 18, borderRadius: 999, background: on ? A.accent : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
+      <div style={{ width: 14, height: 14, borderRadius: 999, background: '#fff', position: 'absolute', top: 2, left: on ? 16 : 2, transition: 'left 0.2s' }} />
+    </div>
+  </div>
+);
 
 const AInput = ({ label, type = 'text', placeholder, value, onChange, disabled = false }) => (
   <div style={{ marginBottom: 12 }}>
@@ -790,12 +846,73 @@ const TerminalOutput = ({ output, status, exitCode, elapsed, isLoading }) => (
 // ========== SCREENS ==========
 
 const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
-  const [host, setHost] = React.useState('192.168.1.1');
+  const [host, setHost] = React.useState('192.168.88.1');
   const [port, setPort] = React.useState('22');
   const [username, setUsername] = React.useState('admin');
   const [password, setPassword] = React.useState('');
   const [error, setError] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [useTls, setUseTls] = React.useState(false);
+  const [saveCredentials, setSaveCredentials] = React.useState(true);
+  const [recents, setRecents] = React.useState([]);
+  const [activeIdx, setActiveIdx] = React.useState(null);
+
+  // Load recent connections on mount
+  React.useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('netforge_recents') || '[]');
+      setRecents(stored);
+      if (stored.length > 0) {
+        setHost(stored[0].host);
+        setPort(String(stored[0].port || '22'));
+        setUsername(stored[0].username || 'admin');
+        setActiveIdx(0);
+      }
+    } catch {}
+  }, []);
+
+  const saveRecent = (conn) => {
+    try {
+      const existing = JSON.parse(localStorage.getItem('netforge_recents') || '[]');
+      const filtered = existing.filter(r => !(r.host === conn.host && r.username === conn.username));
+      const updated = [conn, ...filtered].slice(0, 4);
+      localStorage.setItem('netforge_recents', JSON.stringify(updated));
+    } catch {}
+  };
+
+  const selectRecent = (r, i) => {
+    setActiveIdx(i);
+    setHost(r.host);
+    setPort(String(r.port || '22'));
+    setUsername(r.username || 'admin');
+    setError(null);
+  };
+
+  const recentTone = (r) => {
+    if (!r.timestamp) return 'dim';
+    const sec = (Date.now() - r.timestamp) / 1000;
+    if (sec < 86400) return 'good';
+    if (sec < 604800) return 'dim';
+    return 'warn';
+  };
+
+  const recentTime = (r) => {
+    if (!r.timestamp) return '—';
+    const sec = (Date.now() - r.timestamp) / 1000;
+    if (sec < 60) return 'just now';
+    if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    const days = Math.floor(sec / 86400);
+    if (days === 1) return 'yesterday';
+    if (days < 7) return `${days} days`;
+    return `${Math.floor(days / 7)} weeks`;
+  };
+
+  const deviceLabel = React.useMemo(() => {
+    if (activeIdx !== null && recents[activeIdx]) return recents[activeIdx].name;
+    return `Router · ${host}`;
+  }, [host, activeIdx, recents]);
 
   const handleLogin = async () => {
     setError(null);
@@ -803,60 +920,141 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
     try {
       const result = await API.login(host, port, username, password);
       const sessionId = result.sessionId;
-
-      // Initialize WebSocket BEFORE changing page
       API.initWebSocket(sessionId);
-
-      // Wait for WebSocket to be ready or timeout
       await new Promise((resolve) => {
-        const checkReady = () => {
-          if (API.wsManager?.isConnected) {
-            resolve();
-          } else {
-            setTimeout(checkReady, 100);
-          }
-        };
-        // Timeout after 2 seconds, then continue with polling fallback
+        const check = () => API.wsManager?.isConnected ? resolve() : setTimeout(check, 100);
         setTimeout(() => resolve(), 2000);
-        checkReady();
+        check();
       });
-
+      if (saveCredentials) {
+        saveRecent({ name: deviceLabel, host, port: parseInt(port) || 22, username, timestamp: Date.now() });
+      }
       setSessionId(sessionId);
       setRouter({ host, port: parseInt(port), username });
       setPage('Dashboard');
     } catch (err) {
-      setError(err.message || 'Login failed');
+      setError(err.message || 'Connection failed');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleTest = async () => {
+    setError(null);
+    setTesting(true);
+    try {
+      const r = await API.login(host, port, username, password);
+      if (r.sessionId) {
+        try { await API.logout(r.sessionId); } catch {}
+        setError('✓ Connection successful — router is reachable');
+      }
+    } catch (err) {
+      setError(err.message || 'Connection failed');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const isOk = error && error.startsWith('✓');
+
   return (
-    <div style={{
-      width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: A.bgLayered, padding: 20
-    }}>
-      <ACard pad={32} style={{ width: '100%', maxWidth: 380 }}>
-        <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, color: A.text }}>NetForge</div>
-        <div style={{ fontSize: 12, color: A.textDim, marginBottom: 20 }}>Connect to your MikroTik router</div>
+    <div style={{ width: '100%', height: '100%', background: A.bgLayered, color: A.text, fontFamily: A.ui, fontSize: 13, lineHeight: 1.45, letterSpacing: '-0.005em', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {error && <AAlert tone="error">{error}</AAlert>}
+      {/* Title bar */}
+      <div style={{ height: 32, display: 'flex', alignItems: 'center', flex: '0 0 auto', borderBottom: `1px solid ${A.border}`, background: 'rgba(7,11,20,0.5)', padding: '0 12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: A.textDim, fontSize: 12 }}>
+          <NetForgeMark size={14} color={A.accent} />
+          <span style={{ fontWeight: 500, color: A.text }}>NetForge</span>
+          <span style={{ color: A.textFaint }}>·</span>
+          <span>Connect</span>
+        </div>
+      </div>
 
-        <AInput label="Host" placeholder="192.168.1.1" value={host} onChange={e => setHost(e.target.value)} disabled={loading} />
-        <AInput label="Port" type="number" placeholder="22" value={port} onChange={e => setPort(e.target.value)} disabled={loading} />
-        <AInput label="Username" placeholder="admin" value={username} onChange={e => setUsername(e.target.value)} disabled={loading} />
-        <AInput label="Password" type="password" placeholder="password" value={password} onChange={e => setPassword(e.target.value)} disabled={loading} />
+      {/* Two-column body */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', overflow: 'hidden' }}>
 
-        <div style={{ display: 'flex', gap: 8 }}>
-          <ABtn variant="primary" onClick={handleLogin} disabled={loading} style={{ flex: 1 }}>
-            {loading ? 'Connecting...' : 'Connect'}
-          </ABtn>
+        {/* ── Left: recent connections ── */}
+        <div style={{ padding: '32px 28px 24px 36px', borderRight: `1px solid ${A.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          {/* Logo */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#3B82F6,#6366F1)', display: 'grid', placeItems: 'center', boxShadow: '0 8px 24px rgba(59,130,246,0.4)', flexShrink: 0 }}>
+              <NetForgeMark size={20} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em' }}>NetForge</div>
+              <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>mikrotik manager · v0.4.0</div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, color: A.textFaint, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, marginBottom: 10 }}>Recent connections</div>
+
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', minHeight: 0 }}>
+            {recents.length === 0 ? (
+              <div style={{ color: A.textFaint, fontSize: 12, padding: '24px 0', textAlign: 'center' }}>
+                No saved connections yet.<br />
+                <span style={{ fontSize: 11, opacity: 0.7 }}>Connect once to save here.</span>
+              </div>
+            ) : recents.map((r, i) => (
+              <div key={i} onClick={() => selectRecent(r, i)} style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', borderRadius: 10, cursor: 'pointer',
+                background: activeIdx === i ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.035)',
+                border: `1px solid ${activeIdx === i ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.07)'}`,
+              }}>
+                <div style={{ width: 30, height: 30, borderRadius: 7, background: 'rgba(59,130,246,0.10)', border: `1px solid rgba(255,255,255,0.07)`, display: 'grid', placeItems: 'center', color: A.accent, flexShrink: 0 }}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="1" y="3" width="14" height="10" rx="2"/><path d="M5 13v-2M8 13v-2M11 13v-2"/></svg>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}</div>
+                  <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{r.host}{r.port && r.port !== 22 ? `:${r.port}` : ''}</div>
+                </div>
+                <APill tone={recentTone(r)} mono>{recentTime(r)}</APill>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 14, display: 'flex', gap: 8, flexShrink: 0 }}>
+            <ABtn kind="secondary">Discover on LAN</ABtn>
+            <ABtn kind="ghost">+ New profile</ABtn>
+          </div>
         </div>
 
-        <div style={{ fontSize: 10, color: A.textFaint, marginTop: 16, textAlign: 'center' }}>
-          Default credentials often admin / password
+        {/* ── Right: connection form ── */}
+        <div style={{ padding: '32px 36px 24px 28px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          <div style={{ fontSize: 11, color: A.textFaint, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>Connect to</div>
+          <div style={{ fontSize: 22, fontWeight: 600, marginTop: 4, marginBottom: 24, letterSpacing: '-0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{deviceLabel}</div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <ALabeledField label="Host" sub="ip address or hostname" value={host} onChange={e => { setHost(e.target.value); setActiveIdx(null); }} mono />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 10 }}>
+              <ALabeledField label="Username" sub="ssh user" value={username} onChange={e => setUsername(e.target.value)} />
+              <ALabeledField label="Port" sub="ssh port" value={port} onChange={e => setPort(e.target.value)} mono type="number" />
+            </div>
+            <ALabeledField label="Password" sub="router password" value={password} onChange={e => setPassword(e.target.value)} type="password" mono />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <AToggleRow label="Use TLS (api-ssl)" sub="api-ssl port 8729" on={useTls} onChange={setUseTls} />
+              <AToggleRow label="Save credentials" sub="stored locally" on={saveCredentials} onChange={setSaveCredentials} />
+            </div>
+          </div>
+
+          {error && (
+            <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 8, fontSize: 12, fontWeight: 500, background: isOk ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)', color: isOk ? '#86EFAC' : '#FCA5A5', border: `1px solid ${isOk ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}` }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ flex: 1 }} />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, paddingTop: 16, borderTop: `1px solid ${A.border}`, flexShrink: 0 }}>
+            <APill tone="good" mono>ready</APill>
+            <span style={{ flex: 1 }} />
+            <ABtn kind="secondary" onClick={handleTest} disabled={testing || loading}>{testing ? 'Testing…' : 'Test'}</ABtn>
+            <ABtn kind="primary" onClick={handleLogin} disabled={loading || !host || !username}>{loading ? 'Connecting…' : 'Connect'}</ABtn>
+          </div>
         </div>
-      </ACard>
+
+      </div>
     </div>
   );
 };
