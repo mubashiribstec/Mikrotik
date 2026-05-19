@@ -1653,12 +1653,14 @@ const WANScreen = ({ sessionId }) => {
       setWans(data);
       setLoading(false);
       checkWanStatus(data);
-      // merge into wanConfig, keeping existing selections
+      // Only update wanConfig when new interfaces appear — avoids re-render every poll tick
       setWanConfig(prev => {
+        const hasNew = data.some(wan => !prev[wan.name]);
+        if (!hasNew) return prev;
         const next = { ...prev };
         data.forEach(wan => {
           if (!next[wan.name]) {
-            next[wan.name] = { selected: wan.status === 'up', weight: 1 };
+            next[wan.name] = { selected: wan.status === 'up', weight: wan.weight || 1 };
           }
         });
         return next;

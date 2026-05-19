@@ -341,56 +341,63 @@ async function fetchWanStatus(conn) {
   const ifOutput = await conn.execute('/interface print');
   const ifaces = parseRouterOSOutput(ifOutput);
 
-  // Fetch default routes to identify gateway interfaces
-  let routeGatewayIfaces = new Set();
+  // Detect default-route gateways — maps interface name → gateway IP
+  // NOTE: column parser converts DST-ADDRESS → dst_address (hyphens become underscores)
+  const ifaceGateway = {};
   try {
-    const routeOutput = await conn.execute('/ip route print');
+    const routeOutput = await conn.execute('/ip route print where dst-address=0.0.0.0/0');
     const routes = parseRouterOSOutput(routeOutput);
     routes.forEach(r => {
-      if ((r['dst-address'] === '0.0.0.0/0' || r['dst-address'] === '0.0.0.0') && r.gateway) {
-        // gateway may be an IP — match back to address
-        const matchedAddr = addresses.find(a => {
-          if (!a.interface) return false;
-          const net = a.address ? a.address.split('/')[0] : '';
-          return r.gateway === net || r.gateway.startsWith(net.split('.').slice(0, 3).join('.'));
-        });
-        if (matchedAddr) routeGatewayIfaces.add(matchedAddr.interface);
-        // gateway may also be an interface name directly
-        if (ifaces.find(i => i.name === r.gateway)) routeGatewayIfaces.add(r.gateway);
+      const dst = r.dst_address || r['dst_address'] || '';
+      const gw  = r.gateway || '';
+      if (!gw) return;
+      // If gateway is an interface name directly (PPPoE, etc.)
+      if (ifaces.find(i => i.name === gw)) {
+        ifaceGateway[gw] = gw;
+        return;
       }
+      // If gateway is an IP, find which interface owns a subnet containing it
+      const matchedAddr = addresses.find(a => {
+        const ip = (a.address || '').split('/')[0];
+        const prefix = ip.split('.').slice(0, 3).join('.');
+        return gw === ip || gw.startsWith(prefix + '.');
+      });
+      if (matchedAddr) ifaceGateway[matchedAddr.interface] = gw;
     });
-  } catch (e) { /* optional */ }
+  } catch {}
 
-  // Identify WAN interfaces by type, name convention, comment, or default-route gateway
+  // Classify each interface as WAN candidate
   const wanNames = new Set();
   ifaces.forEach(iface => {
-    const type    = (iface.type || '').toLowerCase();
+    const type    = (iface.type    || '').toLowerCase();
     const comment = (iface.comment || '').toLowerCase();
-    const name    = (iface.name || '').toLowerCase();
+    const name    = (iface.name    || '').toLowerCase();
     if (
       type === 'pppoe-out' || type === 'l2tp-out' || type === 'pptp-out' ||
       comment.includes('wan') || comment.includes('isp') ||
-      name.includes('wan') || name.includes('isp') ||
-      /^ether\d/.test(name) || /^lte\d/.test(name) || /^wlan\d/.test(name) ||
-      /^pppoe/.test(name) || /^pptp/.test(name) || /^l2tp/.test(name) ||
-      routeGatewayIfaces.has(iface.name)
+      name.includes('wan')    || name.includes('isp') ||
+      /^ether\d/.test(name)   || /^sfp\d/.test(name) ||
+      /^lte\d/.test(name)     ||
+      /^pppoe/.test(name)     || /^pptp/.test(name) || /^l2tp/.test(name) ||
+      ifaceGateway[iface.name] !== undefined
     ) {
       wanNames.add(iface.name);
     }
   });
 
-  const filtered = wanNames.size > 0
-    ? addresses.filter(a => wanNames.has(a.interface))
-    : addresses;
+  // Build from interfaces (NOT addresses) so PPPoE/DHCP-only interfaces still appear
+  const wanIfaces = ifaces.filter(i => wanNames.has(i.name));
+  const source = wanIfaces.length > 0 ? wanIfaces : ifaces.slice(0, 8);
 
-  return (filtered.length > 0 ? filtered : addresses).map((addr, idx) => {
-    const iface = ifaces.find(i => i.name === addr.interface);
+  return source.map((iface, idx) => {
+    const addr = addresses.find(a => a.interface === iface.name);
     return {
-      name:    addr.interface || `WAN${idx + 1}`,
-      status:  iface ? (iface.running === 'true' ? 'up' : 'down') : 'unknown',
+      name:    iface.name || `WAN${idx + 1}`,
+      status:  iface.running === 'true' ? 'up' : 'down',
       util:    0,
-      ip:      addr.address || '0.0.0.0/24',
-      comment: addr.comment || iface?.comment || '',
+      ip:      addr?.address || '—',
+      gateway: ifaceGateway[iface.name] || '',
+      comment: iface.comment || addr?.comment || '',
       weight:  1,
     };
   });
@@ -1806,49 +1813,66 @@ app.post('/api/wan/apply-lb', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { wans, method, healthCheck } = req.body;
-    if (!Array.isArray(wans) || wans.length < 1) return res.status(400).json({ error: 'At least one WAN required' });
-
-    const conn = getConnection(sessionId);
-    const cmds = [];
-
-    if (method === 'failover') {
-      // Failover: set distances on default routes
-      for (let i = 0; i < wans.length; i++) {
-        const wan = wans[i];
-        cmds.push(`/ip route set [find gateway="${wan.gateway || wan.name}"] distance=${i + 1} comment="netforge-lb"`);
-      }
-    } else if (method === 'nth') {
-      // NTH round-robin via mangle
-      for (let i = 0; i < wans.length; i++) {
-        const wan = wans[i];
-        cmds.push(`/ip firewall mangle add chain=prerouting connection-state=new nth=${wans.length},1,${i} action=mark-connection new-connection-mark=wan${i+1}-conn passthrough=yes comment="netforge-lb"`);
-        cmds.push(`/ip firewall mangle add chain=prerouting connection-mark=wan${i+1}-conn action=mark-routing new-routing-mark=wan${i+1} passthrough=yes comment="netforge-lb"`);
-        if (wan.gateway) cmds.push(`/ip route add dst-address=0.0.0.0/0 gateway=${wan.gateway} routing-table=wan${i+1} comment="netforge-lb"`);
-      }
-    } else {
-      // PCC (default) — per-connection classifier
-      for (let i = 0; i < wans.length; i++) {
-        const wan = wans[i];
-        cmds.push(`/ip firewall mangle add chain=prerouting connection-state=new per-connection-classifier=src-address:${wans.length}/${i} action=mark-connection new-connection-mark=wan${i+1}-conn passthrough=yes comment="netforge-lb"`);
-        cmds.push(`/ip firewall mangle add chain=prerouting connection-mark=wan${i+1}-conn action=mark-routing new-routing-mark=wan${i+1} passthrough=yes comment="netforge-lb"`);
-        if (wan.gateway) cmds.push(`/ip route add dst-address=0.0.0.0/0 gateway=${wan.gateway} routing-table=wan${i+1} comment="netforge-lb"`);
-      }
+    if (!Array.isArray(wans) || wans.length < 2) {
+      return res.status(400).json({ error: 'At least 2 WANs required for load balancing' });
     }
 
-    if (healthCheck) {
+    const conn = getConnection(sessionId);
+
+    // Always clear previous netforge-lb rules before writing new ones (idempotent apply)
+    try { await conn.execute('/ip firewall mangle remove [find comment="netforge-lb"]'); } catch {}
+    try { await conn.execute('/ip route remove [find comment="netforge-lb"]'); } catch {}
+    try { await conn.execute('/tool netwatch remove [find comment="netforge-lb"]'); } catch {}
+
+    const applied = [];
+
+    const exec = async (cmd) => {
+      const out = await conn.execute(cmd);
+      applied.push(cmd);
+      return out;
+    };
+
+    if (method === 'failover') {
       for (let i = 0; i < wans.length; i++) {
         const wan = wans[i];
-        if (wan.ip || wan.name) {
-          cmds.push(`/tool netwatch add host=1.1.1.1 interval=5s comment="netforge-lb-check-wan${i+1}"`);
+        const gw = wan.gateway || wan.ip?.split('/')[0];
+        if (!gw || gw === '—') continue;
+        await exec(`/ip route add dst-address=0.0.0.0/0 gateway="${gw}" distance=${i + 1} check-gateway=ping comment="netforge-lb"`);
+      }
+    } else {
+      // PCC or NTH — both use mangle mark-connection + mark-routing + route per WAN
+      // Total bucket count respects per-WAN weight
+      const S = wans.reduce((s, w) => s + (w.weight || 1), 0);
+      let bucket = 0;
+
+      for (const wan of wans) {
+        const w = wan.weight || 1;
+        for (let k = 0; k < w; k++) {
+          if (method === 'nth') {
+            // NTH: nth=<every>,<counter> — every=S, counter=bucket (1-based)
+            await exec(`/ip firewall mangle add chain=prerouting connection-state=new nth=${S},${bucket + 1} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+          } else {
+            // PCC (default): both-addresses classifier
+            await exec(`/ip firewall mangle add chain=prerouting connection-state=new per-connection-classifier=both-addresses:${S}/${bucket} action=mark-connection new-connection-mark=${wan.name}-conn comment="netforge-lb"`);
+          }
+          bucket++;
+        }
+        // Mark routing for this WAN's connections
+        await exec(`/ip firewall mangle add chain=prerouting connection-mark=${wan.name}-conn action=mark-routing new-routing-mark=to-${wan.name} comment="netforge-lb"`);
+
+        // Add route for this routing-mark
+        const gw = wan.gateway || wan.ip?.split('/')[0];
+        if (gw && gw !== '—') {
+          await exec(`/ip route add gateway="${gw}" routing-mark=to-${wan.name} comment="netforge-lb"`);
         }
       }
     }
 
-    for (const cmd of cmds) {
-      try { await conn.execute(cmd); } catch (e) { /* continue on individual failures */ }
+    if (healthCheck) {
+      try { await exec('/tool netwatch add host=1.1.1.1 interval=5s comment="netforge-lb"'); } catch {}
     }
 
-    res.json({ success: true, message: `Load balance (${method}) applied for ${wans.length} WAN(s)`, commandsApplied: cmds.length });
+    res.json({ success: true, message: `${method.toUpperCase()} applied for ${wans.length} WANs — ${applied.length} rules written`, commandsApplied: applied.length });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
