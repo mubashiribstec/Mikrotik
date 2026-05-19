@@ -1902,22 +1902,22 @@ const FirewallScreen = ({ sessionId }) => {
   }, [sessionId, loadStatus]);
 
   const toggleService = async (svc) => {
-    if (toggling[svc.id]) return; // already in flight
+    if (toggling[svc.id]) return;
     const newState = !blocked[svc.id];
-    // Optimistic UI update
     setBlocked(prev => ({ ...prev, [svc.id]: newState }));
     setToggling(prev => ({ ...prev, [svc.id]: true }));
     setToggleMsg('');
     try {
       await API.toggleFirewallService(sessionId, svc.id, newState);
       setToggleMsg(`✓ ${svc.label} ${newState ? 'blocked' : 'unblocked'}`);
+      setTimeout(() => setToggleMsg(''), 4000);
     } catch (e) {
-      // Revert on failure
       setBlocked(prev => ({ ...prev, [svc.id]: !newState }));
+      // Keep error visible for 8 seconds so user can read it
       setToggleMsg(`✗ ${svc.label}: ${e.message}`);
+      setTimeout(() => setToggleMsg(''), 8000);
     }
     setToggling(prev => ({ ...prev, [svc.id]: false }));
-    setTimeout(() => setToggleMsg(''), 3000);
   };
 
   const routerOsPreview = () => {

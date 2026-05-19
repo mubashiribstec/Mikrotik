@@ -1404,6 +1404,12 @@ app.post('/api/interfaces/toggle', async (req, res) => {
 
 // ========== FIREWALL — SERVICE BLOCK/UNBLOCK ==========
 
+// RouterOS sends errors as stdout text (conn.execute always resolves).
+// This detects RouterOS application errors in command output.
+function rosError(output) {
+  return /^\s*(failure|bad command|no such item|syntax error|input does not match|invalid value)/im.test(output);
+}
+
 // Server-authoritative domain lists — never trust client-sent domains
 const BLOCK_SERVICE_DOMAINS = {
   youtube:  ['youtube.com', 'googlevideo.com', 'ytimg.com', 'youtu.be',
@@ -1426,38 +1432,32 @@ async function blockTorrentsL7(conn) {
   const comment = 'netforge-svc-torrents';
 
   // 1. Layer-7 protocol pattern
-  try {
-    await conn.execute(`/ip firewall layer7-protocol add name="netforge-layer7-torrent" comment="${comment}" regexp="${L7_TORRENT_REGEXP}"`);
-  } catch {
-    try { await conn.execute(`/ip firewall layer7-protocol set [find name="netforge-layer7-torrent"] regexp="${L7_TORRENT_REGEXP}" comment="${comment}"`); } catch {}
+  const l7AddOut = await conn.execute(`/ip firewall layer7-protocol add name="netforge-layer7-torrent" comment="${comment}" regexp="${L7_TORRENT_REGEXP}"`);
+  if (rosError(l7AddOut)) {
+    await conn.execute(`/ip firewall layer7-protocol set [find name="netforge-layer7-torrent"] regexp="${L7_TORRENT_REGEXP}" comment="${comment}"`);
   }
 
-  // 2. Mark L7-detected torrent sources into address list
-  try {
-    await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward layer7-protocol=netforge-layer7-torrent comment="${comment}"`);
-  } catch {}
+  // 2. Mark L7-detected torrent sources into address list (skip if duplicate)
+  const f1Out = await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward layer7-protocol=netforge-layer7-torrent comment="${comment}"`);
+  if (rosError(f1Out)) { /* already exists, skip */ }
 
   // 3. Mark P2P-detected sources into address list
-  try {
-    await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward p2p=all-p2p comment="${comment}"`);
-  } catch {}
+  const f2Out = await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward p2p=all-p2p comment="${comment}"`);
+  if (rosError(f2Out)) { /* already exists, skip */ }
 
   // 4. Drop TCP to non-standard ports for marked sources
-  try {
-    await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=tcp src-address-list=netforge-torrent-conn comment="${comment}"`);
-  } catch {}
+  const f3Out = await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=tcp src-address-list=netforge-torrent-conn comment="${comment}"`);
+  if (rosError(f3Out)) { /* already exists, skip */ }
 
   // 5. Drop UDP to non-standard ports for marked sources
-  try {
-    await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=udp src-address-list=netforge-torrent-conn comment="${comment}"`);
-  } catch {}
+  const f4Out = await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=udp src-address-list=netforge-torrent-conn comment="${comment}"`);
+  if (rosError(f4Out)) { /* already exists, skip */ }
 
   // 6. Also DNS-block known torrent site domains
   for (const domain of (BLOCK_SERVICE_DOMAINS.torrents || [])) {
-    try {
-      await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
-    } catch {
-      try { await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`); } catch {}
+    const dnsOut = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
+    if (rosError(dnsOut)) {
+      await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
     }
   }
 }
@@ -1549,12 +1549,25 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
         }
       } catch {}
 
+      let added = 0;
+      const errors = [];
       for (const domain of domains) {
-        try {
-          await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
-        } catch {
-          try { await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`); } catch {}
+        // conn.execute() resolves even when RouterOS rejects — check output for error text
+        const addOut = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
+        if (rosError(addOut)) {
+          // Entry likely already exists — update it
+          const setOut = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
+          if (rosError(setOut)) {
+            errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
+          } else {
+            added++;
+          }
+        } else {
+          added++;
         }
+      }
+      if (added === 0) {
+        return res.status(500).json({ error: `Failed to add any DNS entries. RouterOS errors: ${errors.slice(0, 2).join('; ') || 'unknown'}` });
       }
     } else {
       try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
