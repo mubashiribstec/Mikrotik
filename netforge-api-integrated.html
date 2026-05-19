@@ -279,6 +279,17 @@ const API = {
     return this.call(sessionId, `/api/scripts/${executionId}/output`);
   },
 
+  async getFirewallServiceStatus(sessionId) {
+    return this.call(sessionId, '/api/firewall/service-status');
+  },
+
+  async toggleFirewallService(sessionId, serviceId, domains, block) {
+    return this.call(sessionId, '/api/firewall/service/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ serviceId, domains, block }),
+    });
+  },
+
   async blockDomain(sessionId, domain, method) {
     return this.call(sessionId, '/api/firewall/block-domain', {
       method: 'POST',
@@ -1851,32 +1862,63 @@ const APPLY_OPTS = [
 ];
 
 const FirewallScreen = ({ sessionId }) => {
-  const [firewall, setFirewall] = React.useState(null);
-  const [blocked, setBlocked] = React.useState(() => {
+  const [firewall, setFirewall]   = React.useState(null);
+  const [blocked, setBlocked]     = React.useState(() => {
     const s = {};
     BLOCK_SERVICES.forEach(svc => s[svc.id] = false);
     return s;
   });
-  const [applyTo, setApplyTo]   = React.useState('all');
+  const [toggling, setToggling]   = React.useState({}); // serviceId → true while API call in flight
+  const [toggleMsg, setToggleMsg] = React.useState('');
+  const [applyTo, setApplyTo]     = React.useState('all');
   const [customDomain, setCustomDomain] = React.useState('');
-  const [ruleType, setRuleType] = React.useState('DNS');
+  const [ruleType, setRuleType]   = React.useState('DNS');
   const [testResult, setTestResult] = React.useState(null);
-  const [addMsg, setAddMsg]   = React.useState('');
-  const [loading, setLoading] = React.useState(true);
+  const [addMsg, setAddMsg]       = React.useState('');
+  const [loading, setLoading]     = React.useState(true);
+
+  // Load firewall stats AND current blocked service status from the router
+  const loadStatus = React.useCallback(async () => {
+    const [fwRes, svcRes] = await Promise.allSettled([
+      API.getFirewall(sessionId),
+      API.getFirewallServiceStatus(sessionId),
+    ]);
+    if (fwRes.status === 'fulfilled') setFirewall(fwRes.value);
+    if (svcRes.status === 'fulfilled' && Array.isArray(svcRes.value.blocked)) {
+      setBlocked(prev => {
+        const next = { ...prev };
+        BLOCK_SERVICES.forEach(svc => { next[svc.id] = svcRes.value.blocked.includes(svc.id); });
+        return next;
+      });
+    }
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetch = async () => {
-      setLoading(true);
-      try { const d = await API.getFirewall(sessionId); setFirewall(d); } catch {}
-      setLoading(false);
-    };
-    fetch();
-    const iv = setInterval(fetch, 5000);
+    const init = async () => { setLoading(true); await loadStatus(); setLoading(false); };
+    init();
+    const iv = setInterval(loadStatus, 10000);
     return () => clearInterval(iv);
-  }, [sessionId]);
+  }, [sessionId, loadStatus]);
 
-  const toggleService = (id) => setBlocked(prev => ({ ...prev, [id]: !prev[id] }));
+  const toggleService = async (svc) => {
+    if (toggling[svc.id]) return; // already in flight
+    const newState = !blocked[svc.id];
+    // Optimistic UI update
+    setBlocked(prev => ({ ...prev, [svc.id]: newState }));
+    setToggling(prev => ({ ...prev, [svc.id]: true }));
+    setToggleMsg('');
+    try {
+      await API.toggleFirewallService(sessionId, svc.id, svc.domains, newState);
+      setToggleMsg(`✓ ${svc.label} ${newState ? 'blocked' : 'unblocked'}`);
+    } catch (e) {
+      // Revert on failure
+      setBlocked(prev => ({ ...prev, [svc.id]: !newState }));
+      setToggleMsg(`✗ ${svc.label}: ${e.message}`);
+    }
+    setToggling(prev => ({ ...prev, [svc.id]: false }));
+    setTimeout(() => setToggleMsg(''), 3000);
+  };
 
   const routerOsPreview = () => {
     if (!customDomain.trim()) return '# enter a domain above';
@@ -1926,31 +1968,39 @@ const FirewallScreen = ({ sessionId }) => {
           <ACard pad={0}>
             <div style={{ padding: '12px 16px 10px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>Service Filters</span>
-              <span style={{ fontSize: 11, color: A.textFaint }}>Toggle to block across all clients</span>
+              <span style={{ fontSize: 11, color: toggleMsg ? (toggleMsg.startsWith('✓') ? A.good : A.bad) : A.textFaint, fontFamily: A.mono, transition: 'color 0.2s' }}>
+                {toggleMsg || 'click toggle to block on router'}
+              </span>
             </div>
-            {BLOCK_SERVICES.map((svc, idx) => (
-              <div key={svc.id} onClick={() => toggleService(svc.id)} style={{
-                display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px',
-                borderBottom: idx < BLOCK_SERVICES.length - 1 ? `1px solid ${A.border}` : 'none',
-                cursor: 'pointer', background: blocked[svc.id] ? 'rgba(239,68,68,0.04)' : 'transparent',
-                transition: 'background 0.15s',
-              }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-                    <span style={{ fontSize: 13, fontWeight: 500, color: A.text }}>{svc.label}</span>
-                    <APill tone="dim">{svc.category}</APill>
-                    {blocked[svc.id] && <APill tone="bad">Blocked</APill>}
+            {BLOCK_SERVICES.map((svc, idx) => {
+              const isBlocked  = blocked[svc.id];
+              const isToggling = toggling[svc.id];
+              return (
+                <div key={svc.id} onClick={() => !isToggling && toggleService(svc)} style={{
+                  display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px',
+                  borderBottom: idx < BLOCK_SERVICES.length - 1 ? `1px solid ${A.border}` : 'none',
+                  cursor: isToggling ? 'wait' : 'pointer',
+                  background: isBlocked ? 'rgba(239,68,68,0.04)' : 'transparent',
+                  opacity: isToggling ? 0.7 : 1,
+                  transition: 'background 0.15s, opacity 0.15s',
+                }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: A.text }}>{svc.label}</span>
+                      <APill tone="dim">{svc.category}</APill>
+                      {isBlocked && <APill tone="bad">Blocked</APill>}
+                      {isToggling && <APill tone="dim">applying…</APill>}
+                    </div>
+                    <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {svc.domains.filter(d => !d.startsWith('+')).slice(0, 3).join(' · ')}{svc.domains.length > 3 ? ` + ${svc.domains.length - 3} more` : ''}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {svc.domains.slice(0, 2).join(' · ')}{svc.domains.length > 2 ? ` + ${svc.domains.length - 2} more` : ''}
+                  <div style={{ width: 36, height: 20, borderRadius: 999, background: isBlocked ? A.bad : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
+                    <div style={{ width: 16, height: 16, borderRadius: 999, background: '#fff', position: 'absolute', top: 2, left: isBlocked ? 18 : 2, transition: 'left 0.2s' }} />
                   </div>
                 </div>
-                <div style={{ fontSize: 10, color: A.textFaint, minWidth: 48, textAlign: 'right', fontFamily: A.mono }}>{svc.hits} hits</div>
-                <div style={{ width: 36, height: 20, borderRadius: 999, background: blocked[svc.id] ? A.bad : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
-                  <div style={{ width: 16, height: 16, borderRadius: 999, background: '#fff', position: 'absolute', top: 2, left: blocked[svc.id] ? 18 : 2, transition: 'left 0.2s' }} />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </ACard>
 
           {/* apply-to section */}

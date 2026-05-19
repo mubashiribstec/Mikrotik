@@ -1402,6 +1402,78 @@ app.post('/api/interfaces/toggle', async (req, res) => {
   }
 });
 
+// ========== FIREWALL — SERVICE BLOCK/UNBLOCK ==========
+
+// Returns which service IDs are currently blocked (DNS static entries with netforge-svc comment)
+app.get('/api/firewall/service-status', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+    const output = await conn.execute('/ip dns static print');
+    const entries = parseRouterOSOutput(output);
+
+    // Collect service IDs that have at least one DNS entry
+    const blocked = new Set();
+    for (const e of entries) {
+      const comment = e.comment || '';
+      const m = comment.match(/^netforge-svc-(.+)$/);
+      if (m) blocked.add(m[1]);
+    }
+
+    res.json({ blocked: [...blocked] });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Block or unblock an entire service (array of domains) via DNS static entries
+app.post('/api/firewall/service/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { serviceId, domains, block } = req.body;
+    if (!serviceId || !Array.isArray(domains)) {
+      return res.status(400).json({ error: 'serviceId and domains[] required' });
+    }
+
+    const conn = getConnection(sessionId);
+    const comment = `netforge-svc-${serviceId}`;
+
+    if (block) {
+      // Add DNS static entry for each domain pointing to 0.0.0.0
+      for (const domain of domains) {
+        // Skip placeholder entries like '+ adult filter list (500+ domains)'
+        if (!domain || domain.startsWith('+') || !/^[a-zA-Z0-9._-]+$/.test(domain)) continue;
+        try {
+          await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
+        } catch (e) {
+          // Entry may already exist — try to update it
+          try {
+            await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
+          } catch { /* skip */ }
+        }
+      }
+    } else {
+      // Remove all DNS static entries tagged with this service comment
+      try {
+        await conn.execute(`/ip dns static remove [find comment="${comment}"]`);
+      } catch (e) { /* nothing to remove */ }
+    }
+
+    // Flush DNS cache so changes take effect immediately
+    try { await conn.execute('/ip dns cache flush'); } catch { /* optional */ }
+
+    res.json({ success: true, message: `${serviceId} ${block ? 'blocked' : 'unblocked'}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== FIREWALL — BLOCK DOMAIN ==========
 
 app.post('/api/firewall/block-domain', async (req, res) => {
