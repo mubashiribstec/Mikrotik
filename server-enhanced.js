@@ -1641,8 +1641,6 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
     try { await conn.execute('/ip dns cache flush'); } catch {}
 
     res.json({ success: true, message: `${serviceId} ${block ? `blocked via ${blockMethod}` : 'unblocked'}` });
-
-    res.json({ success: true, message: `${serviceId} ${block ? 'blocked' : 'unblocked'}` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
