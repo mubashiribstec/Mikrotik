@@ -291,11 +291,18 @@ async function fetchSystemStats(conn) {
 
   const cpuLoad = parseInt(kv.cpu_load) || 0;
 
+  const fmtMB = (b) => b >= 1073741824 ? `${(b/1073741824).toFixed(1)} GB` : `${(b/1048576).toFixed(0)} MB`;
+
   return {
     cpu: Math.max(0, Math.min(100, cpuLoad)),
     memory: Math.max(0, Math.min(100, memoryPercent)),
     storage: Math.max(0, Math.min(100, storagePercent)),
     uptime: kv.uptime || 'unknown',
+    model: kv.board_name || '',
+    version: kv.version || '',
+    memoryDetail: totalMemory > 0 ? `${fmtMB(memoryUsed)} / ${fmtMB(totalMemory)}` : '',
+    storageDetail: totalHdd > 0 ? `${fmtMB(hddUsed)} / ${fmtMB(totalHdd)}` : '',
+    cpuCount: parseInt(kv.cpu_count) || 1,
   };
 }
 
@@ -416,10 +423,18 @@ async function fetchBandwidth(conn) {
   const output = await conn.execute('/queue simple print');
   const queues = parseRouterOSOutput(output);
 
+  let statsRows = [];
+  try {
+    const statsOut = await conn.execute('/queue simple print stats');
+    statsRows = parseRouterOSOutput(statsOut);
+  } catch {}
+
   const data = queues.map(q => {
-    // RouterOS priority: 1=highest…8=lowest. Map to label for the UI.
     const prio = parseInt(q.priority) || 8;
     const priorityLabel = prio <= 3 ? 'high' : prio <= 5 ? 'normal' : 'low';
+    const stats = statsRows.find(s => s.name === q.name) || {};
+    const rxBytes = parseInt(stats.bytes ? stats.bytes.split('/')[0] : 0) || 0;
+    const txBytes = parseInt(stats.bytes ? stats.bytes.split('/')[1] : 0) || 0;
     return {
       name:     q.name || 'queue',
       target:   q.target || 'all',
@@ -427,12 +442,14 @@ async function fetchBandwidth(conn) {
       up:       q.max_limit ? q.max_limit.split('/')[1] : 'unlimited',
       priority: priorityLabel,
       util:     0,
+      rxBytes,
+      txBytes,
+      packets: stats.packets || '0/0',
+      dropped: stats.dropped || '0/0',
     };
   });
 
-  return data.length > 0 ? data : [
-    { name: 'default', target: 'all', down: 'unlimited', up: 'unlimited', util: 0 },
-  ];
+  return data.length > 0 ? data : [];
 }
 
 async function fetchDhcpClients(conn) {
@@ -497,47 +514,71 @@ async function fetchWireless(conn) {
 }
 
 async function fetchVpn(conn) {
-  const data = [];
+  const result = {
+    wireguard: { enabled: false, interfaces: [], peers: [] },
+    l2tp: { enabled: false, peers: 0 },
+    ovpn: { enabled: false, peers: 0 },
+  };
 
+  // WireGuard
   try {
     const wgIfaces = parseRouterOSOutput(await conn.execute('/interface wireguard print'));
-    for (const wg of wgIfaces) {
-      let peers = 0;
-      try {
-        const out = await conn.execute('/interface wireguard peers print count-only');
-        peers = parseInt(out.trim()) || 0;
-      } catch (e) { /* ok */ }
-      data.push({
-        name: wg.name || 'WireGuard',
+    if (wgIfaces.length > 0) {
+      result.wireguard.enabled = true;
+      result.wireguard.interfaces = wgIfaces.map(wg => ({
+        name: wg.name,
         port: parseInt(wg.listen_port) || 51820,
-        peers,
-        enabled: wg.disabled !== 'true',
-        traffic: 0,
-      });
-    }
-  } catch (e) { /* WireGuard not configured */ }
+        disabled: wg.disabled === 'true',
+        publicKey: wg.public_key || '',
+        mtu: wg.mtu || '1420',
+      }));
 
+      // Fetch WireGuard peers
+      try {
+        const peerOut = await conn.execute('/interface wireguard peers print detail');
+        const peerRows = parseRouterOSOutput(peerOut);
+        result.wireguard.peers = peerRows.map(p => ({
+          interface: p.interface || '',
+          name: p.comment || p.public_key?.substring(0, 8) || '(unnamed)',
+          publicKey: p.public_key || '',
+          allowedAddress: p.allowed_address || '',
+          lastHandshake: p.last_handshake_time || 'never',
+          rx: parseInt(p.rx) || 0,
+          tx: parseInt(p.tx) || 0,
+          enabled: p.disabled !== 'true',
+          endpoint: p.endpoint_address ? `${p.endpoint_address}:${p.endpoint_port || '51820'}` : '',
+        }));
+      } catch {}
+    }
+  } catch {}
+
+  // L2TP
   try {
     const l2tpOut = await conn.execute('/interface l2tp-server server print');
     const l2tp = parseRouterOSKeyValue(l2tpOut)[0] || {};
-    if (l2tp.enabled === 'yes') {
-      let peers = 0;
+    result.l2tp.enabled = l2tp.enabled === 'yes';
+    if (result.l2tp.enabled) {
       try {
-        const out = await conn.execute('/interface l2tp-server print count-only');
-        peers = parseInt(out.trim()) || 0;
-      } catch (e) { /* ok */ }
-      data.push({ name: 'L2TP/IPsec', port: 1701, peers, enabled: true, traffic: 0 });
+        const conns = parseRouterOSOutput(await conn.execute('/interface l2tp-server print'));
+        result.l2tp.peers = conns.length;
+      } catch {}
     }
-  } catch (e) { /* L2TP not configured */ }
+  } catch {}
 
-  if (data.length === 0) {
-    data.push(
-      { name: 'WireGuard', port: 51820, peers: 0, enabled: false, traffic: 0 },
-      { name: 'L2TP/IPsec', port: 1701, peers: 0, enabled: false, traffic: 0 }
-    );
-  }
+  // OpenVPN server (RouterOS 7+ only)
+  try {
+    const ovpnOut = await conn.execute('/interface ovpn-server server print');
+    const ovpn = parseRouterOSKeyValue(ovpnOut)[0] || {};
+    result.ovpn.enabled = ovpn.enabled === 'yes';
+    if (result.ovpn.enabled) {
+      try {
+        const conns = parseRouterOSOutput(await conn.execute('/interface ovpn-server print'));
+        result.ovpn.peers = conns.length;
+      } catch {}
+    }
+  } catch {}
 
-  return data;
+  return result;
 }
 
 async function fetchLogs(conn) {
@@ -1094,6 +1135,70 @@ app.post('/api/nat/remove', async (req, res) => {
   }
 });
 
+// ========== DNS STATIC ENTRIES ==========
+
+app.get('/api/dns/static', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/ip dns static print');
+    const rows = parseRouterOSOutput(out);
+    res.json(rows.map(r => ({
+      id: r.numbers || '',
+      name: r.name || '',
+      address: r.address || r.data || '',
+      ttl: r.ttl || '',
+      type: r.type || 'A',
+      disabled: r.disabled === 'true',
+      matchSubdomain: r.match_subdomain === 'yes',
+      comment: r.comment || '',
+    })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dns/static/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, address, type = 'A', ttl, comment, matchSubdomain } = req.body;
+    if (!name || !address) return res.status(400).json({ error: 'Name and address required' });
+    if (!/^[a-zA-Z0-9._*-]{1,253}$/.test(name)) return res.status(400).json({ error: 'Invalid domain name' });
+
+    const conn = getConnection(sessionId);
+    let cmd = `/ip dns static add name="${name}" address=${address} type=${type}`;
+    if (matchSubdomain) cmd += ' match-subdomain=yes';
+    if (ttl) cmd += ` ttl=${ttl}`;
+    if (comment) cmd += ` comment="${comment}"`;
+
+    const out = await conn.execute(cmd);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `DNS entry for ${name} added` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dns/static/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'ID required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip dns static remove numbers=${id}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: 'DNS entry removed' });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== MASQUERADE ==========
 
 app.get('/api/masquerade', async (req, res) => {
@@ -1396,6 +1501,480 @@ app.post('/api/interfaces/toggle', async (req, res) => {
     const action = disable ? 'disable' : 'enable';
     await getConnection(sessionId).execute(`/interface ${action} "${name}"`);
     res.json({ success: true, message: `Interface "${name}" ${action}d` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== INTERFACES — RENAME & MAC RESET ==========
+
+app.post('/api/interfaces/rename', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, newName } = req.body;
+    if (!name || !newName) return res.status(400).json({ error: 'name and newName required' });
+    if (!/^[a-zA-Z0-9._-]{1,30}$/.test(newName)) return res.status(400).json({ error: 'Invalid interface name' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/interface set [find name="${name}"] name="${newName}"`);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Renamed ${name} → ${newName}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/interfaces/reset-mac', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Interface name required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/interface ethernet reset-mac-address "${name}"`);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `MAC address reset for ${name}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== SCRIPTS — ADD/REMOVE ==========
+
+app.post('/api/scripts/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, source, policy } = req.body;
+    if (!name || !source) return res.status(400).json({ error: 'name and source required' });
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name)) return res.status(400).json({ error: 'Invalid script name' });
+    const conn = getConnection(sessionId);
+    const pol = policy || 'read,write,policy,test';
+    const out = await conn.execute(`/system script add name="${name}" policy="${pol}" source="${source.replace(/"/g, '\\"')}"`);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Script "${name}" added` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/scripts/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Script name required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/system script remove [find name="${name}"]`);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Script "${name}" removed` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== USERS — /ip user management ==========
+
+app.get('/api/users', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/ip user print');
+    const users = parseRouterOSOutput(out);
+    res.json(users.map(u => ({
+      id: u.numbers || '',
+      name: u.name || '',
+      group: u.group || 'read',
+      address: u.address || '',
+      disabled: u.disabled === 'true',
+      comment: u.comment || '',
+      lastLogin: u.last_logged_in || '',
+    })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, password, group = 'read', comment } = req.body;
+    if (!name || !password) return res.status(400).json({ error: 'name and password required' });
+    if (!/^[a-zA-Z0-9._-]{1,32}$/.test(name)) return res.status(400).json({ error: 'Invalid username' });
+    const conn = getConnection(sessionId);
+    let cmd = `/ip user add name="${name}" password="${password}" group=${group}`;
+    if (comment) cmd += ` comment="${comment}"`;
+    const out = await conn.execute(cmd);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `User "${name}" added` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Username required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip user remove [find name="${name}"]`);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `User "${name}" removed` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/set-password', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, password } = req.body;
+    if (!name || !password) return res.status(400).json({ error: 'name and password required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip user set [find name="${name}"] password="${password}"`);
+    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `Password updated for ${name}` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== FIREWALL — SERVICE BLOCK/UNBLOCK ==========
+
+// RouterOS sends errors as stdout text (conn.execute always resolves).
+// This detects RouterOS application errors in command output.
+function rosError(output) {
+  return /^\s*(failure|bad command|no such item|syntax error|input does not match|invalid value)/im.test(output);
+}
+
+// Server-authoritative domain lists — never trust client-sent domains.
+// Only base/parent domains are listed; with match-subdomain=yes (RouterOS 7.6+)
+// one DNS static entry covers ALL subdomains. We still list separate CDN/auxiliary
+// domains because they're different base names (not subdomains of each other).
+const BLOCK_SERVICE_DOMAINS = {
+  youtube:  ['youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'youtube-nocookie.com'],
+  facebook: ['facebook.com', 'fbcdn.net', 'instagram.com', 'fb.com', 'messenger.com', 'whatsapp.net'],
+  tiktok:   ['tiktok.com', 'tiktokcdn.com', 'tiktokv.com', 'musical.ly', 'bytedance.com'],
+  netflix:  ['netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxext.com', 'nflxso.net'],
+  adult:    ['pornhub.com', 'xvideos.com', 'xnxx.com', 'xhamster.com', 'redtube.com', 'youporn.com'],
+  torrents: ['thepiratebay.org', '1337x.to', 'rarbg.to', 'nyaa.si', 'kickasstorrents.to', 'torrentgalaxy.to'],
+  gambling: ['bet365.com', 'pokerstars.com', '888casino.com', 'draftkings.com', 'fanduel.com', 'betway.com'],
+  crypto:   ['coinhive.com', 'cryptoloot.pro', 'minero.cc', 'jsecoin.com'],
+};
+
+// Standard well-known DoH endpoints — when blocking is active and the user wants
+// to prevent DoH bypass, these are added to a shared address-list and dropped.
+const DOH_ENDPOINTS = [
+  'cloudflare-dns.com', 'mozilla.cloudflare-dns.com', 'one.one.one.one',
+  'dns.google', 'dns.google.com', 'dns.quad9.net',
+  'doh.opendns.com', 'doh.cleanbrowsing.org', 'dns.nextdns.io',
+  'doh.dns.sb', 'security.cloudflare-dns.com', 'family.cloudflare-dns.com',
+];
+
+// Standard RouterOS community Layer-7 bittorrent regexp
+// Escaping note: each \\ in this JS string becomes \ in the sent SSH command,
+// which RouterOS then interprets in its regexp engine.
+const L7_TORRENT_REGEXP = `^(\\\\x13bittorrent protocol|azver\\\\x01\\$|get /scrape\\\\\\?info_hash=get /announce\\\\\\?info_hash=|get /client/bitcomet/|GET /data\\\\\\?fid=)|d1:ad2:id20:|\\\\x08'7P\\\\)[RP]`;
+
+async function blockTorrentsL7(conn) {
+  const comment = 'netforge-svc-torrents';
+
+  // 1. Layer-7 protocol pattern
+  const l7AddOut = await conn.execute(`/ip firewall layer7-protocol add name="netforge-layer7-torrent" comment="${comment}" regexp="${L7_TORRENT_REGEXP}"`);
+  if (rosError(l7AddOut)) {
+    await conn.execute(`/ip firewall layer7-protocol set [find name="netforge-layer7-torrent"] regexp="${L7_TORRENT_REGEXP}" comment="${comment}"`);
+  }
+
+  // 2. Mark L7-detected torrent sources into address list (skip if duplicate)
+  const f1Out = await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward layer7-protocol=netforge-layer7-torrent comment="${comment}"`);
+  if (rosError(f1Out)) { /* already exists, skip */ }
+
+  // 3. Mark P2P-detected sources into address list
+  const f2Out = await conn.execute(`/ip firewall filter add action=add-src-to-address-list address-list=netforge-torrent-conn address-list-timeout=2m chain=forward p2p=all-p2p comment="${comment}"`);
+  if (rosError(f2Out)) { /* already exists, skip */ }
+
+  // 4. Drop TCP to non-standard ports for marked sources
+  const f3Out = await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=tcp src-address-list=netforge-torrent-conn comment="${comment}"`);
+  if (rosError(f3Out)) { /* already exists, skip */ }
+
+  // 5. Drop UDP to non-standard ports for marked sources
+  const f4Out = await conn.execute(`/ip firewall filter add action=drop chain=forward dst-port=!0-1024,8291,5900,5800,3389 protocol=udp src-address-list=netforge-torrent-conn comment="${comment}"`);
+  if (rosError(f4Out)) { /* already exists, skip */ }
+
+  // 6. Also DNS-block known torrent site domains
+  for (const domain of (BLOCK_SERVICE_DOMAINS.torrents || [])) {
+    const dnsOut = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 comment="${comment}"`);
+    if (rosError(dnsOut)) {
+      await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 comment="${comment}"`);
+    }
+  }
+}
+
+async function unblockTorrentsL7(conn) {
+  try { await conn.execute('/ip firewall filter remove [find comment="netforge-svc-torrents"]'); } catch {}
+  try { await conn.execute('/ip firewall layer7-protocol remove [find comment="netforge-svc-torrents"]'); } catch {}
+  try { await conn.execute('/ip firewall address-list remove [find list="netforge-torrent-conn"]'); } catch {}
+  try { await conn.execute('/ip dns static remove [find comment="netforge-svc-torrents"]'); } catch {}
+}
+
+// Returns which service IDs are currently blocked
+app.get('/api/firewall/service-status', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const conn = getConnection(sessionId);
+
+    // Collect what's blocked via each method
+    const methods = {}; // svcId → 'dns'|'mangle'|'layer7'
+
+    // --- DNS check: domain-name matching (tabular print omits comment column) ---
+    const dnsOut = await conn.execute('/ip dns static print');
+    const dnsEntries = parseRouterOSOutput(dnsOut);
+    const blockedDomains = new Set();
+    for (const e of dnsEntries) {
+      const addr = (e.address || e.data || '').trim();
+      if (addr === '0.0.0.0') blockedDomains.add((e.name || '').toLowerCase());
+    }
+
+    // --- Mangle/address-list check ---
+    const alOut = await conn.execute('/ip firewall address-list print');
+
+    // --- Layer-7 check ---
+    const l7Out = await conn.execute('/ip firewall layer7-protocol print');
+
+    const blocked = [];
+    for (const [svcId, domains] of Object.entries(BLOCK_SERVICE_DOMAINS)) {
+      const comment = `netforge-svc-${svcId}`;
+
+      // Check DNS
+      if (domains.some(d => blockedDomains.has(d.toLowerCase()))) {
+        blocked.push(svcId); methods[svcId] = 'dns'; continue;
+      }
+      // Check address-list (mangle method)
+      if (alOut.includes(comment)) {
+        blocked.push(svcId); methods[svcId] = 'mangle'; continue;
+      }
+      // Check Layer-7
+      if (l7Out.includes(comment)) {
+        blocked.push(svcId); methods[svcId] = 'layer7'; continue;
+      }
+    }
+
+    res.json({ blocked, methods });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Block or unblock a service
+app.post('/api/firewall/service/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+
+    const { serviceId, block, blockMethod = 'dns' } = req.body;
+    if (!serviceId) return res.status(400).json({ error: 'serviceId required' });
+
+    const domains = BLOCK_SERVICE_DOMAINS[serviceId];
+    if (!domains || domains.length === 0) {
+      return res.status(400).json({ error: `Unknown service: ${serviceId}` });
+    }
+
+    const conn = getConnection(sessionId);
+    const comment = `netforge-svc-${serviceId}`;
+
+    // Always remove existing entries for this service first so toggling between
+    // methods or re-applying never silently fails on duplicates. The raw chain
+    // is also cleaned here because that's where our drop rules now live.
+    if (block) {
+      try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall raw remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall mangle remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}-src"]`); } catch {}
+    }
+
+    const report = { method: blockMethod, steps: [] };
+
+    // Helper: read back a chain and confirm our comment shows up in the output.
+    // RouterOS `print detail` includes the comment column even when tabular hides it.
+    const verifyRule = async (chainCmd) => {
+      const out = await conn.execute(`${chainCmd} print detail`);
+      return out.includes(`comment="${comment}"`) || out.includes(`comment=${comment}`);
+    };
+
+    if (block) {
+      // --------------------------------------------------------------------
+      // LAYER-7 METHOD
+      // L7 cannot run in /ip firewall raw (raw is pre-conntrack). So:
+      //   1. /ip firewall layer7-protocol — add the pattern
+      //   2. /ip firewall mangle prerouting — when L7 matches, add SOURCE to
+      //      a per-service address list with 30m timeout
+      //   3. /ip firewall raw prerouting    — drop everything from that list
+      // This is the standard MikroTik wiki pattern for L7 domain blocking.
+      // --------------------------------------------------------------------
+      if (blockMethod === 'layer7') {
+        if (serviceId === 'torrents') {
+          await blockTorrentsL7(conn);
+          report.steps.push({ ok: true, name: 'torrent L7+P2P rules installed' });
+        } else {
+          // Match keyword bytes (e.g. 'youtube') in HTTP host header / TLS SNI
+          const pattern = domains.slice(0, 5)
+            .map(d => d.split('.')[0])
+            .filter(Boolean)
+            .join('|');
+          const regexp = `(${pattern})`;
+          const srcList = `${comment}-src`;
+
+          // 1. L7 protocol
+          const l7Out = await conn.execute(`/ip firewall layer7-protocol add name="${comment}" comment="${comment}" regexp="${regexp}"`);
+          if (rosError(l7Out)) {
+            return res.status(500).json({ error: `Failed to add Layer-7 protocol: ${l7Out.trim().split('\n')[0]}`, report });
+          }
+          report.steps.push({ ok: true, name: `Layer-7 protocol added (regex: ${regexp})` });
+
+          // 2. Mangle: when L7 detects pattern, add source IP to short-term block list
+          const mOut = await conn.execute(`/ip firewall mangle add chain=prerouting layer7-protocol="${comment}" action=add-src-to-address-list address-list="${srcList}" address-list-timeout=30m comment="${comment}"`);
+          if (rosError(mOut)) {
+            return res.status(500).json({ error: `Mangle rule failed: ${mOut.trim().split('\n')[0]}`, report });
+          }
+          report.steps.push({ ok: true, name: `mangle: L7 match → ${srcList} (30m TTL)` });
+
+          // 3. Raw drop: kills traffic from any source on the block list.
+          // Raw is processed BEFORE filter / defconf rules — no positioning needed.
+          const rOut = await conn.execute(`/ip firewall raw add chain=prerouting src-address-list="${srcList}" action=drop comment="${comment}"`);
+          if (rosError(rOut)) {
+            return res.status(500).json({ error: `Raw drop rule failed: ${rOut.trim().split('\n')[0]}`, report });
+          }
+          report.steps.push({ ok: true, name: 'raw-drop rule installed (pre-conntrack)' });
+
+          // 4. DNS fallback — L7 only inspects ~10 packets / 2KB and misses DoH/DoT
+          for (const domain of domains) {
+            await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
+          }
+          report.steps.push({ ok: true, name: `${domains.length} DNS fallback entries added` });
+        }
+
+      // --------------------------------------------------------------------
+      // MANGLE / ADDRESS-LIST METHOD
+      // Use /ip firewall raw instead of /ip firewall filter for the drop rule.
+      // Raw is processed BEFORE conntrack and the filter chain, so we don't
+      // need place-before (which fails on RouterOS 7 with 'no such item').
+      // --------------------------------------------------------------------
+      } else if (blockMethod === 'mangle') {
+        let alAdded = 0;
+        const alErrors = [];
+        for (const domain of domains) {
+          const out = await conn.execute(`/ip firewall address-list add list="${comment}" address="${domain}" comment="${comment}"`);
+          if (rosError(out)) {
+            alErrors.push(`${domain}: ${out.trim().split('\n')[0]}`);
+          } else {
+            alAdded++;
+          }
+        }
+        report.steps.push({ ok: alAdded > 0, name: `address-list: ${alAdded}/${domains.length} domains added`, errors: alErrors.slice(0, 3) });
+
+        if (alAdded === 0) {
+          return res.status(500).json({ error: `Could not add any domains to address-list. RouterOS: ${alErrors[0] || 'unknown'}`, report });
+        }
+
+        // Raw drop rule — chain is empty by default, no place-before needed
+        const rOut = await conn.execute(`/ip firewall raw add chain=prerouting dst-address-list="${comment}" action=drop comment="${comment}"`);
+        if (rosError(rOut)) {
+          return res.status(500).json({ error: `Address list created but DROP rule failed: ${rOut.trim().split('\n')[0]}`, report });
+        }
+        report.steps.push({ ok: true, name: 'raw-drop rule installed (pre-conntrack, no chain-order dependency)' });
+
+      // --------------------------------------------------------------------
+      // DNS METHOD (default)
+      // Multi-layered: DNS static + NAT-redirect to force-through router DNS
+      // + DROP external DNS (so 8.8.8.8 / 1.1.1.1 don't bypass)
+      // No place-before — RouterOS 7 throws 'no such item' on empty chains.
+      // --------------------------------------------------------------------
+      } else {
+        try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
+
+        // Force LAN DNS traffic through the router (intercepts clients using 8.8.8.8 directly)
+        const natOut = await conn.execute('/ip firewall nat print');
+        if (!natOut.includes('netforge-dns-redirect')) {
+          const n1 = await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+          const n2 = await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+          if (rosError(n1) || rosError(n2)) {
+            report.steps.push({ ok: false, name: 'NAT redirect failed', error: (rosError(n1) ? n1 : n2).trim().split('\n')[0] });
+          } else {
+            report.steps.push({ ok: true, name: 'DNS NAT redirect installed (port-53 intercept)' });
+          }
+        } else {
+          report.steps.push({ ok: true, name: 'DNS NAT redirect already in place' });
+        }
+
+        // Add static entries with match-subdomain=yes (RouterOS 7.6+)
+        let added = 0;
+        const errors = [];
+        for (const domain of domains) {
+          const addOut = await conn.execute(`/ip dns static add name="${domain}" match-subdomain=yes address=0.0.0.0 type=A comment="${comment}"`);
+          if (rosError(addOut)) {
+            // Fallback without match-subdomain for older RouterOS
+            const addOut2 = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
+            if (rosError(addOut2)) {
+              const setOut = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 type=A comment="${comment}"`);
+              if (rosError(setOut)) errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
+              else added++;
+            } else { added++; }
+          } else { added++; }
+        }
+
+        // Verify by re-reading the router state
+        const verifyOut = await conn.execute('/ip dns static print');
+        const verifyEntries = parseRouterOSOutput(verifyOut);
+        const verified = verifyEntries.filter(e =>
+          (e.address || e.data) === '0.0.0.0' && domains.includes((e.name || '').toLowerCase())
+        ).length;
+
+        report.steps.push({ ok: verified > 0, name: `DNS entries: ${added} added, ${verified} verified on router`, errors: errors.slice(0, 3) });
+
+        if (verified === 0) {
+          return res.status(500).json({ error: `Could not write any DNS entries. RouterOS: ${errors[0] || 'no error returned'}`, report });
+        }
+      }
+    } else {
+      // UNBLOCK — clean all four chains (raw, filter, mangle, layer7) and both
+      // address lists (`comment` and the `-src` list used by the L7 method)
+      try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall raw remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall mangle remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find list="${comment}-src"]`); } catch {}
+      if (serviceId === 'torrents') await unblockTorrentsL7(conn);
+    }
+
+    try { await conn.execute('/ip dns cache flush'); } catch {}
+
+    res.json({
+      success: true,
+      message: `${serviceId} ${block ? `blocked via ${blockMethod}` : 'unblocked'}`,
+      report,
+    });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
