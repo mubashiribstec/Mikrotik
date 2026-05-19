@@ -195,25 +195,20 @@ const API = {
       headers['x-session-id'] = sessionId;
     }
 
-    try {
-      const response = await fetch(url, {
-        ...options,
-        headers,
-      });
+    const response = await fetch(url, { ...options, headers });
 
-      if (response.status === 401) {
-        throw new Error('Session expired. Please login again.');
-      }
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(error.error || response.statusText);
-      }
-
-      return await response.json();
-    } catch (err) {
-      throw err;
+    if (response.status === 401) {
+      // Broadcast session expiry so App can redirect to login
+      window.dispatchEvent(new CustomEvent('netforge:session-expired'));
+      throw new Error('Session expired. Please login again.');
     }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ error: response.statusText }));
+      throw new Error(err.error || response.statusText);
+    }
+
+    return await response.json();
   },
 
   async login(host, port, username, password) {
@@ -281,17 +276,8 @@ const API = {
     });
   },
 
-  async getScriptOutput(executionId) {
-    const url = `${this.baseUrl}/api/scripts/${executionId}/output`;
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(response.statusText);
-      }
-      return await response.json();
-    } catch (err) {
-      throw err;
-    }
+  async getScriptOutput(sessionId, executionId) {
+    return this.call(sessionId, `/api/scripts/${executionId}/output`);
   },
 
   // IP Addresses
@@ -1047,17 +1033,15 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
     setLoading(true);
     try {
       const result = await API.login(host, port, username, password);
-      const sessionId = result.sessionId;
-      API.initWebSocket(sessionId);
-      await new Promise((resolve) => {
-        const check = () => API.wsManager?.isConnected ? resolve() : setTimeout(check, 100);
-        setTimeout(() => resolve(), 2000);
-        check();
-      });
+      const sid = result.sessionId;
+      // Persist session so page refresh doesn't require re-login
+      try { localStorage.setItem('netforge_session', JSON.stringify({ sessionId: sid, host, port: parseInt(port) || 22, username, ts: Date.now() })); } catch {}
       if (saveCredentials) {
         saveRecent({ name: deviceLabel, host, port: parseInt(port) || 22, username, timestamp: Date.now() });
       }
-      setSessionId(sessionId);
+      // Init WebSocket in background — don't block navigation
+      API.initWebSocket(sid);
+      setSessionId(sid);
       setRouter({ host, port: parseInt(port), username });
       setPage('Dashboard');
     } catch (err) {
@@ -2893,7 +2877,7 @@ const ScriptsScreen = ({ sessionId }) => {
     if (!executing || execStatus === 'done' || execStatus === 'error') return;
     const poll = async () => {
       try {
-        const r = await API.getScriptOutput(executing);
+        const r = await API.getScriptOutput(sessionId, executing);
         setExecOutput(r.output); setExecStatus(r.status); setExecElapsed(r.elapsed);
         if (r.status !== 'running') setTimeout(() => { setExecuting(null); setExecStatus('idle'); }, 5000);
       } catch {}
@@ -3167,6 +3151,7 @@ const SettingsScreen = ({ sessionId, router }) => {
     try {
       const result = await API.login(host, parseInt(port), username, password);
       if (result.sessionId) {
+        try { localStorage.setItem('netforge_session', JSON.stringify({ sessionId: result.sessionId, host, port: parseInt(port) || 22, username, ts: Date.now() })); } catch {}
         setConnMsg('✓ Connected — reloading…');
         setTimeout(() => window.location.reload(), 1200);
       } else { setConnMsg('✗ Connection failed'); }
@@ -3767,9 +3752,31 @@ const NatScreen = ({ sessionId }) => {
 // ========== MAIN APP ==========
 
 const App = () => {
-  const [page, setPage] = React.useState('Login');
-  const [sessionId, setSessionId] = React.useState(null);
-  const [router, setRouter] = React.useState(null);
+  // Restore session from localStorage so page refresh doesn't force re-login
+  const [sessionId, setSessionId] = React.useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('netforge_session') || 'null');
+      // Treat sessions older than 6 hours as stale
+      if (saved && saved.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) return saved.sessionId;
+    } catch {}
+    return null;
+  });
+  const [router, setRouter] = React.useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('netforge_session') || 'null');
+      if (saved && saved.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) {
+        return { host: saved.host, port: saved.port, username: saved.username };
+      }
+    } catch {}
+    return null;
+  });
+  const [page, setPage] = React.useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('netforge_session') || 'null');
+      if (saved && saved.sessionId && Date.now() - saved.ts < 6 * 3600 * 1000) return 'Dashboard';
+    } catch {}
+    return 'Login';
+  });
   const [alerts, setAlerts] = React.useState([]);
   const [history, setHistory] = React.useState(() => AlertUtils.loadHistory());
   const [showHistory, setShowHistory] = React.useState(false);
@@ -3811,28 +3818,34 @@ const App = () => {
     toggleHistory: () => setShowHistory(s => !s)
   };
 
+  // Listen for 401 session-expired events from API.call
+  React.useEffect(() => {
+    const onExpired = () => {
+      try { localStorage.removeItem('netforge_session'); } catch {}
+      if (API.wsManager) { try { API.wsManager.close(); } catch {}; API.wsManager = null; }
+      setSessionId(null);
+      setRouter(null);
+      setPage('Login');
+    };
+    window.addEventListener('netforge:session-expired', onExpired);
+    return () => window.removeEventListener('netforge:session-expired', onExpired);
+  }, []);
+
+  // Redirect to Login if sessionId disappears while on a protected page
+  React.useEffect(() => {
+    if (!sessionId && page !== 'Login') setPage('Login');
+  }, [sessionId, page]);
+
   const handleLogout = async () => {
-    // Close WebSocket connection first
-    if (API.wsManager) {
-      API.wsManager.close();
-      API.wsManager = null;
-    }
-
-    try {
-      if (sessionId) {
-        await API.logout(sessionId);
-      }
-    } catch (err) {
-      console.error('Logout error:', err);
-    }
-
+    if (API.wsManager) { try { API.wsManager.close(); } catch {}; API.wsManager = null; }
+    try { if (sessionId) await API.logout(sessionId); } catch {}
+    try { localStorage.removeItem('netforge_session'); } catch {}
     setSessionId(null);
     setRouter(null);
     setPage('Login');
   };
 
   const renderScreen = () => {
-    if (!sessionId && page !== 'Login') { setPage('Login'); return null; }
     switch (page) {
       case 'Login':       return <LoginScreen setPage={setPage} setSessionId={setSessionId} setRouter={setRouter} />;
       case 'Dashboard':   return <DashboardScreen sessionId={sessionId} router={router} />;

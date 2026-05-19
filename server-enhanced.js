@@ -21,10 +21,10 @@ const loginLimiter = rateLimit({
   skip: (req) => req.method !== 'POST',
 });
 
-// Rate limiting for all API calls
+// Rate limiting for all API calls — 600/min allows 5-sec polling on all screens
 const apiLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 100,
+  max: 600,
   message: 'Too many requests, please try again later',
   standardHeaders: true,
   legacyHeaders: false,
@@ -40,48 +40,57 @@ class RouterConnection {
     this.conn = null;
     this.isConnected = false;
     this.lastActivity = Date.now();
+    this._connectPromise = null; // mutex: prevents parallel connect races
   }
 
   async connect() {
-    return new Promise((resolve, reject) => {
-      this.conn = new ssh2.Client();
+    // If a connect is already in progress, wait for it instead of spawning another
+    if (this._connectPromise) return this._connectPromise;
+
+    this._connectPromise = new Promise((resolve, reject) => {
+      const client = new ssh2.Client();
       let settled = false;
 
       const settle = (fn, arg) => {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
+          this._connectPromise = null;
           fn(arg);
         }
       };
 
       const timer = setTimeout(() => {
-        this.conn.end();
+        client.end();
         settle(reject, new Error('Connection timeout (30s)'));
       }, 30000);
 
-      this.conn.on('ready', () => {
+      client.on('ready', () => {
+        this.conn = client;
         this.isConnected = true;
         this.lastActivity = Date.now();
         settle(resolve);
       });
 
-      this.conn.on('error', (err) => {
+      client.on('error', (err) => {
         this.isConnected = false;
+        this._connectPromise = null;
         settle(reject, new Error(`SSH Connection failed: ${err.message}`));
       });
 
-      this.conn.on('close', () => {
+      client.on('close', () => {
         this.isConnected = false;
+        this._connectPromise = null;
       });
 
-      this.conn.connect({
+      client.connect({
         host: this.config.host,
         port: this.config.port,
         username: this.config.username,
         password: this.config.password,
         readyTimeout: 30000,
-        // RouterOS compatibility: allow legacy algorithms used by older firmware
+        keepaliveInterval: 15000, // prevent RouterOS idle timeout
+        keepaliveCountMax: 3,
         algorithms: {
           kex: [
             'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521',
@@ -99,6 +108,8 @@ class RouterConnection {
         },
       });
     });
+
+    return this._connectPromise;
   }
 
   async execute(command) {
@@ -111,12 +122,20 @@ class RouterConnection {
       let stderr = '';
 
       this.conn.exec(command, (err, stream) => {
-        if (err) return reject(err);
+        if (err) {
+          // SSH channel error — mark disconnected so next call reconnects
+          this.isConnected = false;
+          return reject(err);
+        }
+
+        const timeout = setTimeout(() => {
+          stream.destroy();
+          reject(new Error(`Command timed out: ${command}`));
+        }, 25000);
 
         stream.on('close', () => {
+          clearTimeout(timeout);
           this.lastActivity = Date.now();
-          // RouterOS often returns non-zero exit codes for valid commands.
-          // Resolve with combined output regardless of exit code.
           resolve(stdout + stderr);
         });
 
@@ -127,9 +146,11 @@ class RouterConnection {
   }
 
   async close() {
-    if (this.conn && this.isConnected) {
-      this.conn.end();
-      this.isConnected = false;
+    this.isConnected = false;
+    this._connectPromise = null;
+    if (this.conn) {
+      try { this.conn.end(); } catch {}
+      this.conn = null;
     }
   }
 }
@@ -553,13 +574,14 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     }
 
     const config = { host, port: parseInt(port), username, password };
-    const testConn = new RouterConnection(config);
 
+    // Open the connection once and KEEP IT — don't open+close+open a second one
+    const conn = new RouterConnection(config);
     try {
-      await testConn.connect();
-      await testConn.execute('/system identity print');
-      await testConn.close();
+      await conn.connect();
+      await conn.execute('/system identity print'); // verify credentials work
     } catch (err) {
+      try { conn.close(); } catch {}
       return res.status(401).json({ error: `Connection failed: ${err.message}` });
     }
 
@@ -568,21 +590,20 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       sessionId, host, port: parseInt(port), username,
       createdAt: Date.now(), lastActivity: Date.now(),
     });
-
-    const conn = new RouterConnection(config);
     connections.set(sessionId, conn);
 
-    // Auto-cleanup after 1 hour of inactivity
-    setTimeout(() => {
+    // Periodic cleanup — check every 30 minutes, remove if inactive for 2 hours
+    const cleanupInterval = setInterval(() => {
       const sess = sessions.get(sessionId);
-      if (sess && Date.now() - sess.lastActivity > 3600000) {
+      if (!sess || Date.now() - sess.lastActivity > 7200000) {
+        clearInterval(cleanupInterval);
         const c = connections.get(sessionId);
         if (c) c.close();
         sessions.delete(sessionId);
         connections.delete(sessionId);
         trafficHistory.delete(sessionId);
       }
-    }, 3600000);
+    }, 30 * 60 * 1000);
 
     res.json({ sessionId, message: 'Connected successfully', router: `${host}:${port}` });
   } catch (err) {
