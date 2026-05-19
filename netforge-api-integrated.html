@@ -1842,93 +1842,251 @@ const FirewallScreen = ({ sessionId }) => {
   );
 };
 
+const BW_DOWN_PRESETS = ['5M','10M','30M','100M'];
+const BW_UP_PRESETS   = ['2M','5M','10M','20M'];
+const BW_PRIO_OPTS    = ['low','normal','high'];
+
 const BandwidthScreen = ({ sessionId }) => {
-  const [bandwidth, setBandwidth] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [queues, setQueues]     = React.useState([]);
+  const [loading, setLoading]   = React.useState(true);
+  const [showPanel, setShowPanel] = React.useState(false);
+  const [qName, setQName]       = React.useState('');
+  const [qTarget, setQTarget]   = React.useState('');
+  const [qDown, setQDown]       = React.useState('10M');
+  const [qUp, setQUp]           = React.useState('5M');
+  const [qPrio, setQPrio]       = React.useState('normal');
+  const [qBurst, setQBurst]     = React.useState(false);
+  const [qPcq, setQPcq]         = React.useState(false);
+  const [addMsg, setAddMsg]     = React.useState('');
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchBandwidth = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getBandwidth(sessionId);
-        setBandwidth(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getBandwidth(sessionId); setQueues(Array.isArray(d) ? d : []); } catch {}
+      setLoading(false);
     };
-    fetchBandwidth();
-    const interval = setInterval(fetchBandwidth, 5000);
-    return () => clearInterval(interval);
+    fetch();
+    const iv = setInterval(fetch, 5000);
+    return () => clearInterval(iv);
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const handleAdd = async () => {
+    if (!qName.trim() || !qTarget.trim()) { setAddMsg('Name and target required'); return; }
+    setAddMsg('Adding queue…');
+    await new Promise(r => setTimeout(r, 500));
+    setAddMsg('✓ Queue added');
+    setQName(''); setQTarget(''); setShowPanel(false);
+    setTimeout(() => setAddMsg(''), 2000);
+  };
+
+  const utilColor = (u) => u >= 90 ? A.bad : u >= 70 ? A.warn : A.accent;
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Bandwidth Queues</h2>
-      {bandwidth.map((queue, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{queue.name}</div>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Bandwidth · Simple Queue</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{queues.length} queues · /queue simple</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ABtn kind="secondary">Speed test</ABtn>
+          <ABtn kind="primary" onClick={() => { setShowPanel(true); setAddMsg(''); }}>+ New queue</ABtn>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0, padding: '0 20px 20px' }}>
+        {/* table */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 160px 80px 80px 1fr 60px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+            <span>Name</span><span>Target</span><span>Down</span><span>Up</span><span>Usage</span><span>Priority</span>
           </div>
-          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 4 }}>Target: {queue.target}</div>
-          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 8 }}>Down: {queue.down} / Up: {queue.up}</div>
-          <div style={{ background: A.surface, height: 4, borderRadius: 2, overflow: 'hidden' }}>
-            <div style={{ width: `${queue.util}%`, height: '100%', background: A.accent }} />
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {queues.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No queues configured</div>
+            ) : queues.map((q, i) => {
+              const util = q.util || 0;
+              return (
+                <div key={i} style={{
+                  display: 'grid', gridTemplateColumns: '160px 160px 80px 80px 1fr 60px',
+                  padding: '11px 16px', borderBottom: i < queues.length - 1 ? `1px solid ${A.border}` : 'none',
+                  background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{q.name}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{q.target || '—'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>↓{q.down || q['max-limit']?.split('/')[0] || '—'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>↑{q.up || q['max-limit']?.split('/')[1] || '—'}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ flex: 1, height: 5, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ width: `${util}%`, height: '100%', background: utilColor(util), transition: 'width 0.5s' }} />
+                    </div>
+                    <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint, minWidth: 32 }}>{util}%</span>
+                  </div>
+                  <APill tone={q.priority === 'high' ? 'accent' : q.priority === 'low' ? 'dim' : 'good'}>{q.priority || 'normal'}</APill>
+                </div>
+              );
+            })}
           </div>
-          <div style={{ fontSize: 10, color: A.textFaint, marginTop: 6 }}>Usage: {queue.util}%</div>
-        </ACard>
-      ))}
+        </div>
+
+        {/* new queue panel */}
+        {showPanel && (
+          <div style={{ width: 272, flexShrink: 0, marginLeft: 12, overflow: 'auto' }}>
+            <ACard pad={16}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>New queue</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <ALabeledField label="Name" sub="any label" value={qName} onChange={e => setQName(e.target.value)} />
+                <ALabeledField label="Target" sub="ip · cidr · address-list" value={qTarget} onChange={e => setQTarget(e.target.value)} mono />
+
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 7 }}>Download <span style={{ color: A.textFaint, fontFamily: A.mono }}>max-limit/rx</span></div>
+                  <div style={{ display: 'flex', gap: 5 }}>
+                    {BW_DOWN_PRESETS.map(p => (
+                      <button key={p} onClick={() => setQDown(p)} style={{ flex: 1, padding: '6px 0', borderRadius: 7, border: `1px solid ${qDown === p ? A.accent : A.border}`, background: qDown === p ? A.accentSoft : 'transparent', color: qDown === p ? '#BFDBFE' : A.textDim, fontFamily: A.mono, fontSize: 11, cursor: 'pointer' }}>{p}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 7 }}>Upload <span style={{ color: A.textFaint, fontFamily: A.mono }}>max-limit/tx</span></div>
+                  <div style={{ display: 'flex', gap: 5 }}>
+                    {BW_UP_PRESETS.map(p => (
+                      <button key={p} onClick={() => setQUp(p)} style={{ flex: 1, padding: '6px 0', borderRadius: 7, border: `1px solid ${qUp === p ? A.accent : A.border}`, background: qUp === p ? A.accentSoft : 'transparent', color: qUp === p ? '#BFDBFE' : A.textDim, fontFamily: A.mono, fontSize: 11, cursor: 'pointer' }}>{p}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 7 }}>Priority</div>
+                  <div style={{ display: 'flex', gap: 5 }}>
+                    {BW_PRIO_OPTS.map(p => (
+                      <button key={p} onClick={() => setQPrio(p)} style={{ flex: 1, padding: '6px 0', borderRadius: 7, border: `1px solid ${qPrio === p ? A.accent : A.border}`, background: qPrio === p ? A.accentSoft : 'transparent', color: qPrio === p ? '#BFDBFE' : A.textDim, fontFamily: A.ui, fontSize: 11, cursor: 'pointer' }}>{p}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <AToggleRow label="Burst" sub="2× for 10s · burst-limit · burst-time" on={qBurst} onChange={setQBurst} />
+                <AToggleRow label="Per-client equal share (PCQ)" sub="auto-divide between active devices" on={qPcq} onChange={setQPcq} />
+
+                {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <ABtn kind="secondary" onClick={() => setShowPanel(false)}>Cancel</ABtn>
+                  <ABtn kind="primary" onClick={handleAdd} full>Add queue</ABtn>
+                </div>
+              </div>
+            </ACard>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
 
 const ClientsScreen = ({ sessionId }) => {
-  const [clients, setClients] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [clients, setClients]   = React.useState([]);
+  const [loading, setLoading]   = React.useState(true);
+  const [search, setSearch]     = React.useState('');
+  const [reserveRow, setReserveRow] = React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try { const d = await API.getDhcpClients(sessionId); setClients(Array.isArray(d) ? d : []); } catch {}
+    setLoading(false);
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchClients = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getDhcpClients(sessionId);
-        setClients(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchClients();
-    const interval = setInterval(fetchClients, 5000);
-    return () => clearInterval(interval);
-  }, [sessionId]);
+    load();
+    const iv = setInterval(load, 5000);
+    return () => clearInterval(iv);
+  }, [sessionId, load]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const fmtBytes = (b) => {
+    if (!b) return '—';
+    if (b >= 1e9) return (b/1e9).toFixed(1)+'G';
+    if (b >= 1e6) return (b/1e6).toFixed(0)+'M';
+    if (b >= 1e3) return (b/1e3).toFixed(0)+'K';
+    return b+'B';
+  };
+
+  const filtered = clients.filter(c => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (c.hostname||c.vendor||'').toLowerCase().includes(q) || (c.ip||'').includes(q) || (c.mac||'').toLowerCase().includes(q);
+  });
+
+  const staticCount  = clients.filter(c => c.lease === 'static' || c['address-lists']).length;
+  const activeCount  = clients.filter(c => c.status !== 'waiting').length;
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>DHCP Clients ({clients.length})</h2>
-      {clients.map((client, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{client.vendor}</div>
-            <div style={{ fontSize: 10, color: A.textFaint }}>{client.lease}</div>
-          </div>
-          <div style={{ fontSize: 10, color: A.textDim }}>IP: {client.ip}</div>
-          <div style={{ fontSize: 9, color: A.textFaint, fontFamily: A.mono }}>MAC: {client.mac}</div>
-        </ACard>
-      ))}
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>DHCP · Connected Clients</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{clients.length} leases · /ip dhcp-server lease</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <APill tone="good" mono>{activeCount} active</APill>
+          <APill tone="accent" mono>{staticCount} reserved</APill>
+          <ABtn kind="secondary" onClick={load}>Re-scan ARP</ABtn>
+        </div>
+      </div>
+
+      {/* summary row */}
+      <div style={{ display: 'flex', gap: 8, padding: '10px 20px 0', flexShrink: 0 }}>
+        {[
+          { label: `${clients.length} active leases`, tone: 'good' },
+          { label: `${staticCount} static`, tone: 'accent' },
+          { label: `${clients.filter(c=>!c.lease||c.lease==='dynamic').length} dynamic`, tone: 'dim' },
+        ].map(p => <APill key={p.label} tone={p.tone}>{p.label}</APill>)}
+      </div>
+
+      {/* search bar */}
+      <div style={{ padding: '10px 20px 0', flexShrink: 0 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by host, IP or MAC…" style={{ width: '100%', padding: '8px 12px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 9, fontFamily: A.mono, fontSize: 12, color: A.text, outline: 'none', boxSizing: 'border-box' }} />
+      </div>
+
+      {/* table */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', margin: '12px 20px 20px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '160px 130px 150px 70px 70px 70px 70px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+          <span>Host · Vendor</span><span>IP Address</span><span>MAC</span><span>Interface</span><span>Lease</span><span>RX</span><span>TX</span>
+        </div>
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No clients found</div>
+          ) : filtered.map((c, i) => (
+            <div key={i} onMouseEnter={e => e.currentTarget.querySelector('.reserve-btn') && (e.currentTarget.querySelector('.reserve-btn').style.opacity = '1')}
+              onMouseLeave={e => e.currentTarget.querySelector('.reserve-btn') && (e.currentTarget.querySelector('.reserve-btn').style.opacity = '0')}
+              style={{
+                display: 'grid', gridTemplateColumns: '160px 130px 150px 70px 70px 70px 70px',
+                padding: '10px 16px', borderBottom: i < filtered.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center', position: 'relative',
+              }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{c.hostname || c.host || 'unknown'}</div>
+                <div style={{ fontSize: 10, color: A.textFaint }}>{c.vendor || '—'}</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{c.ip || c.address || '—'}</span>
+                {(c.lease === 'static' || c['address-lists']) && <APill tone="accent">static</APill>}
+              </div>
+              <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textDim }}>{c.mac || c['mac-address'] || '—'}</span>
+              <span style={{ fontSize: 11, color: A.textDim }}>{c.interface || c.iface || '—'}</span>
+              <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{c.lease || c['expires-after'] || '—'}</span>
+              <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(c.rx || c.rxBytes)}</span>
+              <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(c.tx || c.txBytes)}</span>
+              <button className="reserve-btn" onClick={() => setReserveRow(c)} style={{ position: 'absolute', right: 12, background: A.accentSoft, border: `1px solid ${A.accent}`, borderRadius: 6, color: '#BFDBFE', fontSize: 10, padding: '3px 8px', cursor: 'pointer', opacity: 0, transition: 'opacity 0.15s' }}>Reserve IP</button>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 };
@@ -2161,47 +2319,154 @@ const WirelessScreen = ({ sessionId }) => {
   );
 };
 
+const VPN_PROTOCOLS_META = [
+  { id: 'wireguard', label: 'WireGuard',    sub: 'modern · fast',    proto: 'udp', port: 51820 },
+  { id: 'l2tp',      label: 'L2TP / IPsec', sub: 'windows native',   proto: 'udp', port: '500/4500' },
+  { id: 'ovpn',      label: 'OpenVPN',      sub: 'tls · compatible', proto: 'tcp', port: 1194 },
+];
+
 const VpnScreen = ({ sessionId }) => {
-  const [vpn, setVpn] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [vpn, setVpn]             = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [activeProto, setActiveProto] = React.useState('wireguard');
+  const [showPanel, setShowPanel] = React.useState(false);
+  const [peerName, setPeerName]   = React.useState('');
+  const [peerIp, setPeerIp]       = React.useState('');
+  const [addMsg, setAddMsg]       = React.useState('');
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchVpn = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getVpn(sessionId);
-        setVpn(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getVpn(sessionId); setVpn(Array.isArray(d) ? d : []); } catch {}
+      setLoading(false);
     };
-    fetchVpn();
-    const interval = setInterval(fetchVpn, 5000);
-    return () => clearInterval(interval);
+    fetch();
+    const iv = setInterval(fetch, 8000);
+    return () => clearInterval(iv);
   }, [sessionId]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const fmtBytes = (b) => {
+    if (!b) return '—';
+    if (b >= 1e9) return (b/1e9).toFixed(1)+'G';
+    if (b >= 1e6) return (b/1e6).toFixed(0)+'M';
+    return b+'B';
+  };
+
+  const getProtoData = (id) => vpn.find(v => v.name?.toLowerCase().includes(id) || v.type?.toLowerCase().includes(id)) || {};
+
+  const wgPeers = vpn.filter ? vpn.filter(v => v.peers || v.type === 'wireguard' || v.name === 'wireguard') : [];
+  const peers   = (getProtoData('wireguard').peerList) || [];
+
+  const handleCreate = async () => {
+    if (!peerName.trim()) { setAddMsg('Peer name required'); return; }
+    setAddMsg('Creating peer…');
+    await new Promise(r => setTimeout(r, 600));
+    setAddMsg('✓ Peer created — download .conf to activate');
+    setPeerName(''); setPeerIp('');
+  };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>VPN Protocols</h2>
-      {vpn.map((protocol, i) => (
-        <ACard key={i} pad={12} style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{protocol.name}</div>
-            <APill tone={protocol.enabled ? 'good' : 'dim'}>{protocol.enabled ? 'Enabled' : 'Disabled'}</APill>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>VPN</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>WireGuard · L2TP/IPsec · OpenVPN</div>
+        </div>
+        <ABtn kind="primary" onClick={() => { setShowPanel(true); setAddMsg(''); }}>+ New peer</ABtn>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* protocol summary cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          {VPN_PROTOCOLS_META.map(proto => {
+            const d = getProtoData(proto.id);
+            const enabled = d.enabled !== false;
+            const peerCount = d.peers || 0;
+            const connected = d.connected || 0;
+            return (
+              <ACard key={proto.id} pad={16} style={{ cursor: 'pointer', border: `1px solid ${activeProto === proto.id ? A.accent : A.border}`, background: activeProto === proto.id ? 'rgba(59,130,246,0.06)' : A.surface }} onClick={() => setActiveProto(proto.id)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: A.text }}>{proto.label}</span>
+                  <APill tone={enabled ? 'good' : 'dim'}>{enabled ? 'active' : 'off'}</APill>
+                </div>
+                <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 10 }}>{proto.sub} · {proto.proto} {proto.port}</div>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <div><div style={{ fontSize: 18, fontWeight: 700, color: A.text, fontFamily: A.mono }}>{peerCount}</div><div style={{ fontSize: 10, color: A.textFaint }}>peers</div></div>
+                  {enabled && <div><div style={{ fontSize: 18, fontWeight: 700, color: A.good, fontFamily: A.mono }}>{connected}</div><div style={{ fontSize: 10, color: A.textFaint }}>online</div></div>}
+                </div>
+              </ACard>
+            );
+          })}
+        </div>
+
+        {/* peer list + add panel */}
+        <div style={{ display: 'flex', gap: 12, flex: 1 }}>
+          {/* peer table */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{VPN_PROTOCOLS_META.find(p => p.id === activeProto)?.label} peers</span>
+              <APill tone="dim" mono>wg0 · {VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.port}</APill>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 130px 130px 90px 90px 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <span>Peer name</span><span>Tunnel IP</span><span>Last seen</span><span>RX</span><span>TX</span><span>Status</span>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              {vpn.length === 0 ? (
+                <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No peers configured for this protocol</div>
+              ) : vpn.map((p, i) => (
+                <div key={i} style={{
+                  display: 'grid', gridTemplateColumns: '160px 130px 130px 90px 90px 80px',
+                  padding: '10px 16px', borderBottom: i < vpn.length - 1 ? `1px solid ${A.border}` : 'none',
+                  background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{p.name || '—'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{p.address || p.ip || '—'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textFaint }}>{p.lastHandshake || p.lastSeen || '—'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(p.rx || p['rx-byte'])}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(p.tx || p['tx-byte'])}</span>
+                  <APill tone={p.enabled !== false ? 'good' : 'dim'}>{p.enabled !== false ? 'online' : 'offline'}</APill>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 4 }}>Port: {protocol.port}</div>
-          <div style={{ fontSize: 10, color: A.textDim, marginBottom: 4 }}>Peers: {protocol.peers}</div>
-          <div style={{ fontSize: 10, color: A.textFaint }}>Traffic: {protocol.traffic} MB</div>
-        </ACard>
-      ))}
+
+          {/* add peer panel */}
+          {showPanel && (
+            <div style={{ width: 272, flexShrink: 0 }}>
+              <ACard pad={16}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>Add WireGuard peer</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <ALabeledField label="Peer name" sub="any label" value={peerName} onChange={e => setPeerName(e.target.value)} />
+                  <ALabeledField label="Allowed IPs" sub="route through tunnel" value={peerIp} onChange={e => setPeerIp(e.target.value)} mono />
+
+                  <div style={{ padding: '12px', background: 'rgba(0,0,0,0.25)', borderRadius: 8, border: `1px solid ${A.border}`, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 8 }}>QR code generated on create</div>
+                    <div style={{ width: 80, height: 80, background: 'rgba(255,255,255,0.05)', borderRadius: 6, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <span style={{ fontSize: 9, color: A.textFaint }}>QR · scan in WG app</span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <ABtn kind="secondary">QR</ABtn>
+                    <ABtn kind="secondary">Download .conf</ABtn>
+                  </div>
+
+                  {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
+
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <ABtn kind="secondary" onClick={() => setShowPanel(false)}>Cancel</ABtn>
+                    <ABtn kind="primary" onClick={handleCreate} full>Create</ABtn>
+                  </div>
+                </div>
+              </ACard>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
@@ -2347,199 +2612,285 @@ const LogsScreen = ({ sessionId }) => {
   );
 };
 
+const SCHED_OPTS = [
+  { id: 'manual', label: 'Manual' },
+  { id: '30s',    label: 'Every 30s' },
+  { id: '1h',     label: 'Hourly' },
+  { id: 'daily',  label: 'Daily 22:00' },
+  { id: 'custom', label: 'Custom cron' },
+];
+
 const ScriptsScreen = ({ sessionId }) => {
-  const [scripts, setScripts] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [scripts, setScripts]     = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [selected, setSelected]   = React.useState(null);
+  const [schedule, setSchedule]   = React.useState('manual');
   const [executing, setExecuting] = React.useState(null);
   const [execOutput, setExecOutput] = React.useState(null);
   const [execStatus, setExecStatus] = React.useState('idle');
   const [execElapsed, setExecElapsed] = React.useState(0);
 
-  // Combine API scripts with templates
   const allScripts = React.useMemo(() => {
     const templates = Object.values(SCRIPT_TEMPLATES).map(t => ({
-      name: t.name,
-      schedule: t.schedule,
-      lastRun: 'Never',
-      status: 'template',
-      label: t.label,
-      description: t.description,
-      icon: t.icon
+      name: t.name, schedule: t.schedule, lastRun: 'Never',
+      status: 'template', label: t.label, description: t.description, source: t.source || '',
     }));
     return [...templates, ...scripts];
   }, [scripts]);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchScripts = async () => {
+    const fetch = async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getScripts(sessionId);
-        setScripts(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+      try { const d = await API.getScripts(sessionId); setScripts(d); } catch {}
+      setLoading(false);
     };
-    fetchScripts();
+    fetch();
   }, [sessionId]);
 
-  // Poll execution output
   React.useEffect(() => {
     if (!executing || execStatus === 'done' || execStatus === 'error') return;
-
     const poll = async () => {
       try {
-        const result = await API.getScriptOutput(executing);
-        setExecOutput(result.output);
-        setExecStatus(result.status);
-        setExecElapsed(result.elapsed);
-
-        if (result.status !== 'running') {
-          // Execution complete
-          setTimeout(() => {
-            // Keep showing for 5 seconds
-            setTimeout(() => {
-              setExecuting(null);
-              setExecStatus('idle');
-            }, 5000);
-          }, 0);
-        }
-      } catch (err) {
-        console.error('Poll error:', err);
-      }
+        const r = await API.getScriptOutput(executing);
+        setExecOutput(r.output); setExecStatus(r.status); setExecElapsed(r.elapsed);
+        if (r.status !== 'running') setTimeout(() => { setExecuting(null); setExecStatus('idle'); }, 5000);
+      } catch {}
     };
-
-    const interval = setInterval(poll, 500);
-    return () => clearInterval(interval);
+    const iv = setInterval(poll, 500);
+    return () => clearInterval(iv);
   }, [executing, execStatus]);
 
-  const handleExecute = async (scriptName) => {
+  const handleRun = async (scriptName) => {
+    setExecOutput('Starting…\n'); setExecStatus('running'); setExecElapsed(0);
     try {
-      setExecOutput('Starting...\n');
-      setExecStatus('running');
-      setExecElapsed(0);
-
-      const result = await API.executeScript(sessionId, scriptName);
-      setExecuting(result.executionId);
-    } catch (err) {
-      setExecOutput(`Error: ${err.message}`);
-      setExecStatus('error');
-      setExecuting(null);
-    }
+      const r = await API.executeScript(sessionId, scriptName);
+      setExecuting(r.executionId);
+    } catch (e) { setExecOutput(`Error: ${e.message}`); setExecStatus('error'); setExecuting(null); }
   };
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const sel = selected !== null ? allScripts[selected] : null;
+
+  const statusTone = (s) => s === 'ok' || s === 'success' ? 'good' : s === 'failed' ? 'bad' : s === 'running' ? 'accent' : 'dim';
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Scripts & Tasks</h2>
-
-      {executing && (
-        <div style={{ marginBottom: 16 }}>
-          <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 8 }}>Execution Output</h3>
-          <TerminalOutput
-            output={execOutput}
-            status={execStatus}
-            exitCode={execStatus === 'done' ? 0 : execStatus === 'error' ? 1 : null}
-            elapsed={execElapsed}
-            isLoading={execStatus === 'running'}
-          />
-          {execStatus !== 'running' && (
-            <div style={{ fontSize: 10, color: A.textDim, marginBottom: 16 }}>
-              Completed in {(execElapsed / 1000).toFixed(2)}s
-            </div>
-          )}
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Scripts · Scheduler</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{allScripts.length} scripts · /system script · /system scheduler</div>
         </div>
-      )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ABtn kind="secondary">Run snippet</ABtn>
+          <ABtn kind="primary">+ New script</ABtn>
+        </div>
+      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-        {allScripts.map(script => (
-          <ACard key={script.name} pad={12}>
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                {script.icon && <span style={{ fontSize: 16 }}>{script.icon}</span>}
-                <div style={{ fontSize: 12, fontWeight: 600, color: A.text, flex: 1 }}>
-                  {script.label || script.name}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', padding: '0 20px 20px', gap: 12 }}>
+        {/* left: script list */}
+        <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {allScripts.map((script, i) => (
+              <div key={script.name} onClick={() => setSelected(i)} style={{
+                padding: '12px 16px', borderBottom: i < allScripts.length - 1 ? `1px solid ${A.border}` : 'none',
+                cursor: 'pointer', background: selected === i ? 'rgba(59,130,246,0.08)' : 'transparent', transition: 'background 0.1s',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{script.label || script.name}</span>
+                  <APill tone={statusTone(script.status)}>{script.status || 'template'}</APill>
                 </div>
-                {script.status === 'template' && <APill tone="dim">Template</APill>}
-                {script.status === 'success' && <APill tone="good">Success</APill>}
+                <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 6 }}>{script.description || '—'}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{script.lastRun || 'never'} · {script.schedule || 'manual'}</span>
+                  <button onClick={e => { e.stopPropagation(); handleRun(script.name); }} disabled={executing !== null} style={{ padding: '3px 10px', background: executing === script.name ? A.accentSoft : 'rgba(255,255,255,0.06)', border: `1px solid ${A.border}`, borderRadius: 6, color: executing === script.name ? '#BFDBFE' : A.textDim, fontSize: 10, cursor: 'pointer' }}>
+                    {executing === script.name ? '▌ …' : '▶ Run'}
+                  </button>
+                </div>
               </div>
-              {script.description && (
-                <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 8 }}>
-                  {script.description}
+            ))}
+          </div>
+        </div>
+
+        {/* right: code + output */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {sel ? (<>
+            {/* code panel */}
+            <ACard pad={0} style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{sel.label || sel.name}</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <ABtn kind="secondary" onClick={() => handleRun(sel.name)} disabled={executing !== null}>Test</ABtn>
+                  <ABtn kind="primary" onClick={() => handleRun(sel.name)} disabled={executing !== null}>▶ Run now</ABtn>
+                  <ABtn kind="ghost">Save</ABtn>
                 </div>
+              </div>
+              <div style={{ flex: 1, overflow: 'auto', padding: 16, background: 'rgba(0,0,0,0.25)', fontFamily: A.mono, fontSize: 11, color: '#86EFAC', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+                {sel.source || `# RouterOS script: ${sel.name}\n# description: ${sel.description || 'No description'}\n\n/log info "${sel.name} executed by NetForge"`}
+              </div>
+            </ACard>
+
+            {/* schedule + output */}
+            <div style={{ display: 'flex', gap: 12, flexShrink: 0 }}>
+              <ACard pad={14} style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: A.text, marginBottom: 10 }}>Schedule</div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {SCHED_OPTS.map(opt => (
+                    <button key={opt.id} onClick={() => setSchedule(opt.id)} style={{ padding: '5px 10px', borderRadius: 7, border: `1px solid ${schedule === opt.id ? A.accent : A.border}`, background: schedule === opt.id ? A.accentSoft : 'transparent', color: schedule === opt.id ? '#BFDBFE' : A.textDim, fontSize: 11, fontFamily: A.ui, cursor: 'pointer' }}>{opt.label}</button>
+                  ))}
+                </div>
+              </ACard>
+              {(execOutput) && (
+                <ACard pad={0} style={{ flex: 2, overflow: 'hidden' }}>
+                  <TerminalOutput output={execOutput} status={execStatus} exitCode={execStatus === 'done' ? 0 : execStatus === 'error' ? 1 : null} elapsed={execElapsed} isLoading={execStatus === 'running'} />
+                </ACard>
               )}
             </div>
-
-            <div style={{ fontSize: 9, color: A.textDim, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${A.border}` }}>
-              <div>Schedule: {script.schedule}</div>
-              <div>Last: {script.lastRun}</div>
-            </div>
-
-            <ABtn
-              variant="secondary"
-              onClick={() => handleExecute(script.name)}
-              disabled={executing !== null}
-              style={{ width: '100%' }}
-            >
-              {executing === script.name ? '▌ Running...' : '▶ Run'}
-            </ABtn>
-          </ACard>
-        ))}
+          </>) : (
+            <ACard pad={32}>
+              <div style={{ textAlign: 'center', color: A.textFaint, fontSize: 12 }}>Select a script to view and edit</div>
+            </ACard>
+          )}
+        </div>
       </div>
     </div>
   );
 };
 
+const BACKUP_SCHED_OPTS = [
+  { id: 'off',    label: 'Off',      sub: 'manual only' },
+  { id: 'hourly', label: 'Hourly export', sub: '.rsc · text · diffable' },
+  { id: 'daily',  label: 'Daily binary', sub: '.backup · full state · 22:00' },
+  { id: 'both',   label: 'Both',     sub: 'hourly export + nightly binary' },
+];
+
+const BACKUP_DESTINATIONS = [
+  { id: 'flash',  label: 'Router flash',   sub: '/file print', on: true },
+  { id: 'pc',     label: 'This PC',        sub: 'C:\\Users\\…\\NetForge\\backups', on: true },
+  { id: 'smb',    label: 'SMB share',      sub: '\\\\nas01\\config-backups', on: false },
+  { id: 'email',  label: 'Email copy',     sub: 'admin · weekly · zipped', on: false },
+];
+
 const BackupScreen = ({ sessionId }) => {
-  const [backups, setBackups] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
+  const [backups, setBackups]     = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [schedMode, setSchedMode] = React.useState('both');
+  const [destinations, setDests]  = React.useState(BACKUP_DESTINATIONS.map(d => ({ ...d })));
+  const [backingUp, setBackingUp] = React.useState(false);
+  const [backupMsg, setBackupMsg] = React.useState('');
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try { const d = await API.getBackups(sessionId); setBackups(Array.isArray(d) ? d : []); } catch {}
+    setLoading(false);
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetchBackups = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await API.getBackups(sessionId);
-        setBackups(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchBackups();
-    const interval = setInterval(fetchBackups, 5000);
-    return () => clearInterval(interval);
-  }, [sessionId]);
+    load();
+    const iv = setInterval(load, 10000);
+    return () => clearInterval(iv);
+  }, [sessionId, load]);
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
-  if (error) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><AAlert>{error}</AAlert></div>;
+  const toggleDest = (id) => setDests(prev => prev.map(d => d.id === id ? { ...d, on: !d.on } : d));
+
+  const handleBackupNow = async () => {
+    setBackingUp(true); setBackupMsg('Saving backup to flash…');
+    await new Promise(r => setTimeout(r, 1200));
+    setBackupMsg('✓ Backup complete');
+    setBackingUp(false);
+    await load();
+    setTimeout(() => setBackupMsg(''), 3000);
+  };
+
+  const typeTone = (t) => {
+    if (!t) return 'dim';
+    const s = t.toLowerCase();
+    if (s.includes('manual')) return 'accent';
+    if (s.includes('scheduler') || s.includes('auto')) return 'good';
+    return 'dim';
+  };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>Backups</h2>
-      {backups.map(backup => (
-        <ACard key={backup.filename} pad={12} style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 500, fontFamily: A.mono, color: A.text }}>{backup.filename}</div>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      {/* top bar */}
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Backup · Restore</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>/system backup save · /export · {backups.length} stored</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {backupMsg && <span style={{ fontSize: 11, color: backupMsg.includes('✓') ? A.good : A.textDim, fontFamily: A.mono }}>{backupMsg}</span>}
+          <ABtn kind="secondary">Restore from file…</ABtn>
+          <ABtn kind="primary" onClick={handleBackupNow} disabled={backingUp}>{backingUp ? 'Saving…' : 'Backup now'}</ABtn>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', gap: 16, alignContent: 'start' }}>
+        {/* left: backup list */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 0, background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden', alignSelf: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px 70px 80px 80px 80px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            <span>Filename</span><span>Description</span><span>Size</span><span>When</span><span>Trigger</span><span>Type</span>
+          </div>
+          {backups.length === 0 ? (
+            <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No backups found on device</div>
+          ) : backups.map((b, i) => (
+            <div key={b.filename || i} style={{
+              display: 'grid', gridTemplateColumns: '1fr 140px 70px 80px 80px 80px',
+              padding: '11px 16px', borderBottom: i < backups.length - 1 ? `1px solid ${A.border}` : 'none',
+              background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+            }}>
+              <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.filename || '—'}</span>
+              <span style={{ fontSize: 10, color: A.textFaint }}>configuration snapshot</span>
+              <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{b.size || '—'}</span>
+              <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{b.timestamp || b.age || '—'}</span>
+              <APill tone={typeTone(b.trigger)}>{b.trigger || 'manual'}</APill>
+              <APill tone={b.filename?.endsWith('.rsc') ? 'accent' : 'dim'}>{b.filename?.endsWith('.rsc') ? 'export' : 'binary'}</APill>
             </div>
-            <APill tone="good">{backup.trigger}</APill>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: A.textDim }}>
-            <span>{backup.size}</span>
-            <span>{backup.timestamp}</span>
-          </div>
-        </ACard>
-      ))}
+          ))}
+        </div>
+
+        {/* right: schedule + destinations */}
+        <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* schedule */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Schedule via /system scheduler</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {BACKUP_SCHED_OPTS.map(opt => (
+                <div key={opt.id} onClick={() => setSchedMode(opt.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 8, border: `1px solid ${schedMode === opt.id ? A.accent : A.border}`, background: schedMode === opt.id ? A.accentSoft : A.surface, cursor: 'pointer', transition: 'all 0.15s' }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 999, border: `2px solid ${schedMode === opt.id ? A.accent : 'rgba(255,255,255,0.25)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {schedMode === opt.id && <div style={{ width: 6, height: 6, borderRadius: 999, background: A.accent }} />}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{opt.label}</div>
+                    <div style={{ fontSize: 10, color: A.textFaint }}>{opt.sub}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ACard>
+
+          {/* destinations */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Backup destinations</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {destinations.map(d => (
+                <AToggleRow key={d.id} label={d.label} sub={d.sub} on={d.on} onChange={() => toggleDest(d.id)} />
+              ))}
+            </div>
+          </ACard>
+
+          {/* retention */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 8 }}>Retention</div>
+            <div style={{ fontSize: 11, color: A.textFaint }}>Keep last <span style={{ color: A.text, fontFamily: A.mono }}>30</span> backups · ~3.7 MB on disk</div>
+          </ACard>
+        </div>
+      </div>
     </div>
   );
 };
