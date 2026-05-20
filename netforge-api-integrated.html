@@ -318,6 +318,28 @@ const API = {
       body: JSON.stringify({ name, allowedIps, interfaceName }),
     });
   },
+  async createWireguardInterface(sessionId, name, listenPort, mtu) {
+    return this.call(sessionId, '/api/vpn/wireguard/create', { method: 'POST', body: JSON.stringify({ name, listenPort, mtu }) });
+  },
+  async togglePptpServer(sessionId, enabled, opts) {
+    return this.call(sessionId, '/api/vpn/pptp/toggle', { method: 'POST', body: JSON.stringify({ enabled, ...opts }) });
+  },
+  async addPptpUser(sessionId, name, password) {
+    return this.call(sessionId, '/api/vpn/pptp/user/add', { method: 'POST', body: JSON.stringify({ name, password }) });
+  },
+  async toggleL2tpServer(sessionId, enabled, opts) {
+    return this.call(sessionId, '/api/vpn/l2tp/toggle', { method: 'POST', body: JSON.stringify({ enabled, ...opts }) });
+  },
+  async addL2tpUser(sessionId, name, password) {
+    return this.call(sessionId, '/api/vpn/l2tp/user/add', { method: 'POST', body: JSON.stringify({ name, password }) });
+  },
+  async getPppSecrets(sessionId) { return this.call(sessionId, '/api/vpn/ppp-secrets'); },
+  async removePppSecret(sessionId, name) {
+    return this.call(sessionId, '/api/vpn/ppp-secret/remove', { method: 'POST', body: JSON.stringify({ name }) });
+  },
+  async terminalExec(sessionId, command) {
+    return this.call(sessionId, '/api/terminal/exec', { method: 'POST', body: JSON.stringify({ command }) });
+  },
 
   async createBackup(sessionId) {
     return this.call(sessionId, '/api/backup/create', { method: 'POST', body: '{}' });
@@ -771,6 +793,7 @@ const NAV_ITEMS = [
   { label: 'Network Health',    page: 'NetworkHealth',sub: 'ping · traceroute · sla',icon: 'M1 8h2l2-5 2 10 2-6 2 4 2-3h2' },
   { label: 'Port Forwards',     page: 'PortForward',  sub: 'dstnat · wizard',       icon: 'M2 8h12M10 4l4 4-4 4M5 4v8' },
   { label: 'Access Control',    page: 'AccessControl',sub: 'allowed IPs · brute-force', icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4zM6 8l1.5 1.5L10 6' },
+  { label: 'Terminal',          page: 'Terminal',     sub: 'RouterOS CLI',          icon: 'M2 3h12v10H2zM5 7l2 2-2 2M9 11h3' },
   { label: 'Settings',          page: 'Settings',     sub: 'preferences · theme',   icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 6v4M8 10v.5' },
 ];
 
@@ -1390,6 +1413,7 @@ const ONE_CLICK_ACTIONS = [
   { id: 'youtube',  title: 'Block YouTube',    sub: 'DNS + IP + L7',     icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'youtube',  method: 'comprehensive' },
   { id: 'facebook', title: 'Block Facebook',   sub: 'DNS + IP + L7',     icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'facebook', method: 'comprehensive' },
   { id: 'tiktok',   title: 'Block TikTok',     sub: 'DNS + IP + L7',     icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'tiktok',   method: 'comprehensive' },
+  { id: 'snapchat', title: 'Block Snapchat', sub: 'DNS + IP + L7', icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z', action: 'block-service', svc: 'snapchat', method: 'comprehensive' },
   { id: 'torrents', title: 'Block Torrents',   sub: 'L7 + P2P + DNS',   icon: 'M2 11h12M2 5h12M9 2l-4 6 4 6',                            action: 'block-service', svc: 'torrents', method: 'comprehensive'},
   { id: 'safe',     title: 'Safe-search DNS',  sub: 'force safesearch',  icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z',action: 'safe-search'  },
   { id: 'dns-flush',title: 'Flush DNS cache',  sub: '/ip dns cache flush',icon: 'M13.5 2.5A6.5 6.5 0 1 1 8 1.5M13.5 2.5V6M13.5 2.5H10',  action: 'flush-dns'    },
@@ -2172,6 +2196,7 @@ const BLOCK_SERVICES = [
   { id: 'torrents', label: 'Torrents',      category: 'P2P',       method: 'comprehensive', domains: ['thepiratebay.org','1337x.to','rarbg.to','nyaa.si','kickasstorrents.to','torrentgalaxy.to'] },
   { id: 'gambling', label: 'Gambling',      category: 'Finance',   method: 'dns',    domains: ['bet365.com','pokerstars.com','888casino.com','draftkings.com','fanduel.com'] },
   { id: 'crypto',   label: 'Crypto Mining', category: 'Mining',    method: 'dns',    domains: ['coinhive.com','coin-hive.com','cryptoloot.pro','minero.cc','jsecoin.com'] },
+  { id: 'snapchat', label: 'Snapchat', category: 'Social', method: 'comprehensive', domains: ['snapchat.com','sc-static.net','snapfiles.com','snap.com','snapads.com'] },
 ];
 
 const APPLY_OPTS = [
@@ -3050,20 +3075,47 @@ const WirelessScreen = ({ sessionId }) => {
 const VPN_PROTOCOLS_META = [
   { id: 'wireguard', label: 'WireGuard',    sub: 'modern · fast',    proto: 'udp', port: 51820 },
   { id: 'l2tp',      label: 'L2TP / IPsec', sub: 'windows native',   proto: 'udp', port: '500/4500' },
+  { id: 'pptp',      label: 'PPTP',         sub: 'legacy · simple',  proto: 'tcp', port: 1723 },
   { id: 'ovpn',      label: 'OpenVPN',      sub: 'tls · compatible', proto: 'tcp', port: 1194 },
 ];
 
 const VpnScreen = ({ sessionId }) => {
-  const [vpn, setVpn]             = React.useState({ wireguard: { enabled: false, interfaces: [], peers: [] }, l2tp: { enabled: false, peers: 0 }, ovpn: { enabled: false, peers: 0 } });
+  const [vpn, setVpn]             = React.useState({ wireguard: { enabled: false, interfaces: [], peers: [] }, l2tp: { enabled: false, peers: 0 }, pptp: { enabled: false, peers: 0 }, ovpn: { enabled: false, peers: 0 } });
   const [loading, setLoading]     = React.useState(true);
   const [activeProto, setActiveProto] = React.useState('wireguard');
   const [showPanel, setShowPanel] = React.useState(false);
   const [peerName, setPeerName]   = React.useState('');
   const [peerIp, setPeerIp]       = React.useState('');
   const [addMsg, setAddMsg]       = React.useState('');
+  // WireGuard create interface
+  const [showCreateWg, setShowCreateWg] = React.useState(false);
+  const [wgName, setWgName]   = React.useState('wireguard1');
+  const [wgPort, setWgPort]   = React.useState('51820');
+  // PPTP/L2TP state
+  const [pptpEnabled, setPptpEnabled] = React.useState(false);
+  const [l2tpEnabled, setL2tpEnabled] = React.useState(false);
+  const [pptpLocal, setPptpLocal]   = React.useState('10.0.0.1');
+  const [pptpStart, setPptpStart]   = React.useState('10.0.0.10');
+  const [pptpEnd, setPptpEnd]       = React.useState('10.0.0.20');
+  const [l2tpLocal, setL2tpLocal]   = React.useState('10.1.0.1');
+  const [l2tpStart, setL2tpStart]   = React.useState('10.1.0.10');
+  const [l2tpEnd, setL2tpEnd]       = React.useState('10.1.0.20');
+  const [l2tpSecret, setL2tpSecret] = React.useState('vpnsecret');
+  const [pppUser, setPppUser]   = React.useState('');
+  const [pppPass, setPppPass]   = React.useState('');
+  const [pppSecrets, setPppSecrets] = React.useState([]);
+  const [serverMsg, setServerMsg]   = React.useState('');
 
   const load = React.useCallback(async () => {
-    try { const d = await API.getVpn(sessionId); setVpn(d && d.wireguard ? d : vpn); } catch {}
+    try {
+      const d = await API.getVpn(sessionId);
+      if (d) {
+        setVpn(prev => ({ ...prev, ...d }));
+        setPptpEnabled(d.pptp?.enabled || false);
+        setL2tpEnabled(d.l2tp?.enabled || false);
+      }
+    } catch {}
+    try { const s = await API.getPppSecrets(sessionId); setPppSecrets(Array.isArray(s) ? s : []); } catch {}
     setLoading(false);
   }, [sessionId]);
 
@@ -3093,10 +3145,60 @@ const VpnScreen = ({ sessionId }) => {
     } catch (e) { setAddMsg('✗ ' + e.message); }
   };
 
+  const handleCreateWg = async () => {
+    setAddMsg('Creating WireGuard interface…');
+    try {
+      const r = await API.createWireguardInterface(sessionId, wgName, parseInt(wgPort) || 51820, 1420);
+      setAddMsg('✓ ' + r.message + (r.publicKey ? ` | pubkey: ${r.publicKey.substring(0, 16)}…` : ''));
+      setShowCreateWg(false);
+      await load();
+    } catch (e) { setAddMsg('✗ ' + e.message); }
+  };
+
+  const handlePptpToggle = async () => {
+    setServerMsg('Applying…');
+    try {
+      const r = await API.togglePptpServer(sessionId, !pptpEnabled, { localAddress: pptpLocal, remoteStart: pptpStart, remoteEnd: pptpEnd });
+      setPptpEnabled(!pptpEnabled);
+      setServerMsg('✓ ' + r.message);
+      await load();
+    } catch (e) { setServerMsg('✗ ' + e.message); }
+    setTimeout(() => setServerMsg(''), 3000);
+  };
+
+  const handleL2tpToggle = async () => {
+    setServerMsg('Applying…');
+    try {
+      const r = await API.toggleL2tpServer(sessionId, !l2tpEnabled, { localAddress: l2tpLocal, remoteStart: l2tpStart, remoteEnd: l2tpEnd, ipsecSecret: l2tpSecret });
+      setL2tpEnabled(!l2tpEnabled);
+      setServerMsg('✓ ' + r.message);
+      await load();
+    } catch (e) { setServerMsg('✗ ' + e.message); }
+    setTimeout(() => setServerMsg(''), 3000);
+  };
+
+  const handleAddPppUser = async () => {
+    if (!pppUser.trim() || !pppPass.trim()) { setServerMsg('Username and password required'); return; }
+    setServerMsg('Adding user…');
+    try {
+      const fn = activeProto === 'pptp' ? API.addPptpUser : API.addL2tpUser;
+      const r = await fn.call(API, sessionId, pppUser.trim(), pppPass);
+      setServerMsg('✓ ' + r.message);
+      setPppUser(''); setPppPass('');
+      await load();
+    } catch (e) { setServerMsg('✗ ' + e.message); }
+    setTimeout(() => setServerMsg(''), 3000);
+  };
+
+  const handleRemovePppSecret = async (name) => {
+    try { await API.removePppSecret(sessionId, name); await load(); } catch (e) { alert(e.message); }
+  };
+
   const protoStats = {
     wireguard: { enabled: vpn.wireguard?.enabled, peers: vpn.wireguard?.peers?.length || 0 },
-    l2tp:      { enabled: vpn.l2tp?.enabled, peers: vpn.l2tp?.peers || 0 },
-    ovpn:      { enabled: vpn.ovpn?.enabled, peers: vpn.ovpn?.peers || 0 },
+    l2tp:      { enabled: vpn.l2tp?.enabled,      peers: vpn.l2tp?.peers || 0 },
+    pptp:      { enabled: vpn.pptp?.enabled,       peers: vpn.pptp?.peers || 0 },
+    ovpn:      { enabled: vpn.ovpn?.enabled,       peers: vpn.ovpn?.peers || 0 },
   };
 
   const activePeers = vpn.wireguard?.peers || [];
@@ -3105,101 +3207,234 @@ const VpnScreen = ({ sessionId }) => {
 
   return (
     <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-      {/* top bar */}
       <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>VPN</div>
-          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>WireGuard · L2TP/IPsec · OpenVPN</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>WireGuard · L2TP/IPsec · PPTP · OpenVPN</div>
         </div>
-        {activeProto === 'wireguard' && <ABtn kind="primary" onClick={() => { setShowPanel(true); setAddMsg(''); }}>+ New peer</ABtn>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {activeProto === 'wireguard' && vpn.wireguard?.interfaces?.length === 0 && (
+            <ABtn kind="secondary" onClick={() => { setShowCreateWg(!showCreateWg); setAddMsg(''); }}>+ Create WG interface</ABtn>
+          )}
+          {activeProto === 'wireguard' && vpn.wireguard?.interfaces?.length > 0 && (
+            <ABtn kind="primary" onClick={() => { setShowPanel(!showPanel); setAddMsg(''); }}>+ New peer</ABtn>
+          )}
+        </div>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* protocol summary cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           {VPN_PROTOCOLS_META.map(proto => {
             const st = protoStats[proto.id] || {};
             return (
-              <ACard key={proto.id} pad={16} style={{ cursor: 'pointer', border: `1px solid ${activeProto === proto.id ? A.accent : A.border}`, background: activeProto === proto.id ? 'rgba(59,130,246,0.06)' : A.surface }} onClick={() => setActiveProto(proto.id)}>
+              <ACard key={proto.id} pad={16} style={{ cursor: 'pointer', border: `1px solid ${activeProto === proto.id ? A.accent : A.border}`, background: activeProto === proto.id ? 'rgba(59,130,246,0.06)' : A.surface }} onClick={() => { setActiveProto(proto.id); setAddMsg(''); setServerMsg(''); }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: A.text }}>{proto.label}</span>
                   <APill tone={st.enabled ? 'good' : 'dim'}>{st.enabled ? 'active' : 'off'}</APill>
                 </div>
                 <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 10 }}>{proto.sub} · {proto.proto} {proto.port}</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: A.text, fontFamily: A.mono }}>{st.peers}</div>
-                <div style={{ fontSize: 10, color: A.textFaint }}>peers configured</div>
+                <div style={{ fontSize: 10, color: A.textFaint }}>peers connected</div>
               </ACard>
             );
           })}
         </div>
 
-        {/* WireGuard interface info */}
-        {activeProto === 'wireguard' && vpn.wireguard?.interfaces?.length > 0 && (
-          <ACard pad={14}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: A.text, marginBottom: 8 }}>WireGuard interfaces</div>
-            {vpn.wireguard.interfaces.map(wg => (
-              <div key={wg.name} style={{ display: 'flex', gap: 16, fontSize: 11, fontFamily: A.mono, color: A.textDim, marginBottom: 4 }}>
-                <span style={{ color: A.text }}>{wg.name}</span>
-                <span>port: {wg.port}</span>
-                <span style={{ color: A.textFaint, overflow: 'hidden', textOverflow: 'ellipsis' }}>pubkey: {wg.publicKey?.substring(0, 20) || '—'}…</span>
+        {addMsg && <div style={{ fontSize: 11, padding: '8px 12px', borderRadius: 8, background: addMsg.includes('✓') ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
+
+        {/* WireGuard */}
+        {activeProto === 'wireguard' && (
+          <>
+            {/* Create interface panel */}
+            {showCreateWg && (
+              <ACard pad={16}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Create WireGuard Interface</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <ALabeledField label="Interface name" sub="e.g. wireguard1" value={wgName} onChange={e => setWgName(e.target.value)} mono style={{ flex: '1 1 140px' }} />
+                  <ALabeledField label="Listen port" sub="UDP port" value={wgPort} onChange={e => setWgPort(e.target.value)} mono style={{ flex: '0 0 110px' }} />
+                  <ABtn kind="primary" onClick={handleCreateWg}>Create</ABtn>
+                </div>
+              </ACard>
+            )}
+
+            {/* WireGuard interface info */}
+            {vpn.wireguard?.interfaces?.length > 0 && (
+              <ACard pad={14}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: A.text, marginBottom: 8 }}>WireGuard interfaces</div>
+                {vpn.wireguard.interfaces.map(wg => (
+                  <div key={wg.name} style={{ display: 'flex', gap: 16, fontSize: 11, fontFamily: A.mono, color: A.textDim, marginBottom: 4 }}>
+                    <span style={{ color: A.text }}>{wg.name}</span>
+                    <span>port: {wg.port}</span>
+                    <span style={{ color: A.textFaint, overflow: 'hidden', textOverflow: 'ellipsis' }}>pubkey: {wg.publicKey?.substring(0, 20) || '—'}…</span>
+                  </div>
+                ))}
+              </ACard>
+            )}
+
+            {/* peer list + add panel */}
+            <div style={{ display: 'flex', gap: 12, flex: 1 }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
+                <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>WireGuard peers</span>
+                  <APill tone="dim" mono>udp · 51820</APill>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px 150px 80px 80px 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  <span>Peer name</span><span>Allowed IPs</span><span>Last handshake</span><span>RX</span><span>TX</span><span>Status</span>
+                </div>
+                <div style={{ flex: 1, overflow: 'auto' }}>
+                  {activePeers.length === 0 ? (
+                    <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No WireGuard peers configured</div>
+                  ) : activePeers.map((p, i) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 130px 150px 80px 80px 80px', padding: '10px 16px', borderBottom: i < activePeers.length - 1 ? `1px solid ${A.border}` : 'none', background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{p.name || '—'}</span>
+                      <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textDim, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.allowedAddress || '—'}</span>
+                      <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{p.lastHandshake || 'never'}</span>
+                      <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(p.rx)}</span>
+                      <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(p.tx)}</span>
+                      <APill tone={p.enabled !== false ? 'good' : 'dim'}>{p.enabled !== false ? 'active' : 'off'}</APill>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
-          </ACard>
+
+              {showPanel && (
+                <div style={{ width: 272, flexShrink: 0 }}>
+                  <ACard pad={16}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>Add WireGuard peer</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      <ALabeledField label="Peer name / comment" sub="any label" value={peerName} onChange={e => setPeerName(e.target.value)} />
+                      <ALabeledField label="Allowed IPs" sub="tunnel address (e.g. 10.0.0.2/32)" value={peerIp} onChange={e => setPeerIp(e.target.value)} mono />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <ABtn kind="secondary" onClick={() => setShowPanel(false)}>Cancel</ABtn>
+                        <ABtn kind="primary" onClick={handleCreate} full>Create</ABtn>
+                      </div>
+                    </div>
+                  </ACard>
+                </div>
+              )}
+            </div>
+          </>
         )}
 
-        {/* peer list + add panel */}
-        <div style={{ display: 'flex', gap: 12, flex: 1 }}>
-          {/* peer table */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
-            <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{VPN_PROTOCOLS_META.find(p => p.id === activeProto)?.label} peers</span>
-              <APill tone="dim" mono>{VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.proto} · {VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.port}</APill>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px 150px 80px 80px 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              <span>Peer name</span><span>Allowed IPs</span><span>Last handshake</span><span>RX</span><span>TX</span><span>Status</span>
-            </div>
-            <div style={{ flex: 1, overflow: 'auto' }}>
-              {activePeers.length === 0 ? (
-                <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>
-                  {activeProto === 'wireguard' ? 'No WireGuard peers configured' : `${VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.label} peer list not available via SSH`}
-                </div>
-              ) : activePeers.map((p, i) => (
-                <div key={i} style={{
-                  display: 'grid', gridTemplateColumns: '1fr 130px 150px 80px 80px 80px',
-                  padding: '10px 16px', borderBottom: i < activePeers.length - 1 ? `1px solid ${A.border}` : 'none',
-                  background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
-                }}>
-                  <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{p.name || '—'}</span>
-                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textDim, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.allowedAddress || '—'}</span>
-                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{p.lastHandshake || 'never'}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(p.rx)}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(p.tx)}</span>
-                  <APill tone={p.enabled !== false ? 'good' : 'dim'}>{p.enabled !== false ? 'active' : 'off'}</APill>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* add peer panel */}
-          {showPanel && (
-            <div style={{ width: 272, flexShrink: 0 }}>
+        {/* PPTP */}
+        {activeProto === 'pptp' && (
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <ACard pad={16}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>Add WireGuard peer</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <ALabeledField label="Peer name / comment" sub="any label" value={peerName} onChange={e => setPeerName(e.target.value)} />
-                  <ALabeledField label="Allowed IPs" sub="tunnel address (e.g. 10.0.0.2/32)" value={peerIp} onChange={e => setPeerIp(e.target.value)} mono />
-
-                  {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
-
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <ABtn kind="secondary" onClick={() => setShowPanel(false)}>Cancel</ABtn>
-                    <ABtn kind="primary" onClick={handleCreate} full>Create</ABtn>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: A.text }}>PPTP Server</div>
+                    <div style={{ fontSize: 11, color: A.textFaint }}>Legacy VPN — not recommended for production</div>
                   </div>
+                  <ABtn kind={pptpEnabled ? 'danger' : 'primary'} onClick={handlePptpToggle}>{pptpEnabled ? 'Disable' : 'Enable'}</ABtn>
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <ALabeledField label="Local address" value={pptpLocal} onChange={e => setPptpLocal(e.target.value)} mono style={{ flex: '1 1 120px' }} />
+                  <ALabeledField label="Remote pool start" value={pptpStart} onChange={e => setPptpStart(e.target.value)} mono style={{ flex: '1 1 120px' }} />
+                  <ALabeledField label="Remote pool end" value={pptpEnd} onChange={e => setPptpEnd(e.target.value)} mono style={{ flex: '1 1 120px' }} />
+                </div>
+                {serverMsg && <div style={{ fontSize: 11, marginTop: 10, color: serverMsg.includes('✓') ? A.good : A.bad }}>{serverMsg}</div>}
+              </ACard>
+
+              <ACard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}` }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>PPTP users (PPP secrets)</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 1fr 60px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  <span>Username</span><span>Service</span><span>Profile</span><span></span>
+                </div>
+                <div style={{ maxHeight: 200, overflow: 'auto' }}>
+                  {pppSecrets.filter(s => !s.service || s.service === 'pptp' || s.service === 'any').length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No PPTP users</div>
+                  ) : pppSecrets.filter(s => !s.service || s.service === 'pptp' || s.service === 'any').map((s, i) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 1fr 60px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, alignItems: 'center', fontSize: 12 }}>
+                      <span style={{ fontFamily: A.mono }}>{s.name}</span>
+                      <APill tone="dim">{s.service || 'any'}</APill>
+                      <span style={{ fontSize: 11, color: A.textDim }}>{s.profile || '—'}</span>
+                      <button onClick={() => handleRemovePppSecret(s.name)} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', fontSize: 10 }}>Del</button>
+                    </div>
+                  ))}
                 </div>
               </ACard>
             </div>
-          )}
-        </div>
+
+            <div style={{ width: 240, flexShrink: 0 }}>
+              <ACard pad={16}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 12 }}>Add PPTP user</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <ALabeledField label="Username" value={pppUser} onChange={e => setPppUser(e.target.value)} mono />
+                  <ALabeledField label="Password" type="password" value={pppPass} onChange={e => setPppPass(e.target.value)} />
+                  <ABtn kind="primary" onClick={handleAddPppUser} full>Add user</ABtn>
+                </div>
+              </ACard>
+            </div>
+          </div>
+        )}
+
+        {/* L2TP */}
+        {activeProto === 'l2tp' && (
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <ACard pad={16}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: A.text }}>L2TP/IPsec Server</div>
+                    <div style={{ fontSize: 11, color: A.textFaint }}>Native Windows/iOS/macOS client support</div>
+                  </div>
+                  <ABtn kind={l2tpEnabled ? 'danger' : 'primary'} onClick={handleL2tpToggle}>{l2tpEnabled ? 'Disable' : 'Enable'}</ABtn>
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <ALabeledField label="Local address" value={l2tpLocal} onChange={e => setL2tpLocal(e.target.value)} mono style={{ flex: '1 1 120px' }} />
+                  <ALabeledField label="Remote pool start" value={l2tpStart} onChange={e => setL2tpStart(e.target.value)} mono style={{ flex: '1 1 120px' }} />
+                  <ALabeledField label="Remote pool end" value={l2tpEnd} onChange={e => setL2tpEnd(e.target.value)} mono style={{ flex: '1 1 120px' }} />
+                  <ALabeledField label="IPsec shared secret" value={l2tpSecret} onChange={e => setL2tpSecret(e.target.value)} mono style={{ flex: '2 1 200px' }} />
+                </div>
+                {serverMsg && <div style={{ fontSize: 11, marginTop: 10, color: serverMsg.includes('✓') ? A.good : A.bad }}>{serverMsg}</div>}
+              </ACard>
+
+              <ACard pad={0} style={{ overflow: 'hidden' }}>
+                <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}` }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>L2TP users (PPP secrets)</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 1fr 60px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  <span>Username</span><span>Service</span><span>Profile</span><span></span>
+                </div>
+                <div style={{ maxHeight: 200, overflow: 'auto' }}>
+                  {pppSecrets.filter(s => !s.service || s.service === 'l2tp' || s.service === 'any').length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No L2TP users</div>
+                  ) : pppSecrets.filter(s => !s.service || s.service === 'l2tp' || s.service === 'any').map((s, i) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 1fr 60px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, alignItems: 'center', fontSize: 12 }}>
+                      <span style={{ fontFamily: A.mono }}>{s.name}</span>
+                      <APill tone="dim">{s.service || 'any'}</APill>
+                      <span style={{ fontSize: 11, color: A.textDim }}>{s.profile || '—'}</span>
+                      <button onClick={() => handleRemovePppSecret(s.name)} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', fontSize: 10 }}>Del</button>
+                    </div>
+                  ))}
+                </div>
+              </ACard>
+            </div>
+
+            <div style={{ width: 240, flexShrink: 0 }}>
+              <ACard pad={16}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 12 }}>Add L2TP user</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <ALabeledField label="Username" value={pppUser} onChange={e => setPppUser(e.target.value)} mono />
+                  <ALabeledField label="Password" type="password" value={pppPass} onChange={e => setPppPass(e.target.value)} />
+                  <ABtn kind="primary" onClick={handleAddPppUser} full>Add user</ABtn>
+                </div>
+              </ACard>
+            </div>
+          </div>
+        )}
+
+        {/* OpenVPN */}
+        {activeProto === 'ovpn' && (
+          <ACard pad={24} style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 8 }}>OpenVPN</div>
+            <div style={{ fontSize: 12, color: A.textFaint }}>OpenVPN configuration requires certificate management. Export config from RouterOS via /export and apply via Winbox or terminal.</div>
+          </ACard>
+        )}
       </div>
     </div>
   );
@@ -4525,6 +4760,109 @@ add chain=input src-address-list=blocked_ips action=drop comment="Drop Traffic f
   );
 };
 
+// ========== TERMINAL SCREEN ==========
+
+const TerminalScreen = ({ sessionId }) => {
+  const [history, setHistory] = React.useState([
+    { type: 'system', text: 'NetForge Terminal — RouterOS command passthrough' },
+    { type: 'system', text: 'Type a RouterOS command and press Enter. Example: /system resource print' },
+  ]);
+  const [input, setInput] = React.useState('');
+  const [busy, setBusy]   = React.useState(false);
+  const [cmdHist, setCmdHist] = React.useState([]);
+  const [histIdx, setHistIdx] = React.useState(-1);
+  const bottomRef = React.useRef(null);
+  const inputRef  = React.useRef(null);
+
+  React.useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [history]);
+
+  const run = async (cmd) => {
+    const trimmed = cmd.trim();
+    if (!trimmed) return;
+    setCmdHist(p => [trimmed, ...p.slice(0, 49)]);
+    setHistIdx(-1);
+    setHistory(p => [...p, { type: 'input', text: trimmed }]);
+    setBusy(true);
+    try {
+      const r = await API.terminalExec(sessionId, trimmed);
+      setHistory(p => [...p, { type: 'output', text: r.output || '(no output)' }]);
+    } catch (e) {
+      setHistory(p => [...p, { type: 'error', text: e.message }]);
+    }
+    setBusy(false);
+    setInput('');
+    inputRef.current?.focus();
+  };
+
+  const handleKey = (e) => {
+    if (e.key === 'Enter') { run(input); return; }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const idx = Math.min(histIdx + 1, cmdHist.length - 1);
+      setHistIdx(idx);
+      if (cmdHist[idx] !== undefined) setInput(cmdHist[idx]);
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const idx = Math.max(histIdx - 1, -1);
+      setHistIdx(idx);
+      setInput(idx === -1 ? '' : (cmdHist[idx] || ''));
+    }
+    if (e.key === 'l' && e.ctrlKey) { e.preventDefault(); setHistory([]); }
+  };
+
+  const colorFor = (type) => {
+    if (type === 'input')  return '#60A5FA';
+    if (type === 'error')  return '#FCA5A5';
+    if (type === 'system') return '#6B7280';
+    return '#D1FAE5';
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Terminal</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>RouterOS CLI · Ctrl+L to clear · ↑↓ history</div>
+        </div>
+        <ABtn kind="secondary" onClick={() => setHistory([])}>Clear</ABtn>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', margin: '0 20px 20px', background: '#0A0F1A', border: `1px solid ${A.border}`, borderRadius: 12, fontFamily: A.mono }} onClick={() => inputRef.current?.focus()}>
+        {/* output area */}
+        <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {history.map((h, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              {h.type === 'input' && <span style={{ color: '#6B7280', fontSize: 11, flexShrink: 0, paddingTop: 1 }}>&gt;</span>}
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 11.5, lineHeight: 1.55, color: colorFor(h.type), flex: 1 }}>{h.text}</pre>
+            </div>
+          ))}
+          {busy && <div style={{ fontSize: 11, color: '#6B7280' }}>running…</div>}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* input row */}
+        <div style={{ borderTop: `1px solid rgba(255,255,255,0.07)`, padding: '10px 16px', display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+          <span style={{ color: '#4ADE80', fontSize: 12, flexShrink: 0 }}>[admin@MikroTik] &gt;</span>
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            disabled={busy}
+            placeholder="type command…"
+            autoFocus
+            style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#F0F9FF', fontSize: 12, fontFamily: A.mono, caretColor: '#4ADE80' }}
+          />
+          <button onClick={() => run(input)} disabled={busy || !input.trim()} style={{ background: 'rgba(59,130,246,0.2)', color: '#93C5FD', border: '1px solid rgba(59,130,246,0.3)', borderRadius: 6, padding: '4px 12px', fontSize: 11, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy || !input.trim() ? 0.5 : 1 }}>Run</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ========== USERS SCREEN ==========
 
 const UsersScreen = ({ sessionId }) => {
@@ -5461,6 +5799,7 @@ const App = () => {
       case 'NetworkHealth': return <NetworkHealthScreen sessionId={sessionId} />;
       case 'PortForward':   return <PortForwardScreen sessionId={sessionId} />;
       case 'AccessControl': return <AccessControlScreen sessionId={sessionId} />;
+      case 'Terminal':      return <TerminalScreen sessionId={sessionId} />;
       case 'Settings':      return <SettingsScreen sessionId={sessionId} router={router} />;
       default:            return null;
     }

@@ -2440,6 +2440,135 @@ app.post('/api/vpn/peer/add', async (req, res) => {
   }
 });
 
+// ========== VPN — CREATE WIREGUARD INTERFACE ==========
+
+app.post('/api/vpn/wireguard/create', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name = 'wireguard1', listenPort = 51820, mtu = 1420 } = req.body;
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/interface wireguard add name="${name}" listen-port=${listenPort} mtu=${mtu}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to create interface' });
+    // Get the public key
+    const ifaces = parseRouterOSOutput(await conn.execute('/interface wireguard print'));
+    const iface = ifaces.find(i => i.name === name);
+    res.json({ success: true, message: `WireGuard interface "${name}" created`, publicKey: iface?.public_key || '' });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== VPN — PPTP SERVER ==========
+
+app.post('/api/vpn/pptp/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { enabled, localAddress = '10.0.0.1', remoteStart = '10.0.0.10', remoteEnd = '10.0.0.20' } = req.body;
+    const conn = getConnection(sessionId);
+    if (enabled) {
+      // Create IP pool if needed
+      const poolOut = await conn.execute(`/ip pool add name="pptp-pool" ranges=${remoteStart}-${remoteEnd}`);
+      // Create PPP profile
+      const profOut = await conn.execute(`/ppp profile add name="pptp-profile" local-address=${localAddress} remote-address=pptp-pool use-encryption=yes`);
+      // Enable PPTP server
+      await conn.execute('/interface pptp-server server set enabled=yes default-profile=pptp-profile');
+      res.json({ success: true, message: 'PPTP server enabled' });
+    } else {
+      await conn.execute('/interface pptp-server server set enabled=no');
+      res.json({ success: true, message: 'PPTP server disabled' });
+    }
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vpn/pptp/user/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, password, profile = 'pptp-profile' } = req.body;
+    if (!name || !password) return res.status(400).json({ error: 'name and password required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ppp secret add name="${name}" password="${password}" service=pptp profile=${profile}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to add user' });
+    res.json({ success: true, message: `PPTP user "${name}" added` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== VPN — L2TP SERVER ==========
+
+app.post('/api/vpn/l2tp/toggle', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { enabled, ipsecSecret = 'vpnsecret', localAddress = '10.1.0.1', remoteStart = '10.1.0.10', remoteEnd = '10.1.0.20' } = req.body;
+    const conn = getConnection(sessionId);
+    if (enabled) {
+      const poolOut = await conn.execute(`/ip pool add name="l2tp-pool" ranges=${remoteStart}-${remoteEnd}`);
+      const profOut = await conn.execute(`/ppp profile add name="l2tp-profile" local-address=${localAddress} remote-address=l2tp-pool use-encryption=yes`);
+      await conn.execute(`/interface l2tp-server server set enabled=yes default-profile=l2tp-profile use-ipsec=yes ipsec-secret="${ipsecSecret}"`);
+      res.json({ success: true, message: 'L2TP/IPsec server enabled' });
+    } else {
+      await conn.execute('/interface l2tp-server server set enabled=no');
+      res.json({ success: true, message: 'L2TP/IPsec server disabled' });
+    }
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vpn/l2tp/user/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, password, profile = 'l2tp-profile' } = req.body;
+    if (!name || !password) return res.status(400).json({ error: 'name and password required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ppp secret add name="${name}" password="${password}" service=l2tp profile=${profile}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to add user' });
+    res.json({ success: true, message: `L2TP user "${name}" added` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/vpn/ppp-secrets', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const rows = parseRouterOSOutput(await conn.execute('/ppp secret print'));
+    res.json(rows.map(r => ({ name: r.name, service: r.service, profile: r.profile, comment: r.comment })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vpn/ppp-secret/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const conn = getConnection(sessionId);
+    await conn.execute(`/ppp secret remove [find name="${name}"]`);
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== BACKUP — CREATE ==========
 
 app.post('/api/backup/create', async (req, res) => {
@@ -3137,6 +3266,26 @@ app.post('/api/access/unblock-ip', async (req, res) => {
     const out = await conn.execute(`/ip firewall address-list remove numbers=${id}`);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: 'IP unblocked' });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== TERMINAL — EXECUTE COMMAND ==========
+
+app.post('/api/terminal/exec', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { command } = req.body;
+    if (!command || typeof command !== 'string') return res.status(400).json({ error: 'command required' });
+    // Reject obviously destructive commands
+    const danger = /^\s*(rm|format|dd |mkfs|:foreach.*remove|\/system\s+reset|\/system\s+shutdown|\/system\s+reboot)/i;
+    if (danger.test(command)) return res.status(403).json({ error: 'Blocked: use the reboot/reset buttons in the UI' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(command);
+    res.json({ output: out || '(no output)' });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
