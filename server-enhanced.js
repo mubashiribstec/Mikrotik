@@ -1954,14 +1954,14 @@ app.post('/api/scripts/remove', async (req, res) => {
   }
 });
 
-// ========== USERS — /ip user management ==========
+// ========== USERS — /user management (RouterOS top-level, NOT /ip user) ==========
 
 app.get('/api/users', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute('/ip user print');
+    const out = await conn.execute('/user print');
     const users = parseRouterOSOutput(out);
     res.json(users.map(u => ({
       id: u.numbers || '',
@@ -1986,9 +1986,8 @@ app.post('/api/users/add', async (req, res) => {
     if (!name || !password) return res.status(400).json({ error: 'name and password required' });
     if (!/^[a-zA-Z0-9._-]{1,32}$/.test(name)) return res.status(400).json({ error: 'Invalid username' });
     const conn = getConnection(sessionId);
-    // Sanitize comment to prevent command injection
     const safeComment = (comment || '').replace(/["\\]/g, '');
-    let cmd = `/ip user add name="${name}" password="${password}" group="${group}"`;
+    let cmd = `/user add name="${name}" password="${password}" group="${group}"`;
     if (safeComment) cmd += ` comment="${safeComment}"`;
     const out = await conn.execute(cmd);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to add user' });
@@ -2006,8 +2005,8 @@ app.post('/api/users/remove', async (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'Username required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/ip user remove [find name="${name}"]`);
-    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    const out = await conn.execute(`/user remove [find name="${name}"]`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `User "${name}" removed` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
@@ -2022,8 +2021,8 @@ app.post('/api/users/set-password', async (req, res) => {
     const { name, password } = req.body;
     if (!name || !password) return res.status(400).json({ error: 'name and password required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/ip user set [find name="${name}"] password="${password}"`);
-    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    const out = await conn.execute(`/user set [find name="${name}"] password="${password}"`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `Password updated for ${name}` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });

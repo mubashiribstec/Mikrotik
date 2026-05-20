@@ -621,8 +621,8 @@ const APill = ({ children, tone = 'dim', mono = false }) => {
   );
 };
 
-const ACard = ({ children, pad = 12, style }) => (
-  <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, padding: pad, backdropFilter: 'blur(8px)', ...style }}>
+const ACard = ({ children, pad = 12, style, onClick }) => (
+  <div onClick={onClick} style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, padding: pad, backdropFilter: 'blur(8px)', ...style }}>
     {children}
   </div>
 );
