@@ -16,6 +16,7 @@
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
     @keyframes shimmer { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   </style>
   <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
@@ -426,6 +427,112 @@ const API = {
     });
   },
 
+  // DNS static
+  async getDnsStatic(sessionId) {
+    return this.call(sessionId, '/api/dns/static');
+  },
+  async addDnsStatic(sessionId, name, address, type, matchSubdomain, comment) {
+    return this.call(sessionId, '/api/dns/static/add', {
+      method: 'POST',
+      body: JSON.stringify({ name, address, type, matchSubdomain, comment }),
+    });
+  },
+  async removeDnsStatic(sessionId, id) {
+    return this.call(sessionId, '/api/dns/static/remove', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  },
+
+  // Interfaces
+  async renameInterface(sessionId, name, newName) {
+    return this.call(sessionId, '/api/interfaces/rename', {
+      method: 'POST',
+      body: JSON.stringify({ name, newName }),
+    });
+  },
+  async resetInterfaceMac(sessionId, name) {
+    return this.call(sessionId, '/api/interfaces/reset-mac', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  // Scripts
+  async addScript(sessionId, name, source, policy) {
+    return this.call(sessionId, '/api/scripts/add', {
+      method: 'POST',
+      body: JSON.stringify({ name, source, policy }),
+    });
+  },
+  async removeScript(sessionId, name) {
+    return this.call(sessionId, '/api/scripts/remove', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  // Users
+  async getUsers(sessionId) {
+    return this.call(sessionId, '/api/users');
+  },
+  async addUser(sessionId, name, password, group, comment) {
+    return this.call(sessionId, '/api/users/add', {
+      method: 'POST',
+      body: JSON.stringify({ name, password, group, comment }),
+    });
+  },
+  async removeUser(sessionId, name) {
+    return this.call(sessionId, '/api/users/remove', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  },
+  async setUserPassword(sessionId, name, password) {
+    return this.call(sessionId, '/api/users/set-password', {
+      method: 'POST',
+      body: JSON.stringify({ name, password }),
+    });
+  },
+
+  // Scheduler
+  async getScheduler(sessionId) { return this.call(sessionId, '/api/scheduler'); },
+  async addScheduler(sessionId, name, onEvent, startTime, interval, comment) {
+    return this.call(sessionId, '/api/scheduler/add', { method: 'POST', body: JSON.stringify({ name, onEvent, startTime, interval, comment }) });
+  },
+  async removeScheduler(sessionId, name) {
+    return this.call(sessionId, '/api/scheduler/remove', { method: 'POST', body: JSON.stringify({ name }) });
+  },
+  async toggleScheduler(sessionId, name, disabled) {
+    return this.call(sessionId, '/api/scheduler/toggle', { method: 'POST', body: JSON.stringify({ name, disabled }) });
+  },
+  async deployRecipe(sessionId, recipeId) {
+    return this.call(sessionId, '/api/automation/deploy-recipe', { method: 'POST', body: JSON.stringify({ recipeId }) });
+  },
+  async removeRecipe(sessionId, recipeId) {
+    return this.call(sessionId, '/api/automation/remove-recipe', { method: 'POST', body: JSON.stringify({ recipeId }) });
+  },
+
+  // Network Health
+  async pingHost(sessionId, host, count) {
+    return this.call(sessionId, '/api/network/ping', { method: 'POST', body: JSON.stringify({ host, count }) });
+  },
+  async traceroute(sessionId, host) {
+    return this.call(sessionId, '/api/network/traceroute', { method: 'POST', body: JSON.stringify({ host }) });
+  },
+  async getNetwatch(sessionId) { return this.call(sessionId, '/api/netwatch'); },
+  async addNetwatch(sessionId, host, interval, downScript, comment) {
+    return this.call(sessionId, '/api/netwatch/add', { method: 'POST', body: JSON.stringify({ host, interval, downScript, comment }) });
+  },
+  async removeNetwatch(sessionId, id) {
+    return this.call(sessionId, '/api/netwatch/remove', { method: 'POST', body: JSON.stringify({ id }) });
+  },
+
+  // Port forward
+  async portForward(sessionId, externalPort, internalIp, internalPort, protocol, comment, wanInterface) {
+    return this.call(sessionId, '/api/nat/port-forward', { method: 'POST', body: JSON.stringify({ externalPort, internalIp, internalPort, protocol, comment, wanInterface }) });
+  },
+
   // Hotspot
   async getHotspot(sessionId) {
     return this.call(sessionId, '/api/hotspot');
@@ -641,6 +748,11 @@ const NAV_ITEMS = [
   { label: 'Logs',              page: 'Logs',         sub: 'system · firewall',     icon: 'M3 4h10M3 8h10M3 12h6' },
   { label: 'Scripts',           page: 'Scripts',      sub: 'scheduler',             icon: 'M2 2h12v12H2zM5 6h6M5 9h4' },
   { label: 'Backup',            page: 'Backup',       sub: 'export · restore',      icon: 'M13 8v5H3V8M8 1v8M5 6l3 3 3-3' },
+  { label: 'Users',             page: 'Users',        sub: '/ip user · access',     icon: 'M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 14s1-6 6-6 6 6' },
+  { label: 'Automation',        page: 'Automation',   sub: 'scheduler · recipes',   icon: 'M4 2h8v2H4zM2 6h12v2H2zM3 10h10l-1 4H4z' },
+  { label: 'Network Health',    page: 'NetworkHealth',sub: 'ping · traceroute · sla',icon: 'M1 8h2l2-5 2 10 2-6 2 4 2-3h2' },
+  { label: 'Port Forwards',     page: 'PortForward',  sub: 'dstnat · wizard',       icon: 'M2 8h12M10 4l4 4-4 4M5 4v8' },
+  { label: 'Settings',          page: 'Settings',     sub: 'preferences · theme',   icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 6v4M8 10v.5' },
 ];
 
 const ASidebar = ({ active, router, onNavigate, onLogout, alertCount }) => (
@@ -1236,6 +1348,80 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
   );
 };
 
+const ONE_CLICK_ACTIONS = [
+  { id: 'youtube',  title: 'Block YouTube',    sub: 'DNS block',         icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'youtube',  method: 'dns'   },
+  { id: 'facebook', title: 'Block Facebook',   sub: 'DNS block',         icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'facebook', method: 'dns'   },
+  { id: 'tiktok',   title: 'Block TikTok',     sub: 'DNS block',         icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'tiktok',   method: 'dns'   },
+  { id: 'torrents', title: 'Block Torrents',   sub: 'L7 + P2P ports',   icon: 'M2 11h12M2 5h12M9 2l-4 6 4 6',                            action: 'block-service', svc: 'torrents', method: 'layer7'},
+  { id: 'safe',     title: 'Safe-search DNS',  sub: 'force safesearch',  icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z',action: 'safe-search'  },
+  { id: 'dns-flush',title: 'Flush DNS cache',  sub: '/ip dns cache flush',icon: 'M13.5 2.5A6.5 6.5 0 1 1 8 1.5M13.5 2.5V6M13.5 2.5H10',  action: 'flush-dns'    },
+];
+
+const OneClickActions = ({ sessionId }) => {
+  const [busy, setBusy]     = React.useState({});
+  const [msgs, setMsgs]     = React.useState({});
+  const [active, setActive] = React.useState({});
+
+  const setMsg = (id, msg, ok) => {
+    setMsgs(p => ({ ...p, [id]: { msg, ok } }));
+    setTimeout(() => setMsgs(p => { const n={...p}; delete n[id]; return n; }), 3500);
+  };
+
+  const handleAction = async (a) => {
+    setBusy(p => ({ ...p, [a.id]: true }));
+    try {
+      if (a.action === 'block-service') {
+        const isBlocking = !active[a.id];
+        await API.toggleFirewallService(sessionId, a.svc, isBlocking, a.method);
+        setActive(p => ({ ...p, [a.id]: isBlocking }));
+        setMsg(a.id, isBlocking ? '✓ Blocked' : '✓ Unblocked', true);
+      } else if (a.action === 'safe-search') {
+        await API.addDnsStatic(sessionId, 'www.google.com', '216.239.38.120', 'A', false, 'netforge-safesearch');
+        setMsg(a.id, '✓ Safe-search set', true);
+      } else if (a.action === 'flush-dns') {
+        await API.call(sessionId, '/api/dns/update', { method: 'POST', body: JSON.stringify({ servers: [], allowRemoteRequests: undefined, flush: true }) });
+        setMsg(a.id, '✓ Cache flushed', true);
+      }
+    } catch (e) { setMsg(a.id, '✗ ' + e.message, false); }
+    setBusy(p => ({ ...p, [a.id]: false }));
+  };
+
+  return (
+    <ACard style={{ gridColumn: 'span 2' }}>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>One-click actions</div>
+        <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>preset rules · idempotent · click again to undo</div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+        {ONE_CLICK_ACTIONS.map(a => {
+          const isActive = active[a.id];
+          const isBusy = busy[a.id];
+          const m = msgs[a.id];
+          return (
+            <div key={a.id} onClick={() => !isBusy && handleAction(a)} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '10px 11px',
+              background: isActive ? 'rgba(59,130,246,0.10)' : A.surface,
+              border: `1px solid ${isActive ? A.accent : A.border}`,
+              borderRadius: 9, cursor: isBusy ? 'wait' : 'pointer', opacity: isBusy ? 0.7 : 1, transition: 'all 0.15s',
+            }}>
+              <div style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: isActive ? A.accentSoft : 'rgba(255,255,255,0.04)', color: isActive ? '#BFDBFE' : A.accent, flexShrink: 0 }}>
+                {isBusy
+                  ? <div style={{ width: 12, height: 12, borderRadius: 999, border: `2px solid ${A.accent}`, borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }} />
+                  : <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={a.icon}/></svg>
+                }
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: isActive ? '#BFDBFE' : A.text }}>{a.title}</div>
+                <div style={{ fontSize: 10.5, color: m ? (m.ok ? A.good : A.bad) : A.textFaint, fontFamily: A.mono }}>{m ? m.msg : (isActive ? 'active — click to disable' : a.sub)}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </ACard>
+  );
+};
+
 const DashboardScreen = ({ sessionId, router }) => {
   const [stats,       setStats]       = React.useState(null);
   const [traffic,     setTraffic]     = React.useState({ rx: Array(28).fill(0), tx: Array(28).fill(0) });
@@ -1426,35 +1612,7 @@ const DashboardScreen = ({ sessionId, router }) => {
           </ACard>
 
           {/* ── One-click actions (span 2) ── */}
-          <ACard style={{ gridColumn: 'span 2' }}>
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>One-click actions</div>
-              <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>preset rules · idempotent</div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8 }}>
-              {[
-                { title: 'Block YouTube',    sub: 'L7 + DNS rules',    icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
-                { title: 'Block Facebook',   sub: 'L7 + DNS rules',    icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
-                { title: 'Block TikTok',     sub: 'L7 + DNS rules',    icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
-                { title: 'Limit speed',      sub: 'simple queue',      icon: 'M1 12l3-6 3 3 3-6 3 3 2-4' },
-                { title: 'Add load balance', sub: 'pcc 2-wan',         icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM2 8h12' },
-                { title: 'Safe-search',      sub: 'dns rewrite',       icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z' },
-                { title: 'Speed test',       sub: 'bandwidth-test',    icon: 'M8 3v2M8 11v2M3 8H1M15 8h-2M4.6 4.6l1.4 1.4M10 10l1.4 1.4M4.6 11.4L6 10M10 6l1.4-1.4M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z' },
-                { title: 'Custom rule',      sub: 'from snippet',      icon: 'M8 1v14M1 8h14' },
-              ].map(a => (
-                <div key={a.title} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 11px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 9, cursor: 'pointer' }}
-                  onClick={() => alertCtx.addAlert('action', 0, 0, 'warn')}>
-                  <div style={{ width: 28, height: 28, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.04)', color: A.accent, flexShrink: 0 }}>
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={a.icon}/></svg>
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.title}</div>
-                    <div style={{ fontSize: 10.5, color: A.textFaint, fontFamily: A.mono }}>{a.sub}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </ACard>
+          <OneClickActions sessionId={sessionId} />
 
           {/* ── Top talkers (span 2) ── */}
           <ACard style={{ gridColumn: 'span 2' }}>
@@ -1498,6 +1656,9 @@ const InterfacesScreen = ({ sessionId }) => {
   const [loading, setLoading]       = React.useState(true);
   const [selected, setSelected]     = React.useState(null);
   const [toggleMsg, setToggleMsg]   = React.useState('');
+  const [renameVal, setRenameVal]   = React.useState('');
+  const [renameMsg, setRenameMsg]   = React.useState('');
+  const [macMsg, setMacMsg]         = React.useState('');
 
   const reload = React.useCallback(async () => {
     try { const d = await API.getInterfaces(sessionId); setInterfaces(d); } catch {}
@@ -1607,9 +1768,49 @@ const InterfacesScreen = ({ sessionId }) => {
               {toggleMsg && <div style={{ fontSize: 11, color: toggleMsg.includes('✓') ? A.good : toggleMsg.includes('✗') ? A.bad : A.textDim, marginTop: 10 }}>{toggleMsg}</div>}
               <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
                 <ABtn kind="secondary" onClick={handleToggle}>{sel && (sel.status === 'up' && !sel.disabled) ? 'Disable' : 'Enable'}</ABtn>
-                <ABtn kind="ghost">Monitor</ABtn>
               </div>
             </ACard>
+
+            {/* Rename panel */}
+            <ACard pad={14}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: A.text, marginBottom: 10 }}>Rename interface</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input value={renameVal} onChange={e => setRenameVal(e.target.value)}
+                  placeholder={sel?.name || 'new-name'}
+                  style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 7, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+                <ABtn kind="primary" onClick={async () => {
+                  if (!renameVal.trim()) return;
+                  setRenameMsg('Renaming…');
+                  try {
+                    const r = await API.renameInterface(sessionId, sel.name, renameVal.trim());
+                    setRenameMsg('✓ ' + r.message);
+                    setRenameVal('');
+                    await reload();
+                    setSelected(null);
+                  } catch (e) { setRenameMsg('✗ ' + e.message); }
+                  setTimeout(() => setRenameMsg(''), 3000);
+                }}>Rename</ABtn>
+              </div>
+              {renameMsg && <div style={{ fontSize: 11, marginTop: 6, color: renameMsg.includes('✓') ? A.good : A.bad }}>{renameMsg}</div>}
+            </ACard>
+
+            {/* Reset MAC panel */}
+            {sel && (sel.type === 'ether' || (sel.macAddress && sel.macAddress !== '')) && (
+              <ACard pad={14}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: A.text, marginBottom: 6 }}>MAC address</div>
+                <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, marginBottom: 10 }}>{sel.macAddress || '—'}</div>
+                {macMsg && <div style={{ fontSize: 11, marginBottom: 6, color: macMsg.includes('✓') ? A.good : A.bad }}>{macMsg}</div>}
+                <ABtn kind="secondary" onClick={async () => {
+                  setMacMsg('Resetting…');
+                  try {
+                    const r = await API.resetInterfaceMac(sessionId, sel.name);
+                    setMacMsg('✓ ' + r.message);
+                    await reload();
+                  } catch (e) { setMacMsg('✗ ' + e.message); }
+                  setTimeout(() => setMacMsg(''), 4000);
+                }}>Reset to factory MAC</ABtn>
+              </ACard>
+            )}
           </div>
         )}
       </div>
@@ -2256,31 +2457,31 @@ const BandwidthScreen = ({ sessionId }) => {
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0, padding: '0 20px 20px' }}>
         {/* table */}
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '160px 160px 80px 80px 1fr 60px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
-            <span>Name</span><span>Target</span><span>Down</span><span>Up</span><span>Usage</span><span>Priority</span>
+          <div style={{ display: 'grid', gridTemplateColumns: '150px 140px 80px 80px 80px 1fr 70px 60px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+            <span>Name</span><span>Target</span><span>Down</span><span>Up</span><span>Priority</span><span>RX total</span><span>TX total</span><span>Action</span>
           </div>
           <div style={{ flex: 1, overflow: 'auto' }}>
             {queues.length === 0 ? (
               <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No queues configured</div>
             ) : queues.map((q, i) => {
-              const util = q.util || 0;
+              const fmtB = (b) => { if (!b) return '—'; if (b>=1e9) return (b/1e9).toFixed(1)+'G'; if (b>=1e6) return (b/1e6).toFixed(0)+'M'; return (b/1e3).toFixed(0)+'K'; };
               return (
                 <div key={i} style={{
-                  display: 'grid', gridTemplateColumns: '160px 160px 80px 80px 1fr 60px',
+                  display: 'grid', gridTemplateColumns: '150px 140px 80px 80px 80px 1fr 70px 60px',
                   padding: '11px 16px', borderBottom: i < queues.length - 1 ? `1px solid ${A.border}` : 'none',
                   background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
                 }}>
                   <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{q.name}</span>
                   <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{q.target || '—'}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>↓{q.down || q['max-limit']?.split('/')[0] || '—'}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>↑{q.up || q['max-limit']?.split('/')[1] || '—'}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ flex: 1, height: 5, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
-                      <div style={{ width: `${util}%`, height: '100%', background: utilColor(util), transition: 'width 0.5s' }} />
-                    </div>
-                    <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint, minWidth: 32 }}>{util}%</span>
-                  </div>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>↓{q.down || '—'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>↑{q.up || '—'}</span>
                   <APill tone={q.priority === 'high' ? 'accent' : q.priority === 'low' ? 'dim' : 'good'}>{q.priority || 'normal'}</APill>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtB(q.rxBytes)}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtB(q.txBytes)}</span>
+                  <button onClick={async () => {
+                    if (!window.confirm(`Remove queue "${q.name}"?`)) return;
+                    try { await API.removeBandwidthQueue(sessionId, q.name); const d = await API.getBandwidth(sessionId); setQueues(Array.isArray(d) ? d : []); } catch (e) { alert(e.message); }
+                  }} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11 }}>Remove</button>
                 </div>
               );
             })}
@@ -2819,7 +3020,7 @@ const VPN_PROTOCOLS_META = [
 ];
 
 const VpnScreen = ({ sessionId }) => {
-  const [vpn, setVpn]             = React.useState([]);
+  const [vpn, setVpn]             = React.useState({ wireguard: { enabled: false, interfaces: [], peers: [] }, l2tp: { enabled: false, peers: 0 }, ovpn: { enabled: false, peers: 0 } });
   const [loading, setLoading]     = React.useState(true);
   const [activeProto, setActiveProto] = React.useState('wireguard');
   const [showPanel, setShowPanel] = React.useState(false);
@@ -2827,29 +3028,25 @@ const VpnScreen = ({ sessionId }) => {
   const [peerIp, setPeerIp]       = React.useState('');
   const [addMsg, setAddMsg]       = React.useState('');
 
+  const load = React.useCallback(async () => {
+    try { const d = await API.getVpn(sessionId); setVpn(d && d.wireguard ? d : vpn); } catch {}
+    setLoading(false);
+  }, [sessionId]);
+
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetch = async () => {
-      setLoading(true);
-      try { const d = await API.getVpn(sessionId); setVpn(Array.isArray(d) ? d : []); } catch {}
-      setLoading(false);
-    };
-    fetch();
-    const iv = setInterval(fetch, 8000);
+    load();
+    const iv = setInterval(load, 8000);
     return () => clearInterval(iv);
-  }, [sessionId]);
+  }, [sessionId, load]);
 
   const fmtBytes = (b) => {
     if (!b) return '—';
     if (b >= 1e9) return (b/1e9).toFixed(1)+'G';
     if (b >= 1e6) return (b/1e6).toFixed(0)+'M';
+    if (b >= 1e3) return (b/1e3).toFixed(0)+'K';
     return b+'B';
   };
-
-  const getProtoData = (id) => vpn.find(v => v.name?.toLowerCase().includes(id) || v.type?.toLowerCase().includes(id)) || {};
-
-  const wgPeers = vpn.filter ? vpn.filter(v => v.peers || v.type === 'wireguard' || v.name === 'wireguard') : [];
-  const peers   = (getProtoData('wireguard').peerList) || [];
 
   const handleCreate = async () => {
     if (!peerName.trim()) { setAddMsg('Peer name required'); return; }
@@ -2858,10 +3055,17 @@ const VpnScreen = ({ sessionId }) => {
       const result = await API.addVpnPeer(sessionId, peerName.trim(), peerIp || '10.0.0.2/32', null);
       setAddMsg('✓ ' + result.message);
       setPeerName(''); setPeerIp('');
-      // Refresh VPN data
-      try { const d = await API.getVpn(sessionId); setVpn(Array.isArray(d) ? d : []); } catch {}
+      await load();
     } catch (e) { setAddMsg('✗ ' + e.message); }
   };
+
+  const protoStats = {
+    wireguard: { enabled: vpn.wireguard?.enabled, peers: vpn.wireguard?.peers?.length || 0 },
+    l2tp:      { enabled: vpn.l2tp?.enabled, peers: vpn.l2tp?.peers || 0 },
+    ovpn:      { enabled: vpn.ovpn?.enabled, peers: vpn.ovpn?.peers || 0 },
+  };
+
+  const activePeers = vpn.wireguard?.peers || [];
 
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
@@ -2873,32 +3077,41 @@ const VpnScreen = ({ sessionId }) => {
           <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>VPN</div>
           <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>WireGuard · L2TP/IPsec · OpenVPN</div>
         </div>
-        <ABtn kind="primary" onClick={() => { setShowPanel(true); setAddMsg(''); }}>+ New peer</ABtn>
+        {activeProto === 'wireguard' && <ABtn kind="primary" onClick={() => { setShowPanel(true); setAddMsg(''); }}>+ New peer</ABtn>}
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* protocol summary cards */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
           {VPN_PROTOCOLS_META.map(proto => {
-            const d = getProtoData(proto.id);
-            const enabled = d.enabled !== false;
-            const peerCount = d.peers || 0;
-            const connected = d.connected || 0;
+            const st = protoStats[proto.id] || {};
             return (
               <ACard key={proto.id} pad={16} style={{ cursor: 'pointer', border: `1px solid ${activeProto === proto.id ? A.accent : A.border}`, background: activeProto === proto.id ? 'rgba(59,130,246,0.06)' : A.surface }} onClick={() => setActiveProto(proto.id)}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: A.text }}>{proto.label}</span>
-                  <APill tone={enabled ? 'good' : 'dim'}>{enabled ? 'active' : 'off'}</APill>
+                  <APill tone={st.enabled ? 'good' : 'dim'}>{st.enabled ? 'active' : 'off'}</APill>
                 </div>
                 <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 10 }}>{proto.sub} · {proto.proto} {proto.port}</div>
-                <div style={{ display: 'flex', gap: 12 }}>
-                  <div><div style={{ fontSize: 18, fontWeight: 700, color: A.text, fontFamily: A.mono }}>{peerCount}</div><div style={{ fontSize: 10, color: A.textFaint }}>peers</div></div>
-                  {enabled && <div><div style={{ fontSize: 18, fontWeight: 700, color: A.good, fontFamily: A.mono }}>{connected}</div><div style={{ fontSize: 10, color: A.textFaint }}>online</div></div>}
-                </div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: A.text, fontFamily: A.mono }}>{st.peers}</div>
+                <div style={{ fontSize: 10, color: A.textFaint }}>peers configured</div>
               </ACard>
             );
           })}
         </div>
+
+        {/* WireGuard interface info */}
+        {activeProto === 'wireguard' && vpn.wireguard?.interfaces?.length > 0 && (
+          <ACard pad={14}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: A.text, marginBottom: 8 }}>WireGuard interfaces</div>
+            {vpn.wireguard.interfaces.map(wg => (
+              <div key={wg.name} style={{ display: 'flex', gap: 16, fontSize: 11, fontFamily: A.mono, color: A.textDim, marginBottom: 4 }}>
+                <span style={{ color: A.text }}>{wg.name}</span>
+                <span>port: {wg.port}</span>
+                <span style={{ color: A.textFaint, overflow: 'hidden', textOverflow: 'ellipsis' }}>pubkey: {wg.publicKey?.substring(0, 20) || '—'}…</span>
+              </div>
+            ))}
+          </ACard>
+        )}
 
         {/* peer list + add panel */}
         <div style={{ display: 'flex', gap: 12, flex: 1 }}>
@@ -2906,26 +3119,28 @@ const VpnScreen = ({ sessionId }) => {
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
             <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{VPN_PROTOCOLS_META.find(p => p.id === activeProto)?.label} peers</span>
-              <APill tone="dim" mono>wg0 · {VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.port}</APill>
+              <APill tone="dim" mono>{VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.proto} · {VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.port}</APill>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '160px 130px 130px 90px 90px 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              <span>Peer name</span><span>Tunnel IP</span><span>Last seen</span><span>RX</span><span>TX</span><span>Status</span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px 150px 80px 80px 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <span>Peer name</span><span>Allowed IPs</span><span>Last handshake</span><span>RX</span><span>TX</span><span>Status</span>
             </div>
             <div style={{ flex: 1, overflow: 'auto' }}>
-              {vpn.length === 0 ? (
-                <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No peers configured for this protocol</div>
-              ) : vpn.map((p, i) => (
+              {activePeers.length === 0 ? (
+                <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>
+                  {activeProto === 'wireguard' ? 'No WireGuard peers configured' : `${VPN_PROTOCOLS_META.find(p=>p.id===activeProto)?.label} peer list not available via SSH`}
+                </div>
+              ) : activePeers.map((p, i) => (
                 <div key={i} style={{
-                  display: 'grid', gridTemplateColumns: '160px 130px 130px 90px 90px 80px',
-                  padding: '10px 16px', borderBottom: i < vpn.length - 1 ? `1px solid ${A.border}` : 'none',
+                  display: 'grid', gridTemplateColumns: '1fr 130px 150px 80px 80px 80px',
+                  padding: '10px 16px', borderBottom: i < activePeers.length - 1 ? `1px solid ${A.border}` : 'none',
                   background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
                 }}>
                   <span style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{p.name || '—'}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{p.address || p.ip || '—'}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textFaint }}>{p.lastHandshake || p.lastSeen || '—'}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(p.rx || p['rx-byte'])}</span>
-                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(p.tx || p['tx-byte'])}</span>
-                  <APill tone={p.enabled !== false ? 'good' : 'dim'}>{p.enabled !== false ? 'online' : 'offline'}</APill>
+                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textDim, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.allowedAddress || '—'}</span>
+                  <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{p.lastHandshake || 'never'}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.good }}>{fmtBytes(p.rx)}</span>
+                  <span style={{ fontSize: 11, fontFamily: A.mono, color: A.accent }}>{fmtBytes(p.tx)}</span>
+                  <APill tone={p.enabled !== false ? 'good' : 'dim'}>{p.enabled !== false ? 'active' : 'off'}</APill>
                 </div>
               ))}
             </div>
@@ -2937,20 +3152,8 @@ const VpnScreen = ({ sessionId }) => {
               <ACard pad={16}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>Add WireGuard peer</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <ALabeledField label="Peer name" sub="any label" value={peerName} onChange={e => setPeerName(e.target.value)} />
-                  <ALabeledField label="Allowed IPs" sub="route through tunnel" value={peerIp} onChange={e => setPeerIp(e.target.value)} mono />
-
-                  <div style={{ padding: '12px', background: 'rgba(0,0,0,0.25)', borderRadius: 8, border: `1px solid ${A.border}`, textAlign: 'center' }}>
-                    <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 8 }}>QR code generated on create</div>
-                    <div style={{ width: 80, height: 80, background: 'rgba(255,255,255,0.05)', borderRadius: 6, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <span style={{ fontSize: 9, color: A.textFaint }}>QR · scan in WG app</span>
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <ABtn kind="secondary">QR</ABtn>
-                    <ABtn kind="secondary">Download .conf</ABtn>
-                  </div>
+                  <ALabeledField label="Peer name / comment" sub="any label" value={peerName} onChange={e => setPeerName(e.target.value)} />
+                  <ALabeledField label="Allowed IPs" sub="tunnel address (e.g. 10.0.0.2/32)" value={peerIp} onChange={e => setPeerIp(e.target.value)} mono />
 
                   {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
 
@@ -3126,6 +3329,10 @@ const ScriptsScreen = ({ sessionId }) => {
   const [execOutput, setExecOutput] = React.useState(null);
   const [execStatus, setExecStatus] = React.useState('idle');
   const [execElapsed, setExecElapsed] = React.useState(0);
+  const [showNew, setShowNew]     = React.useState(false);
+  const [newName, setNewName]     = React.useState('');
+  const [newSource, setNewSource] = React.useState('# RouterOS script\n/log info "hello from NetForge"');
+  const [newMsg, setNewMsg]       = React.useState('');
 
   const allScripts = React.useMemo(() => {
     const templates = Object.values(SCRIPT_TEMPLATES).map(t => ({
@@ -3166,6 +3373,27 @@ const ScriptsScreen = ({ sessionId }) => {
     } catch (e) { setExecOutput(`Error: ${e.message}`); setExecStatus('error'); setExecuting(null); }
   };
 
+  const handleAddScript = async () => {
+    if (!newName.trim()) { setNewMsg('Name required'); return; }
+    setNewMsg('Saving…');
+    try {
+      await API.addScript(sessionId, newName.trim(), newSource);
+      setNewMsg('✓ Saved');
+      setNewName(''); setShowNew(false);
+      const d = await API.getScripts(sessionId); setScripts(d);
+    } catch (e) { setNewMsg('✗ ' + e.message); }
+    setTimeout(() => setNewMsg(''), 3000);
+  };
+
+  const handleDeleteScript = async (name) => {
+    if (!window.confirm(`Delete script "${name}"?`)) return;
+    try {
+      await API.removeScript(sessionId, name);
+      const d = await API.getScripts(sessionId); setScripts(d);
+      setSelected(null);
+    } catch (e) { alert(e.message); }
+  };
+
   const sel = selected !== null ? allScripts[selected] : null;
 
   const statusTone = (s) => s === 'ok' || s === 'success' ? 'good' : s === 'failed' ? 'bad' : s === 'running' ? 'accent' : 'dim';
@@ -3181,8 +3409,7 @@ const ScriptsScreen = ({ sessionId }) => {
           <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>{allScripts.length} scripts · /system script · /system scheduler</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <ABtn kind="secondary">Run snippet</ABtn>
-          <ABtn kind="primary">+ New script</ABtn>
+          <ABtn kind="primary" onClick={() => { setShowNew(true); setNewMsg(''); }}>+ New script</ABtn>
         </div>
       </div>
 
@@ -3213,15 +3440,28 @@ const ScriptsScreen = ({ sessionId }) => {
 
         {/* right: code + output */}
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {sel ? (<>
+          {showNew ? (
+            <ACard pad={0} style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="script-name"
+                  style={{ flex: 1, padding: '5px 10px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 7, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+                <ABtn kind="secondary" onClick={() => setShowNew(false)}>Cancel</ABtn>
+                <ABtn kind="primary" onClick={handleAddScript}>Save to router</ABtn>
+                {newMsg && <span style={{ fontSize: 11, color: newMsg.includes('✓') ? A.good : A.bad, fontFamily: A.mono }}>{newMsg}</span>}
+              </div>
+              <textarea value={newSource} onChange={e => setNewSource(e.target.value)}
+                style={{ flex: 1, resize: 'none', padding: 16, background: 'rgba(0,0,0,0.25)', border: 'none', outline: 'none', fontFamily: A.mono, fontSize: 11, color: '#86EFAC', lineHeight: 1.7 }} />
+            </ACard>
+          ) : sel ? (<>
             {/* code panel */}
             <ACard pad={0} style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{sel.label || sel.name}</span>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <ABtn kind="secondary" onClick={() => handleRun(sel.name)} disabled={executing !== null}>Test</ABtn>
                   <ABtn kind="primary" onClick={() => handleRun(sel.name)} disabled={executing !== null}>▶ Run now</ABtn>
-                  <ABtn kind="ghost">Save</ABtn>
+                  {sel.status !== 'template' && (
+                    <ABtn kind="secondary" onClick={() => handleDeleteScript(sel.name)}>Delete</ABtn>
+                  )}
                 </div>
               </div>
               <div style={{ flex: 1, overflow: 'auto', padding: 16, background: 'rgba(0,0,0,0.25)', fontFamily: A.mono, fontSize: 11, color: '#86EFAC', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
@@ -3247,7 +3487,7 @@ const ScriptsScreen = ({ sessionId }) => {
             </div>
           </>) : (
             <ACard pad={32}>
-              <div style={{ textAlign: 'center', color: A.textFaint, fontSize: 12 }}>Select a script to view and edit</div>
+              <div style={{ textAlign: 'center', color: A.textFaint, fontSize: 12 }}>Select a script to view and run, or click + New script to create one</div>
             </ACard>
           )}
         </div>
@@ -3389,6 +3629,701 @@ const BackupScreen = ({ sessionId }) => {
             <div style={{ fontSize: 11, color: A.textFaint }}>Keep last <span style={{ color: A.text, fontFamily: A.mono }}>30</span> backups · ~3.7 MB on disk</div>
           </ACard>
         </div>
+      </div>
+    </div>
+  );
+};
+
+// ========== AUTOMATION / SCHEDULER SCREEN ==========
+
+const AUTOMATION_RECIPES = [
+  {
+    id: 'daily-backup',
+    title: 'Daily Backup',
+    icon: 'M13 8v5H3V8M8 1v8M5 6l3 3 3-3',
+    desc: 'Creates a router backup every day at 2:00 AM. File stored on router flash.',
+    tone: 'good',
+    scripts: ['nf-daily-backup'],
+    schedulers: ['nf-daily-backup'],
+  },
+  {
+    id: 'wan-health-check',
+    title: 'WAN Auto-Restart',
+    icon: 'M13.5 2.5A6.5 6.5 0 1 1 8 1.5M13.5 2.5V6M13.5 2.5H10',
+    desc: 'Pings 1.1.1.1 every 10s. If WAN fails, auto-restarts PPPoE/LTE interface.',
+    tone: 'accent',
+    scripts: ['nf-wan-down'],
+    schedulers: [],
+  },
+  {
+    id: 'log-rotation',
+    title: 'Log Rotation',
+    icon: 'M3 4h10M3 8h10M3 12h6',
+    desc: 'Trims memory log to 300 lines every Sunday at 3:00 AM. Prevents memory overflow.',
+    tone: 'dim',
+    scripts: ['nf-log-rotation'],
+    schedulers: ['nf-log-rotation'],
+  },
+  {
+    id: 'block-office-hours',
+    title: 'Office Hours Block',
+    icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z',
+    desc: 'Blocks YouTube, Facebook, TikTok Mon–Fri 09:00–17:00. DNS-based, unblocks automatically.',
+    tone: 'warn',
+    scripts: ['nf-office-block', 'nf-office-unblock'],
+    schedulers: ['nf-block-weekday', 'nf-unblock-weekday'],
+  },
+  {
+    id: 'interface-watchdog',
+    title: 'Interface Watchdog',
+    icon: 'M1 8h14M5 5l-4 3 4 3M11 5l4 3-4 3',
+    desc: 'Checks all ethernet interfaces every minute. Auto-restarts any interface that drops.',
+    tone: 'accent',
+    scripts: ['nf-iface-watchdog'],
+    schedulers: ['nf-iface-watchdog'],
+  },
+  {
+    id: 'bandwidth-alert',
+    title: 'Resource Alert',
+    icon: 'M1 12l3-6 3 3 3-6 3 3 2-4',
+    desc: 'Checks CPU & memory every 5 minutes. Logs warning to router log when CPU>85% or RAM>90%.',
+    tone: 'warn',
+    scripts: ['nf-resource-alert'],
+    schedulers: ['nf-resource-alert'],
+  },
+];
+
+const AutomationScreen = ({ sessionId }) => {
+  const [tasks, setTasks]       = React.useState([]);
+  const [loading, setLoading]   = React.useState(true);
+  const [busy, setBusy]         = React.useState({});
+  const [msgs, setMsgs]         = React.useState({});
+  const [showCustom, setShowCustom] = React.useState(false);
+  const [cName, setCName]       = React.useState('');
+  const [cScript, setCScript]   = React.useState('');
+  const [cInterval, setCInterval] = React.useState('1h');
+  const [cTime, setCTime]       = React.useState('00:00:00');
+  const [cMsg, setCMsg]         = React.useState('');
+  const [activeTab, setActiveTab] = React.useState('recipes');
+
+  const load = React.useCallback(async () => {
+    try { const d = await API.getScheduler(sessionId); setTasks(Array.isArray(d) ? d : []); } catch {}
+    setLoading(false);
+  }, [sessionId]);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    load();
+    const iv = setInterval(load, 10000);
+    return () => clearInterval(iv);
+  }, [sessionId, load]);
+
+  const setMsg = (id, msg, ok) => {
+    setMsgs(p => ({ ...p, [id]: { msg, ok } }));
+    setTimeout(() => setMsgs(p => { const n={...p}; delete n[id]; return n; }), 5000);
+  };
+
+  const isDeployed = (recipe) =>
+    recipe.schedulers.some(s => tasks.find(t => t.name === s)) ||
+    (recipe.schedulers.length === 0 && recipe.scripts.some(s => tasks.find(t => t.name === s)));
+
+  const handleDeploy = async (recipe) => {
+    const deployed = isDeployed(recipe);
+    setBusy(p => ({ ...p, [recipe.id]: true }));
+    try {
+      if (deployed) {
+        await API.removeRecipe(sessionId, recipe.id);
+        setMsg(recipe.id, '✓ Removed', true);
+      } else {
+        const r = await API.deployRecipe(sessionId, recipe.id);
+        setMsg(recipe.id, `✓ Deployed: ${r.steps?.join(' · ')}`, true);
+      }
+      await load();
+    } catch (e) { setMsg(recipe.id, '✗ ' + e.message, false); }
+    setBusy(p => ({ ...p, [recipe.id]: false }));
+  };
+
+  const handleToggleTask = async (task) => {
+    setBusy(p => ({ ...p, [task.name]: true }));
+    try {
+      await API.toggleScheduler(sessionId, task.name, !task.disabled);
+      await load();
+    } catch (e) { setMsg(task.name, '✗ ' + e.message, false); }
+    setBusy(p => ({ ...p, [task.name]: false }));
+  };
+
+  const handleRemoveTask = async (name) => {
+    if (!window.confirm(`Remove scheduled task "${name}"?`)) return;
+    try { await API.removeScheduler(sessionId, name); await load(); } catch (e) { alert(e.message); }
+  };
+
+  const handleAddCustom = async () => {
+    if (!cName.trim() || !cScript.trim()) { setCMsg('Name and script required'); return; }
+    setCMsg('Creating…');
+    try {
+      await API.addScript(sessionId, cName.trim(), cScript);
+      await API.addScheduler(sessionId, cName.trim(), cName.trim(), cTime, cInterval, 'NetForge automation');
+      setCMsg('✓ Automation created');
+      setCName(''); setCScript(''); setShowCustom(false);
+      await load();
+    } catch (e) { setCMsg('✗ ' + e.message); }
+    setTimeout(() => setCMsg(''), 3000);
+  };
+
+  const toneBg = { good: 'rgba(34,197,94,0.08)', accent: 'rgba(59,130,246,0.08)', warn: 'rgba(245,158,11,0.08)', bad: 'rgba(239,68,68,0.08)', dim: 'rgba(255,255,255,0.03)' };
+  const toneColor = { good: A.good, accent: A.accent, warn: A.warn, bad: A.bad, dim: A.textDim };
+
+  return (
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Automation · Scheduler</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>/system scheduler · /tool netwatch · {tasks.length} active tasks</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ABtn kind="secondary" onClick={() => { setShowCustom(true); setCMsg(''); }}>+ Custom task</ABtn>
+        </div>
+      </div>
+
+      {/* tabs */}
+      <div style={{ padding: '0 20px 10px', display: 'flex', gap: 6, flexShrink: 0 }}>
+        {[{id:'recipes', label:'One-click recipes'}, {id:'tasks', label:`Active tasks (${tasks.length})`}].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${activeTab===t.id?A.accent:A.border}`, background: activeTab===t.id ? A.accentSoft : 'transparent', color: activeTab===t.id ? '#BFDBFE' : A.textDim, fontSize: 12, cursor: 'pointer' }}>{t.label}</button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px' }}>
+
+        {activeTab === 'recipes' && (
+          <>
+            <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 14 }}>
+              One-click deploy pre-built automations. Each recipe creates RouterOS scripts + scheduler entries. Click again to remove.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+              {AUTOMATION_RECIPES.map(recipe => {
+                const deployed = isDeployed(recipe);
+                const isBusy = busy[recipe.id];
+                const m = msgs[recipe.id];
+                return (
+                  <ACard key={recipe.id} pad={16} style={{ border: `1px solid ${deployed ? toneColor[recipe.tone] : A.border}`, background: deployed ? toneBg[recipe.tone] : A.surface }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+                      <div style={{ width: 34, height: 34, borderRadius: 9, display: 'grid', placeItems: 'center', background: deployed ? toneBg[recipe.tone] : 'rgba(255,255,255,0.04)', flexShrink: 0 }}>
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke={deployed ? toneColor[recipe.tone] : A.textDim} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={recipe.icon}/></svg>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: A.text }}>{recipe.title}</span>
+                          {deployed && <APill tone={recipe.tone}>active</APill>}
+                        </div>
+                        <div style={{ fontSize: 11, color: A.textFaint, lineHeight: 1.5 }}>{recipe.desc}</div>
+                      </div>
+                    </div>
+                    {m && <div style={{ fontSize: 11, color: m.ok ? A.good : A.bad, marginBottom: 8, fontFamily: A.mono }}>{m.msg}</div>}
+                    <ABtn kind={deployed ? 'secondary' : 'primary'} onClick={() => !isBusy && handleDeploy(recipe)} full>
+                      {isBusy ? 'Working…' : deployed ? 'Remove automation' : 'Deploy'}
+                    </ABtn>
+                  </ACard>
+                );
+              })}
+            </div>
+
+            {showCustom && (
+              <ACard pad={16}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>Custom automation task</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <ALabeledField label="Task name" sub="alphanumeric + - _" value={cName} onChange={e => setCName(e.target.value)} mono />
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 4 }}>RouterOS script</div>
+                    <textarea value={cScript} onChange={e => setCScript(e.target.value)} rows={4}
+                      style={{ width: '100%', resize: 'vertical', padding: 10, background: 'rgba(0,0,0,0.25)', border: `1px solid ${A.border}`, borderRadius: 8, color: '#86EFAC', fontFamily: A.mono, fontSize: 11, outline: 'none', boxSizing: 'border-box' }}
+                      placeholder="/log info &quot;hello from NetForge&quot;;" />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <ALabeledField label="Start time" sub="HH:MM:SS" value={cTime} onChange={e => setCTime(e.target.value)} mono />
+                    <ALabeledField label="Interval" sub="e.g. 1h, 30m, 1d" value={cInterval} onChange={e => setCInterval(e.target.value)} mono />
+                  </div>
+                  {cMsg && <div style={{ fontSize: 11, color: cMsg.includes('✓') ? A.good : A.bad }}>{cMsg}</div>}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <ABtn kind="secondary" onClick={() => setShowCustom(false)}>Cancel</ABtn>
+                    <ABtn kind="primary" onClick={handleAddCustom} full>Create task</ABtn>
+                  </div>
+                </div>
+              </ACard>
+            )}
+          </>
+        )}
+
+        {activeTab === 'tasks' && (
+          <div style={{ display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 90px 90px 1fr 80px 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <span>Name</span><span>Interval</span><span>Start time</span><span>Script</span><span>Runs</span><span>Actions</span>
+            </div>
+            {loading ? <div style={{ padding: 32, textAlign: 'center' }}><ASkeleton /></div>
+            : tasks.length === 0 ? <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No scheduled tasks. Deploy a recipe to get started.</div>
+            : tasks.map((t, i) => (
+              <div key={t.name} style={{
+                display: 'grid', gridTemplateColumns: '160px 90px 90px 1fr 80px 80px',
+                padding: '10px 16px', borderBottom: i < tasks.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+                opacity: t.disabled ? 0.5 : 1,
+              }}>
+                <span style={{ fontSize: 11, fontWeight: 500, fontFamily: A.mono, color: A.text }}>{t.name}</span>
+                <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textDim }}>{t.interval}</span>
+                <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{t.startTime || '—'}</span>
+                <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.onEvent || '—'}</span>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{t.runCount}</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={() => handleToggleTask(t)} style={{ padding: '3px 8px', borderRadius: 5, border: `1px solid ${A.border}`, background: 'transparent', color: t.disabled ? A.good : A.warn, fontSize: 10, cursor: 'pointer' }}>{t.disabled ? 'Enable' : 'Pause'}</button>
+                  <button onClick={() => handleRemoveTask(t.name)} style={{ padding: '3px 6px', borderRadius: 5, border: 'none', background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', fontSize: 10, cursor: 'pointer' }}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ========== NETWORK HEALTH SCREEN ==========
+
+const PING_TARGETS = [
+  { host: '1.1.1.1',   label: 'Cloudflare DNS',  icon: '☁' },
+  { host: '8.8.8.8',   label: 'Google DNS',       icon: '🔍' },
+  { host: '9.9.9.9',   label: 'Quad9 DNS',        icon: '🛡' },
+];
+
+const NetworkHealthScreen = ({ sessionId }) => {
+  const [results, setResults]     = React.useState({});
+  const [loading, setLoading]     = React.useState({});
+  const [netwatch, setNetwatch]   = React.useState([]);
+  const [customHost, setCustomHost] = React.useState('');
+  const [traceHost, setTraceHost] = React.useState('');
+  const [traceResult, setTraceResult] = React.useState(null);
+  const [tracing, setTracing]     = React.useState(false);
+  const [nwHost, setNwHost]       = React.useState('');
+  const [nwInterval, setNwInterval] = React.useState('30s');
+  const [nwMsg, setNwMsg]         = React.useState('');
+  const [activeTab, setActiveTab] = React.useState('ping');
+
+  const loadNetwatch = React.useCallback(async () => {
+    try { const d = await API.getNetwatch(sessionId); setNetwatch(Array.isArray(d) ? d : []); } catch {}
+  }, [sessionId]);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    loadNetwatch();
+    const iv = setInterval(loadNetwatch, 8000);
+    return () => clearInterval(iv);
+  }, [sessionId, loadNetwatch]);
+
+  const runPing = async (host) => {
+    setLoading(p => ({ ...p, [host]: true }));
+    try {
+      const r = await API.pingHost(sessionId, host, 5);
+      setResults(p => ({ ...p, [host]: r }));
+    } catch (e) { setResults(p => ({ ...p, [host]: { error: e.message } })); }
+    setLoading(p => ({ ...p, [host]: false }));
+  };
+
+  const runAll = () => {
+    const targets = [...PING_TARGETS];
+    if (customHost.trim()) targets.push({ host: customHost.trim(), label: customHost.trim() });
+    targets.forEach(t => runPing(t.host));
+  };
+
+  const runTrace = async () => {
+    if (!traceHost.trim()) return;
+    setTracing(true); setTraceResult(null);
+    try { const r = await API.traceroute(sessionId, traceHost.trim()); setTraceResult(r); }
+    catch (e) { setTraceResult({ error: e.message }); }
+    setTracing(false);
+  };
+
+  const latencyColor = (avg) => avg === undefined ? A.textFaint : avg > 100 ? A.bad : avg > 30 ? A.warn : A.good;
+
+  const handleAddNetwatch = async () => {
+    if (!nwHost.trim()) return;
+    setNwMsg('Adding…');
+    try {
+      await API.addNetwatch(sessionId, nwHost.trim(), nwInterval, '', 'NetForge monitor');
+      setNwMsg('✓ Added'); setNwHost('');
+      await loadNetwatch();
+    } catch (e) { setNwMsg('✗ ' + e.message); }
+    setTimeout(() => setNwMsg(''), 3000);
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 20px 12px', flexShrink: 0 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Network Health · Diagnostics</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>Ping · Traceroute · Netwatch · ISP quality monitoring</div>
+      </div>
+
+      {/* tabs */}
+      <div style={{ padding: '0 20px 10px', display: 'flex', gap: 6, flexShrink: 0 }}>
+        {[{id:'ping', label:'Ping / Latency'}, {id:'traceroute', label:'Traceroute'}, {id:'netwatch', label:`Netwatch (${netwatch.length})`}].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${activeTab===t.id?A.accent:A.border}`, background: activeTab===t.id ? A.accentSoft : 'transparent', color: activeTab===t.id ? '#BFDBFE' : A.textDim, fontSize: 12, cursor: 'pointer' }}>{t.label}</button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+        {activeTab === 'ping' && (<>
+          {/* quick ping */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input value={customHost} onChange={e => setCustomHost(e.target.value)} placeholder="Custom host (e.g. your-isp-gateway)"
+              style={{ flex: 1, padding: '7px 12px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 8, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }}
+              onKeyDown={e => e.key === 'Enter' && customHost && runPing(customHost)} />
+            <ABtn kind="primary" onClick={runAll}>Ping all</ABtn>
+          </div>
+
+          {/* results grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            {[...PING_TARGETS, ...(customHost.trim() ? [{ host: customHost.trim(), label: customHost.trim() }] : [])].map(t => {
+              const r = results[t.host];
+              const busy = loading[t.host];
+              return (
+                <ACard key={t.host} pad={16} onClick={() => runPing(t.host)} style={{ cursor: 'pointer', border: `1px solid ${r && !r.error && r.avg !== undefined ? latencyColor(r.avg) + '60' : A.border}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{t.label}</span>
+                    {r && !r.error && <APill tone={r.loss > 0 ? 'bad' : r.avg > 100 ? 'warn' : 'good'}>{r.loss > 0 ? `${r.loss}% loss` : 'online'}</APill>}
+                  </div>
+                  <div style={{ fontSize: 9, fontFamily: A.mono, color: A.textFaint, marginBottom: 8 }}>{t.host}</div>
+                  {busy ? (
+                    <div style={{ fontSize: 11, color: A.textDim }}>Pinging…</div>
+                  ) : r ? r.error ? (
+                    <div style={{ fontSize: 11, color: A.bad }}>{r.error.substring(0, 40)}</div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 28, fontWeight: 700, fontFamily: A.mono, color: latencyColor(r.avg) }}>{r.avg !== undefined ? `${r.avg}` : '—'}<span style={{ fontSize: 13, fontWeight: 400, color: A.textDim }}> ms</span></div>
+                      <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono, marginTop: 4 }}>min {r.min ?? '—'} · max {r.max ?? '—'} ms · {r.sent ?? '—'}/{r.received ?? '—'} pkts</div>
+                      {r.history && r.history.length > 3 && (
+                        <svg width="100%" height="30" viewBox={`0 0 ${r.history.length} 30`} preserveAspectRatio="none" style={{ marginTop: 8 }}>
+                          <polyline fill="none" stroke={latencyColor(r.avg)} strokeWidth="1.5"
+                            points={r.history.map((h, i) => `${i},${30 - Math.min(28, (h.avg / 200) * 28)}`).join(' ')} />
+                        </svg>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 11, color: A.textFaint }}>Click to ping</div>
+                  )}
+                </ACard>
+              );
+            })}
+          </div>
+        </>)}
+
+        {activeTab === 'traceroute' && (<>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={traceHost} onChange={e => setTraceHost(e.target.value)} placeholder="Target host (e.g. 8.8.8.8 or google.com)"
+              style={{ flex: 1, padding: '7px 12px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 8, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }}
+              onKeyDown={e => e.key === 'Enter' && !tracing && runTrace()} />
+            <ABtn kind="primary" onClick={runTrace} disabled={tracing || !traceHost.trim()}>{tracing ? 'Tracing…' : 'Trace route'}</ABtn>
+          </div>
+          {traceResult && (
+            <ACard pad={0} style={{ overflow: 'hidden' }}>
+              <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}` }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>Route to {traceResult.host}</span>
+              </div>
+              {traceResult.error ? (
+                <div style={{ padding: 16, color: A.bad, fontSize: 11 }}>{traceResult.error}</div>
+              ) : traceResult.hops?.length > 0 ? (
+                traceResult.hops.map((h, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 16, padding: '8px 16px', borderBottom: i < traceResult.hops.length - 1 ? `1px solid rgba(255,255,255,0.04)` : 'none', alignItems: 'center' }}>
+                    <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textFaint, minWidth: 24, textAlign: 'right' }}>{h.hop}</span>
+                    <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text, minWidth: 130 }}>{h.address}</span>
+                    <span style={{ fontSize: 11, fontFamily: A.mono, color: h.rtt > 100 ? A.warn : A.good }}>{h.rtt} ms</span>
+                    <div style={{ flex: 1, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${Math.min(100, h.rtt / 3)}%`, height: '100%', background: h.rtt > 100 ? A.warn : A.good }} />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ padding: 16, fontFamily: A.mono, fontSize: 11, color: A.textFaint, whiteSpace: 'pre-wrap' }}>{traceResult.raw || 'No hop data'}</div>
+              )}
+            </ACard>
+          )}
+        </>)}
+
+        {activeTab === 'netwatch' && (<>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input value={nwHost} onChange={e => setNwHost(e.target.value)} placeholder="Host to monitor (e.g. ISP gateway 192.168.1.1)"
+              style={{ flex: 1, padding: '7px 12px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 8, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+            <select value={nwInterval} onChange={e => setNwInterval(e.target.value)} style={{ padding: '7px 10px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 8, color: A.text, fontSize: 12 }}>
+              {['5s','10s','30s','1m','5m'].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <ABtn kind="primary" onClick={handleAddNetwatch}>Add monitor</ABtn>
+            {nwMsg && <span style={{ fontSize: 11, color: nwMsg.includes('✓') ? A.good : A.bad, fontFamily: A.mono }}>{nwMsg}</span>}
+          </div>
+
+          <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '160px 60px 80px 1fr 80px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <span>Host</span><span>Status</span><span>Interval</span><span>Comment</span><span>Action</span>
+            </div>
+            {netwatch.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No monitors. Add a host above to start monitoring WAN health.</div>
+            ) : netwatch.map((w, i) => (
+              <div key={w.id} style={{
+                display: 'grid', gridTemplateColumns: '160px 60px 80px 1fr 80px',
+                padding: '10px 16px', borderBottom: i < netwatch.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+              }}>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{w.host}</span>
+                <APill tone={w.status === 'up' ? 'good' : w.status === 'down' ? 'bad' : 'dim'}>{w.status || '?'}</APill>
+                <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textDim }}>{w.interval}</span>
+                <span style={{ fontSize: 10, color: A.textFaint }}>{w.comment || '—'}</span>
+                <button onClick={() => API.removeNetwatch(sessionId, w.id).then(loadNetwatch)} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11 }}>Remove</button>
+              </div>
+            ))}
+          </div>
+        </>)}
+      </div>
+    </div>
+  );
+};
+
+// ========== PORT FORWARD WIZARD ==========
+
+const PORT_FORWARD_PRESETS = [
+  { label: 'Remote Desktop (RDP)', extPort: 3389, intPort: 3389, proto: 'tcp', icon: 'M2 3h12v10H2zM5 13v2M11 13v2M4 15h8' },
+  { label: 'Web Server (HTTP)',    extPort: 80,   intPort: 80,   proto: 'tcp', icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z' },
+  { label: 'HTTPS',                extPort: 443,  intPort: 443,  proto: 'tcp', icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4' },
+  { label: 'FTP',                  extPort: 21,   intPort: 21,   proto: 'tcp', icon: 'M3 3h10M3 8h10M3 13h6' },
+  { label: 'SSH',                  extPort: 22,   intPort: 22,   proto: 'tcp', icon: 'M2 2h12v12H2z' },
+  { label: 'CCTV / NVR (HTTP)',    extPort: 8080, intPort: 8080, proto: 'tcp', icon: 'M1 6h14M1 10h14M3 3v10M13 3v10' },
+  { label: 'CCTV (RTSP)',          extPort: 554,  intPort: 554,  proto: 'tcp', icon: 'M1 6h14M1 10h14' },
+  { label: 'VoIP (SIP)',           extPort: 5060, intPort: 5060, proto: 'udp', icon: 'M3 5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3' },
+  { label: 'Game Server',          extPort: 27015,intPort: 27015,proto: 'udp', icon: 'M8 4a4 4 0 1 0 0 8A4 4 0 0 0 8 4z' },
+  { label: 'Custom',               extPort: '',   intPort: '',   proto: 'tcp', icon: 'M8 1v14M1 8h14' },
+];
+
+const PortForwardScreen = ({ sessionId }) => {
+  const [rules, setRules]         = React.useState([]);
+  const [loadingRules, setLoadingRules] = React.useState(true);
+  const [preset, setPreset]       = React.useState(null);
+  const [extPort, setExtPort]     = React.useState('');
+  const [intIp, setIntIp]         = React.useState('');
+  const [intPort, setIntPort]     = React.useState('');
+  const [proto, setProto]         = React.useState('tcp');
+  const [comment, setComment]     = React.useState('');
+  const [wanIface, setWanIface]   = React.useState('');
+  const [addMsg, setAddMsg]       = React.useState('');
+
+  const loadRules = React.useCallback(async () => {
+    setLoadingRules(true);
+    try {
+      const d = await API.getNat(sessionId);
+      setRules((Array.isArray(d) ? d : []).filter(r => r.chain === 'dstnat' || r.action === 'dst-nat'));
+    } catch {}
+    setLoadingRules(false);
+  }, [sessionId]);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    loadRules();
+    const iv = setInterval(loadRules, 8000);
+    return () => clearInterval(iv);
+  }, [sessionId, loadRules]);
+
+  const selectPreset = (p) => {
+    setPreset(p.label);
+    if (p.extPort) setExtPort(String(p.extPort));
+    if (p.intPort) setIntPort(String(p.intPort));
+    setProto(p.proto || 'tcp');
+    setComment(p.label !== 'Custom' ? p.label : '');
+  };
+
+  const handleAdd = async () => {
+    if (!extPort || !intIp) { setAddMsg('External port and internal IP required'); return; }
+    setAddMsg('Creating…');
+    try {
+      const r = await API.portForward(sessionId, parseInt(extPort), intIp.trim(), intPort ? parseInt(intPort) : parseInt(extPort), proto, comment, wanIface);
+      setAddMsg('✓ ' + r.message);
+      setExtPort(''); setIntIp(''); setIntPort(''); setComment(''); setPreset(null);
+      await loadRules();
+    } catch (e) { setAddMsg('✗ ' + e.message); }
+    setTimeout(() => setAddMsg(''), 4000);
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 20px 12px', flexShrink: 0 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Port Forwarding · Wizard</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>Open ports for remote access · /ip firewall nat dstnat</div>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+        {/* left: wizard */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* preset chips */}
+          <ACard pad={14}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: A.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Common services</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+              {PORT_FORWARD_PRESETS.map(p => (
+                <button key={p.label} onClick={() => selectPreset(p)} style={{
+                  padding: '8px 6px', borderRadius: 8, border: `1px solid ${preset === p.label ? A.accent : A.border}`,
+                  background: preset === p.label ? A.accentSoft : 'transparent',
+                  color: preset === p.label ? '#BFDBFE' : A.textDim, fontSize: 10, cursor: 'pointer', textAlign: 'center', lineHeight: 1.4,
+                }}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', margin: '0 auto 4px' }}><path d={p.icon}/></svg>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </ACard>
+
+          {/* form */}
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 14 }}>Port forward configuration</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+              <ALabeledField label="External port" sub="internet-facing port" value={extPort} onChange={e => setExtPort(e.target.value)} mono type="number" />
+              <ALabeledField label="Internal IP" sub="LAN server address" value={intIp} onChange={e => setIntIp(e.target.value)} mono />
+              <ALabeledField label="Internal port" sub="leave blank = same as external" value={intPort} onChange={e => setIntPort(e.target.value)} mono type="number" />
+              <ALabeledField label="Comment / label" sub="e.g. Office Server" value={comment} onChange={e => setComment(e.target.value)} />
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 6 }}>Protocol</div>
+                <div style={{ display: 'flex', gap: 5 }}>
+                  {['tcp', 'udp', 'tcp+udp'].map(p => (
+                    <button key={p} onClick={() => setProto(p)} style={{ flex: 1, padding: '6px 0', borderRadius: 7, border: `1px solid ${proto === p ? A.accent : A.border}`, background: proto === p ? A.accentSoft : 'transparent', color: proto === p ? '#BFDBFE' : A.textDim, fontFamily: A.mono, fontSize: 11, cursor: 'pointer' }}>{p}</button>
+                  ))}
+                </div>
+              </div>
+              <ALabeledField label="WAN interface filter" sub="blank = any interface" value={wanIface} onChange={e => setWanIface(e.target.value)} mono />
+            </div>
+            {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('✓') ? A.good : A.bad, marginBottom: 8 }}>{addMsg}</div>}
+            <ABtn kind="primary" onClick={handleAdd} full>Create port forward</ABtn>
+          </ACard>
+        </div>
+
+        {/* right: existing rules */}
+        <div style={{ width: 360, flexShrink: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: A.textDim, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Active port forwards ({rules.length})</div>
+          <div style={{ background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden' }}>
+            {loadingRules ? <div style={{ padding: 20 }}><ASkeleton /></div>
+            : rules.length === 0 ? <div style={{ padding: 24, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No port forwards configured</div>
+            : rules.map((r, i) => (
+              <div key={r.id} style={{ padding: '10px 14px', borderBottom: i < rules.length - 1 ? `1px solid ${A.border}` : 'none', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{r.comment || `Rule ${r.id}`}</div>
+                  <div style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>
+                    ext:{r.dstPort || '?'} → {r.toAddresses || r.dstAddress || '?'}:{r.toPort || r.dstPort || '?'} · {r.protocol || 'tcp'}
+                  </div>
+                </div>
+                <APill tone={r.disabled ? 'dim' : 'good'}>{r.disabled ? 'off' : 'active'}</APill>
+                <button onClick={() => API.removeNat(sessionId, r.id).then(loadRules)} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 11 }}>✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ========== USERS SCREEN ==========
+
+const UsersScreen = ({ sessionId }) => {
+  const [users, setUsers]       = React.useState([]);
+  const [loading, setLoading]   = React.useState(true);
+  const [showAdd, setShowAdd]   = React.useState(false);
+  const [uName, setUName]       = React.useState('');
+  const [uPass, setUPass]       = React.useState('');
+  const [uGroup, setUGroup]     = React.useState('read');
+  const [uComment, setUComment] = React.useState('');
+  const [addMsg, setAddMsg]     = React.useState('');
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try { const d = await API.getUsers(sessionId); setUsers(Array.isArray(d) ? d : []); } catch {}
+    setLoading(false);
+  }, [sessionId]);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    load();
+  }, [sessionId, load]);
+
+  const handleAdd = async () => {
+    if (!uName.trim() || !uPass.trim()) { setAddMsg('Username and password required'); return; }
+    setAddMsg('Adding…');
+    try {
+      await API.addUser(sessionId, uName.trim(), uPass, uGroup, uComment);
+      setAddMsg('✓ User added');
+      setUName(''); setUPass(''); setUComment(''); setShowAdd(false);
+      await load();
+    } catch (e) { setAddMsg('✗ ' + e.message); }
+    setTimeout(() => setAddMsg(''), 3000);
+  };
+
+  const handleRemove = async (name) => {
+    if (!window.confirm(`Remove user "${name}"? This cannot be undone.`)) return;
+    try { await API.removeUser(sessionId, name); await load(); } catch (e) { alert(e.message); }
+  };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
+
+  return (
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Users · Access</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>/ip user · {users.length} accounts</div>
+        </div>
+        <ABtn kind="primary" onClick={() => { setShowAdd(true); setAddMsg(''); }}>+ Add user</ABtn>
+      </div>
+
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', gap: 0, padding: '0 20px 20px' }}>
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '150px 100px 130px 1fr 80px', padding: '9px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+            <span>Username</span><span>Group</span><span>Last login</span><span>Comment</span><span>Action</span>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {users.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No users found</div>
+            ) : users.map((u, i) => (
+              <div key={u.name} style={{
+                display: 'grid', gridTemplateColumns: '150px 100px 130px 1fr 80px',
+                padding: '11px 16px', borderBottom: i < users.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 500, fontFamily: A.mono, color: u.disabled ? A.textFaint : A.text }}>{u.name}</span>
+                <APill tone={u.group === 'full' ? 'bad' : u.group === 'write' ? 'warn' : 'dim'}>{u.group}</APill>
+                <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{u.lastLogin || 'never'}</span>
+                <span style={{ fontSize: 11, color: A.textDim }}>{u.comment || '—'}</span>
+                <button onClick={() => handleRemove(u.name)} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 11 }}>Remove</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {showAdd && (
+          <div style={{ width: 272, flexShrink: 0, marginLeft: 12 }}>
+            <ACard pad={16}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: A.text, marginBottom: 14 }}>Add user</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <ALabeledField label="Username" sub="alphanumeric + . - _" value={uName} onChange={e => setUName(e.target.value)} mono />
+                <ALabeledField label="Password" sub="min 8 chars recommended" value={uPass} onChange={e => setUPass(e.target.value)} type="password" />
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: A.text, marginBottom: 6 }}>Access group</div>
+                  <div style={{ display: 'flex', gap: 5 }}>
+                    {['read','write','full'].map(g => (
+                      <button key={g} onClick={() => setUGroup(g)} style={{ flex: 1, padding: '6px 0', borderRadius: 7, border: `1px solid ${uGroup === g ? A.accent : A.border}`, background: uGroup === g ? A.accentSoft : 'transparent', color: uGroup === g ? '#BFDBFE' : A.textDim, fontFamily: A.mono, fontSize: 11, cursor: 'pointer' }}>{g}</button>
+                    ))}
+                  </div>
+                </div>
+                <ALabeledField label="Comment" sub="optional note" value={uComment} onChange={e => setUComment(e.target.value)} />
+                {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <ABtn kind="secondary" onClick={() => setShowAdd(false)}>Cancel</ABtn>
+                  <ABtn kind="primary" onClick={handleAdd} full>Add</ABtn>
+                </div>
+              </div>
+            </ACard>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3807,81 +4742,164 @@ const RoutesScreen = ({ sessionId }) => {
 };
 
 const DnsScreen = ({ sessionId }) => {
-  const [dns, setDns] = React.useState(null);
-  const [loading, setLoading] = React.useState(true);
-  const [servers, setServers] = React.useState([]);
+  const [dns, setDns]           = React.useState(null);
+  const [statics, setStatics]   = React.useState([]);
+  const [loading, setLoading]   = React.useState(true);
+  const [servers, setServers]   = React.useState([]);
   const [newServer, setNewServer] = React.useState('');
   const [allowRemote, setAllowRemote] = React.useState(false);
+  const [saveMsg, setSaveMsg]   = React.useState('');
+  const [showAdd, setShowAdd]   = React.useState(false);
+  const [newName, setNewName]   = React.useState('');
+  const [newAddr, setNewAddr]   = React.useState('0.0.0.0');
+  const [newSubdomain, setNewSubdomain] = React.useState(true);
+  const [addMsg, setAddMsg]     = React.useState('');
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const [dnsData, statData] = await Promise.allSettled([
+        API.getDns(sessionId),
+        API.getDnsStatic(sessionId),
+      ]);
+      if (dnsData.status === 'fulfilled') {
+        setDns(dnsData.value);
+        setServers(dnsData.value.servers || []);
+        setAllowRemote(dnsData.value.allowRemoteRequests || false);
+      }
+      if (statData.status === 'fulfilled') setStatics(Array.isArray(statData.value) ? statData.value : []);
+    } catch {}
+    setLoading(false);
+  }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId) return;
-    const fetch = async () => {
-      setLoading(true);
-      try {
-        const data = await API.getDns(sessionId);
-        setDns(data);
-        setServers(data.servers || []);
-        setAllowRemote(data.allowRemoteRequests || false);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetch();
-  }, [sessionId]);
-
-  const handleAddServer = () => {
-    if (newServer && /^\d+\.\d+\.\d+\.\d+$/.test(newServer)) {
-      setServers([...servers, newServer]);
-      setNewServer('');
-    }
-  };
-
-  const handleRemoveServer = (ip) => {
-    setServers(servers.filter(s => s !== ip));
-  };
+    load();
+    const iv = setInterval(load, 8000);
+    return () => clearInterval(iv);
+  }, [sessionId, load]);
 
   const handleSave = async () => {
+    setSaveMsg('Saving…');
     try {
       await API.updateDns(sessionId, servers, allowRemote);
-      alert('DNS settings updated');
-    } catch (err) {
-      alert('Error: ' + err.message);
-    }
+      setSaveMsg('✓ Saved');
+    } catch (e) { setSaveMsg('✗ ' + e.message); }
+    setTimeout(() => setSaveMsg(''), 3000);
   };
 
-  if (loading) return <div style={{ flex: 1, overflow: 'auto', padding: 16 }}><ASkeleton /></div>;
+  const handleAddStatic = async () => {
+    if (!newName.trim() || !newAddr.trim()) { setAddMsg('Name and address required'); return; }
+    setAddMsg('Adding…');
+    try {
+      await API.addDnsStatic(sessionId, newName.trim(), newAddr.trim(), 'A', newSubdomain, '');
+      setAddMsg('✓ Added');
+      setNewName(''); setNewAddr('0.0.0.0'); setShowAdd(false);
+      await load();
+    } catch (e) { setAddMsg('✗ ' + e.message); }
+    setTimeout(() => setAddMsg(''), 3000);
+  };
+
+  const handleRemoveStatic = async (id) => {
+    try { await API.removeDnsStatic(sessionId, id); await load(); } catch (e) { alert(e.message); }
+  };
+
+  if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: 16, maxWidth: 600 }}>
-      <h2 style={{ color: A.text, marginBottom: 16 }}>DNS Settings</h2>
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 20px 12px', flexShrink: 0 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>DNS · Resolver</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>/ip dns · /ip dns static · {statics.length} static entries</div>
+      </div>
 
-      <ACard pad={16} style={{ marginBottom: 16 }}>
-        <h3 style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>Servers</h3>
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 20px 20px', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+        {/* Left: static entries */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 0, background: A.surface, border: `1px solid ${A.border}`, borderRadius: 12, overflow: 'hidden', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', padding: '10px 16px', borderBottom: `1px solid ${A.border}` }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>Static DNS entries</span>
+            <span style={{ flex: 1 }} />
+            <ABtn kind="primary" onClick={() => { setShowAdd(true); setAddMsg(''); }}>+ Add entry</ABtn>
+          </div>
 
-        <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
-          <input type="text" placeholder="DNS server IP" value={newServer} onChange={e => setNewServer(e.target.value)}
-            style={{ flex: 1, padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui }} />
-          <ABtn variant="primary" onClick={handleAddServer}>Add</ABtn>
+          {showAdd && (
+            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${A.border}`, background: 'rgba(59,130,246,0.04)' }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="hostname or domain (e.g. youtube.com)"
+                  style={{ flex: 2, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 7, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+                <input value={newAddr} onChange={e => setNewAddr(e.target.value)} placeholder="0.0.0.0 or IP"
+                  style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 7, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: A.textDim }}>
+                  <input type="checkbox" checked={newSubdomain} onChange={e => setNewSubdomain(e.target.checked)} />
+                  match-subdomain=yes (blocks *.domain)
+                </label>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <ABtn kind="secondary" onClick={() => setShowAdd(false)}>Cancel</ABtn>
+                <ABtn kind="primary" onClick={handleAddStatic}>Add</ABtn>
+              </div>
+              {addMsg && <div style={{ fontSize: 11, marginTop: 6, color: addMsg.includes('✓') ? A.good : A.bad }}>{addMsg}</div>}
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px 80px 90px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            <span>Name</span><span>Address</span><span>Subdomain</span><span>Action</span>
+          </div>
+          <div style={{ maxHeight: 420, overflow: 'auto' }}>
+            {statics.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: A.textFaint, fontSize: 12 }}>No static entries</div>
+            ) : statics.map((s, i) => (
+              <div key={s.id || i} style={{
+                display: 'grid', gridTemplateColumns: '1fr 130px 80px 90px',
+                padding: '10px 16px', borderBottom: i < statics.length - 1 ? `1px solid ${A.border}` : 'none',
+                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
+              }}>
+                <span style={{ fontSize: 12, fontFamily: A.mono, color: s.disabled ? A.textFaint : A.text }}>{s.name}</span>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: s.address === '0.0.0.0' ? A.bad : A.good }}>{s.address || '—'}</span>
+                <APill tone={s.matchSubdomain ? 'accent' : 'dim'}>{s.matchSubdomain ? 'yes' : 'no'}</APill>
+                <button onClick={() => handleRemoveStatic(s.id)} style={{ background: 'rgba(239,68,68,0.15)', color: '#FCA5A5', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 11 }}>Remove</button>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {servers.map(ip => (
-          <div key={ip} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, background: A.surface, borderRadius: 6, marginBottom: 6 }}>
-            <span style={{ color: A.text, fontFamily: A.mono }}>{ip}</span>
-            <button onClick={() => handleRemoveServer(ip)} style={{ background: 'none', border: 'none', color: A.bad, cursor: 'pointer', fontSize: 14 }}>×</button>
-          </div>
-        ))}
-      </ACard>
+        {/* Right: DNS server settings */}
+        <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <ACard pad={16}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>DNS Servers</div>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+              <input value={newServer} onChange={e => setNewServer(e.target.value)} placeholder="8.8.8.8"
+                style={{ flex: 1, padding: '6px 10px', background: 'rgba(0,0,0,0.2)', border: `1px solid ${A.border}`, borderRadius: 7, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+              <ABtn kind="secondary" onClick={() => {
+                if (newServer && /^\d+\.\d+\.\d+\.\d+$/.test(newServer.trim())) {
+                  setServers(p => [...p, newServer.trim()]);
+                  setNewServer('');
+                }
+              }}>Add</ABtn>
+            </div>
+            {servers.map(ip => (
+              <div key={ip} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: 'rgba(0,0,0,0.15)', borderRadius: 6, marginBottom: 5 }}>
+                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{ip}</span>
+                <button onClick={() => setServers(p => p.filter(s => s !== ip))} style={{ background: 'none', border: 'none', color: A.bad, cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>×</button>
+              </div>
+            ))}
+          </ACard>
 
-      <ACard pad={16} style={{ marginBottom: 16 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-          <input type="checkbox" checked={allowRemote} onChange={e => setAllowRemote(e.target.checked)} style={{ cursor: 'pointer' }} />
-          <span style={{ color: A.text, fontSize: 12 }}>Allow remote requests</span>
-        </label>
-      </ACard>
+          <ACard pad={16}>
+            <AToggleRow label="Allow remote requests" sub="clients can use this router as DNS" on={allowRemote} onChange={setAllowRemote} />
+          </ACard>
 
-      <ABtn variant="primary" onClick={handleSave} style={{ width: '100%' }}>Save DNS Settings</ABtn>
+          <ACard pad={14}>
+            <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono, marginBottom: 4 }}>Cache size: {dns?.cacheSize || 2048} KB</div>
+            <div style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>Max TTL: {dns?.cacheMaxTtl || '1w'}</div>
+          </ACard>
+
+          {saveMsg && <div style={{ fontSize: 11, color: saveMsg.includes('✓') ? A.good : A.bad, fontFamily: A.mono }}>{saveMsg}</div>}
+          <ABtn kind="primary" onClick={handleSave} full>Save DNS settings</ABtn>
+        </div>
+      </div>
     </div>
   );
 };
@@ -4136,7 +5154,11 @@ const App = () => {
       case 'Logs':        return <LogsScreen sessionId={sessionId} />;
       case 'Scripts':     return <ScriptsScreen sessionId={sessionId} />;
       case 'Backup':      return <BackupScreen sessionId={sessionId} />;
-      case 'Settings':    return <SettingsScreen sessionId={sessionId} router={router} />;
+      case 'Users':         return <UsersScreen sessionId={sessionId} />;
+      case 'Automation':    return <AutomationScreen sessionId={sessionId} />;
+      case 'NetworkHealth': return <NetworkHealthScreen sessionId={sessionId} />;
+      case 'PortForward':   return <PortForwardScreen sessionId={sessionId} />;
+      case 'Settings':      return <SettingsScreen sessionId={sessionId} router={router} />;
       default:            return null;
     }
   };
