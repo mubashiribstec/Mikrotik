@@ -1368,10 +1368,10 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
 };
 
 const ONE_CLICK_ACTIONS = [
-  { id: 'youtube',  title: 'Block YouTube',    sub: 'DNS block',         icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'youtube',  method: 'dns'   },
-  { id: 'facebook', title: 'Block Facebook',   sub: 'DNS block',         icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'facebook', method: 'dns'   },
-  { id: 'tiktok',   title: 'Block TikTok',     sub: 'DNS block',         icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'tiktok',   method: 'dns'   },
-  { id: 'torrents', title: 'Block Torrents',   sub: 'L7 + P2P ports',   icon: 'M2 11h12M2 5h12M9 2l-4 6 4 6',                            action: 'block-service', svc: 'torrents', method: 'layer7'},
+  { id: 'youtube',  title: 'Block YouTube',    sub: 'DNS + IP + L7',     icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'youtube',  method: 'comprehensive' },
+  { id: 'facebook', title: 'Block Facebook',   sub: 'DNS + IP + L7',     icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'facebook', method: 'comprehensive' },
+  { id: 'tiktok',   title: 'Block TikTok',     sub: 'DNS + IP + L7',     icon: 'M10 8L7 6v4zM8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2z',        action: 'block-service', svc: 'tiktok',   method: 'comprehensive' },
+  { id: 'torrents', title: 'Block Torrents',   sub: 'L7 + P2P + DNS',   icon: 'M2 11h12M2 5h12M9 2l-4 6 4 6',                            action: 'block-service', svc: 'torrents', method: 'comprehensive'},
   { id: 'safe',     title: 'Safe-search DNS',  sub: 'force safesearch',  icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4z',action: 'safe-search'  },
   { id: 'dns-flush',title: 'Flush DNS cache',  sub: '/ip dns cache flush',icon: 'M13.5 2.5A6.5 6.5 0 1 1 8 1.5M13.5 2.5V6M13.5 2.5H10',  action: 'flush-dns'    },
 ];
@@ -2149,12 +2149,12 @@ const WANScreen = ({ sessionId }) => {
 };
 
 const BLOCK_SERVICES = [
-  { id: 'youtube',  label: 'YouTube',       category: 'Streaming', method: 'dns',    domains: ['youtube.com','googlevideo.com','ytimg.com','youtu.be','yt3.ggpht.com','i.ytimg.com','s.ytimg.com','video.google.com'] },
-  { id: 'facebook', label: 'Facebook',      category: 'Social',    method: 'dns',    domains: ['facebook.com','fbcdn.net','instagram.com','fb.com','messenger.com'] },
-  { id: 'tiktok',   label: 'TikTok',        category: 'Social',    method: 'dns',    domains: ['tiktok.com','tiktokcdn.com','musical.ly','tiktokv.com','tiktokcdn-us.com'] },
-  { id: 'netflix',  label: 'Netflix',       category: 'Streaming', method: 'dns',    domains: ['netflix.com','nflxvideo.net','nflximg.net','nflxext.com','nflxso.net'] },
+  { id: 'youtube',  label: 'YouTube',       category: 'Streaming', method: 'comprehensive', domains: ['youtube.com','googlevideo.com','ytimg.com','youtu.be','ggpht.com','youtube-nocookie.com'] },
+  { id: 'facebook', label: 'Facebook',      category: 'Social',    method: 'comprehensive', domains: ['facebook.com','fbcdn.net','instagram.com','fb.com','messenger.com','whatsapp.net'] },
+  { id: 'tiktok',   label: 'TikTok',        category: 'Social',    method: 'comprehensive', domains: ['tiktok.com','tiktokcdn.com','musical.ly','tiktokv.com','bytedance.com'] },
+  { id: 'netflix',  label: 'Netflix',       category: 'Streaming', method: 'comprehensive', domains: ['netflix.com','nflxvideo.net','nflximg.net','nflxext.com','nflxso.net'] },
   { id: 'adult',    label: 'Adult Content', category: 'Explicit',  method: 'dns',    domains: ['pornhub.com','xvideos.com','xnxx.com','xhamster.com','redtube.com','youporn.com'] },
-  { id: 'torrents', label: 'Torrents',      category: 'P2P',       method: 'layer7', domains: ['thepiratebay.org','1337x.to','rarbg.to','nyaa.si','kickasstorrents.to','torrentgalaxy.to'] },
+  { id: 'torrents', label: 'Torrents',      category: 'P2P',       method: 'comprehensive', domains: ['thepiratebay.org','1337x.to','rarbg.to','nyaa.si','kickasstorrents.to','torrentgalaxy.to'] },
   { id: 'gambling', label: 'Gambling',      category: 'Finance',   method: 'dns',    domains: ['bet365.com','pokerstars.com','888casino.com','draftkings.com','fanduel.com'] },
   { id: 'crypto',   label: 'Crypto Mining', category: 'Mining',    method: 'dns',    domains: ['coinhive.com','coin-hive.com','cryptoloot.pro','minero.cc','jsecoin.com'] },
 ];
@@ -2308,14 +2308,14 @@ const FirewallScreen = ({ sessionId }) => {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 3, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-                    {['dns', 'mangle', 'layer7'].map(m => (
+                    {['comprehensive', 'dns', 'mangle', 'layer7'].map(m => (
                       <button key={m} onClick={() => setBlockMethods(prev => ({ ...prev, [svc.id]: m }))} style={{
                         padding: '3px 7px', borderRadius: 5, fontSize: 10, fontFamily: A.mono,
                         border: `1px solid ${blockMethods[svc.id] === m ? A.accent : A.border}`,
                         background: blockMethods[svc.id] === m ? A.accentSoft : 'transparent',
                         color: blockMethods[svc.id] === m ? '#BFDBFE' : A.textFaint,
                         cursor: 'pointer', transition: 'all 0.15s',
-                      }}>{m}</button>
+                      }}>{m === 'comprehensive' ? 'all' : m}</button>
                     ))}
                   </div>
                   <div style={{ width: 36, height: 20, borderRadius: 999, background: isBlocked ? A.bad : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>

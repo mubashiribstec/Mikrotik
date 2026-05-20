@@ -2246,10 +2246,9 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
       // METHOD-SPECIFIC ADDITIONS
       // ----------------------------------------------------------------
 
-      if (blockMethod === 'layer7') {
-        // L7 METHOD: Add L7 pattern + filter forward DROP for L7-matched traffic.
-        // Using /ip firewall filter chain=forward directly (RouterOS 7 supports this).
-        // L7 inspects plaintext + TLS SNI bytes to match domain keywords.
+      if (blockMethod === 'layer7' || blockMethod === 'comprehensive') {
+        // L7: Add L7 pattern + filter forward DROP for L7-matched traffic.
+        // Inspects plaintext + TLS ClientHello SNI bytes for domain keywords.
 
         if (serviceId === 'torrents') {
           await blockTorrentsL7(conn);
@@ -2258,26 +2257,21 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
           const pattern = [...new Set(domains.slice(0, 6).map(d => d.split('.')[0]).filter(Boolean))].join('|');
           const regexp = `(${pattern})`;
 
-          // Add L7 protocol definition (use set if already exists)
           const l7Out = await conn.execute(`/ip firewall layer7-protocol add name="${comment}" regexp="${regexp}" comment="${comment}"`);
           if (rosError(l7Out)) {
             await conn.execute(`/ip firewall layer7-protocol set [find name="${comment}"] regexp="${regexp}"`);
           }
-          report.steps.push({ ok: true, name: `L7 protocol: regexp=(${pattern})` });
+          report.steps.push({ ok: true, name: `L7 protocol added: regexp=(${pattern})` });
 
-          // Filter forward DROP when L7 matches (appended, no place-before)
           const lf = await conn.execute(`/ip firewall filter add chain=forward layer7-protocol="${comment}" action=drop comment="${comment}"`);
-          if (!rosError(lf)) {
-            report.steps.push({ ok: true, name: 'L7 filter rule added (chain=forward)' });
-          } else {
-            report.steps.push({ ok: false, name: `L7 filter rule failed: ${lf.trim().split('\n')[0]}` });
-          }
+          report.steps.push({ ok: !rosError(lf), name: rosError(lf) ? `L7 filter failed: ${lf.trim().split('\n')[0]}` : 'L7 filter rule added (chain=forward)' });
         }
+      }
 
-      } else if (blockMethod === 'mangle') {
-        // MANGLE/IP METHOD: Add known IP CIDR ranges to address-list + filter rule.
-        // RouterOS address-lists only accept IPs/CIDRs (not domain names).
-        // DNS blocking above handles domain-based connections.
+      if (blockMethod === 'mangle' || blockMethod === 'comprehensive') {
+        // MANGLE/IP: Add known IP CIDR ranges to address-list + filter rule.
+        // RouterOS address-lists only accept IPs/CIDRs, not domain names.
+        // Combined with DNS blocking above for comprehensive coverage.
 
         const ipRanges = BLOCK_SERVICE_IPS[serviceId] || [];
         let ipAdded = 0;
@@ -2287,15 +2281,15 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
         }
 
         if (ipAdded > 0) {
-          // Filter forward DROP for the address-list (IP-based blocking)
           const rfOut = await conn.execute(`/ip firewall filter add chain=forward dst-address-list="${comment}" action=drop comment="${comment}"`);
-          report.steps.push({ ok: !rosError(rfOut), name: `IP ranges: ${ipAdded} CIDRs added + filter rule${rosError(rfOut) ? ' (filter failed)' : ''}` });
+          report.steps.push({ ok: !rosError(rfOut), name: `IP ranges: ${ipAdded}/${ipRanges.length} CIDRs + address-list filter rule` });
+        } else if (ipRanges.length === 0) {
+          report.steps.push({ ok: true, name: 'No IP ranges for this service — DNS+L7 blocking active' });
         } else {
-          report.steps.push({ ok: true, name: 'No IP ranges available for this service — DNS blocking active' });
+          report.steps.push({ ok: false, name: `IP ranges failed to add (${ipRanges.length} attempted)` });
         }
-
       }
-      // DNS method: only the shared foundation above (DNS static + filter rule) — no extra steps.
+      // 'dns' method: only the shared foundation above — no extra steps.
 
     } else {
       // UNBLOCK — remove all netforge rules for this service
