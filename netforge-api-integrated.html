@@ -1041,108 +1041,59 @@ const SCRIPT_TEMPLATES = {
   system_info: {
     name: 'system_info',
     label: 'System Information',
-    description: 'Display detailed system information',
+    description: 'Log CPU, memory, uptime to system log',
     schedule: 'manual',
-    icon: '📊'
+    source: `:local cpu [/system resource get cpu-load]\n:local mem [/system resource get free-memory]\n:local uptime [/system resource get uptime]\n/log info "=== System Info ==="\n/log info ("CPU: " . $cpu . "%")\n/log info ("Free RAM: " . $mem . " bytes")\n/log info ("Uptime: " . $uptime)`,
   },
   daily_backup: {
     name: 'daily_backup',
     label: 'Daily Backup',
-    description: 'Create backup at 2 AM daily',
+    description: 'Create timestamped backup',
     schedule: '0 2 * * *',
-    icon: '💾'
+    source: `:local date [/system clock get date]\n:local name ("auto-backup-" . $date)\n/system backup save name=$name\n/log info ("Backup saved: " . $name . ".backup")`,
   },
   health_check: {
     name: 'health_check',
     label: 'Health Check',
-    description: 'Monitor CPU, memory, disk usage',
+    description: 'Alert if CPU or RAM is critically high',
     schedule: '*/5 * * * *',
-    icon: '❤️'
+    source: `:local cpu [/system resource get cpu-load]\n:local memFree [/system resource get free-memory]\n:local memTotal [/system resource get total-memory]\n:local memPct ($memFree * 100 / $memTotal)\nif ($cpu > 90) do={ /log warning ("HIGH CPU: " . $cpu . "%") }\nif ($memPct < 10) do={ /log warning ("LOW MEMORY: " . $memPct . "% free") }\n/log info ("Health OK — CPU " . $cpu . "% RAM free " . $memPct . "%")`,
   },
   cleanup_logs: {
     name: 'cleanup_logs',
     label: 'Cleanup Logs',
-    description: 'Remove logs older than 30 days',
+    description: 'Clear old log buffer entries',
     schedule: '0 3 * * 0',
-    icon: '🗑️'
-  },
-  interface_monitor: {
-    name: 'interface_monitor',
-    label: 'Interface Monitor',
-    description: 'Monitor all interface statistics',
-    schedule: '*/10 * * * *',
-    icon: '🔗'
-  },
-  bandwidth_report: {
-    name: 'bandwidth_report',
-    label: 'Bandwidth Report',
-    description: 'Generate bandwidth usage report',
-    schedule: '0 * * * *',
-    icon: '📈'
-  },
-  firewall_stats: {
-    name: 'firewall_stats',
-    label: 'Firewall Stats',
-    description: 'Show firewall rule statistics',
-    schedule: 'manual',
-    icon: '🛡️'
-  },
-  dhcp_status: {
-    name: 'dhcp_status',
-    label: 'DHCP Status',
-    description: 'Check DHCP server status and leases',
-    schedule: 'manual',
-    icon: '📍'
-  },
-  wireless_monitor: {
-    name: 'wireless_monitor',
-    label: 'Wireless Monitor',
-    description: 'Monitor wireless network activity',
-    schedule: '*/5 * * * *',
-    icon: '📶'
-  },
-  vpn_check: {
-    name: 'vpn_check',
-    label: 'VPN Check',
-    description: 'Check VPN connection status',
-    schedule: 'manual',
-    icon: '🔐'
-  },
-  system_update_check: {
-    name: 'system_update_check',
-    label: 'Update Check',
-    description: 'Check for system updates',
-    schedule: '0 6 * * *',
-    icon: '⬆️'
-  },
-  backup_restore: {
-    name: 'backup_restore',
-    label: 'Backup Restore',
-    description: 'Restore from backup file',
-    schedule: 'manual',
-    icon: '⏮️'
-  },
-  reset_interface: {
-    name: 'reset_interface',
-    label: 'Reset Interface',
-    description: 'Reset network interface settings',
-    schedule: 'manual',
-    icon: '🔄'
-  },
-  restart_service: {
-    name: 'restart_service',
-    label: 'Restart Service',
-    description: 'Restart system services',
-    schedule: 'manual',
-    icon: '♻️'
+    source: `/log info "Starting log cleanup"\n/log remove [find]\n/log info "Log buffer cleared by cleanup script"`,
   },
   check_dns: {
     name: 'check_dns',
     label: 'DNS Check',
-    description: 'Verify DNS resolution',
+    description: 'Test DNS resolution, log result',
     schedule: '*/15 * * * *',
-    icon: '🔍'
-  }
+    source: `:local result [resolve name="google.com"]\nif ($result != "") do={\n  /log info ("DNS OK: google.com -> " . $result)\n} else={\n  /log error "DNS FAIL: could not resolve google.com"\n}`,
+  },
+  firewall_stats: {
+    name: 'firewall_stats',
+    label: 'Firewall Stats',
+    description: 'Log hit counts for all filter rules',
+    schedule: 'manual',
+    source: `/log info "=== Firewall Filter Stats ==="\n:foreach r in=[/ip firewall filter find] do={\n  :local bytes [/ip firewall filter get $r bytes]\n  :local packets [/ip firewall filter get $r packets]\n  :local comment [/ip firewall filter get $r comment]\n  /log info ("rule=" . $comment . " packets=" . $packets . " bytes=" . $bytes)\n}`,
+  },
+  dhcp_status: {
+    name: 'dhcp_status',
+    label: 'DHCP Status',
+    description: 'Count active DHCP leases and log',
+    schedule: 'manual',
+    source: `:local count 0\n:foreach l in=[/ip dhcp-server lease find active] do={ :set count ($count + 1) }\n/log info ("Active DHCP leases: " . $count)`,
+  },
+  vpn_check: {
+    name: 'vpn_check',
+    label: 'VPN Check',
+    description: 'Log active WireGuard peer count',
+    schedule: 'manual',
+    source: `:local peers 0\n:foreach p in=[/interface wireguard peers find] do={ :set peers ($peers + 1) }\n/log info ("WireGuard peers configured: " . $peers)`,
+  },
 };
 
 const TerminalOutput = ({ output, status, exitCode, elapsed, isLoading }) => (
@@ -3634,9 +3585,15 @@ const ScriptsScreen = ({ sessionId }) => {
     return () => clearInterval(iv);
   }, [executing, execStatus]);
 
-  const handleRun = async (scriptName) => {
+  const handleRun = async (scriptName, isTemplate, templateSource) => {
     setExecOutput('Starting…\n'); setExecStatus('running'); setExecElapsed(0);
     try {
+      if (isTemplate && templateSource) {
+        // Deploy template to router first, then run it
+        setExecOutput('Deploying template to router…\n');
+        await API.addScript(sessionId, scriptName, templateSource);
+        const d = await API.getScripts(sessionId); setScripts(d);
+      }
       const r = await API.executeScript(sessionId, scriptName);
       setExecuting(r.executionId);
     } catch (e) { setExecOutput(`Error: ${e.message}`); setExecStatus('error'); setExecuting(null); }
@@ -3698,8 +3655,8 @@ const ScriptsScreen = ({ sessionId }) => {
                 <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 6 }}>{script.description || '—'}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>{script.lastRun || 'never'} · {script.schedule || 'manual'}</span>
-                  <button onClick={e => { e.stopPropagation(); handleRun(script.name); }} disabled={executing !== null} style={{ padding: '3px 10px', background: executing === script.name ? A.accentSoft : 'rgba(255,255,255,0.06)', border: `1px solid ${A.border}`, borderRadius: 6, color: executing === script.name ? '#BFDBFE' : A.textDim, fontSize: 10, cursor: 'pointer' }}>
-                    {executing === script.name ? '▌ …' : '▶ Run'}
+                  <button onClick={e => { e.stopPropagation(); handleRun(script.name, script.status === 'template', script.source); }} disabled={executing !== null} style={{ padding: '3px 10px', background: executing === script.name ? A.accentSoft : 'rgba(255,255,255,0.06)', border: `1px solid ${A.border}`, borderRadius: 6, color: executing === script.name ? '#BFDBFE' : A.textDim, fontSize: 10, cursor: 'pointer' }}>
+                    {executing === script.name ? '▌ …' : script.status === 'template' ? '⬆ Deploy' : '▶ Run'}
                   </button>
                 </div>
               </div>
@@ -3727,7 +3684,7 @@ const ScriptsScreen = ({ sessionId }) => {
               <div style={{ padding: '10px 16px', borderBottom: `1px solid ${A.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{sel.label || sel.name}</span>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <ABtn kind="primary" onClick={() => handleRun(sel.name)} disabled={executing !== null}>▶ Run now</ABtn>
+                  <ABtn kind="primary" onClick={() => handleRun(sel.name, sel.status === 'template', sel.source)} disabled={executing !== null}>{sel.status === 'template' ? '⬆ Deploy & Run' : '▶ Run now'}</ABtn>
                   {sel.status !== 'template' && (
                     <ABtn kind="secondary" onClick={() => handleDeleteScript(sel.name)}>Delete</ABtn>
                   )}

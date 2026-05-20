@@ -1215,7 +1215,8 @@ app.get('/api/scripts', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const conn = getConnection(sessionId);
-    const output = await conn.execute('/system script print');
+    // 'print detail' includes the source field; plain 'print' does not
+    const output = await conn.execute('/system script print detail');
     const scripts = parseRouterOSOutput(output);
 
     const data = scripts.map(s => ({
@@ -1223,6 +1224,8 @@ app.get('/api/scripts', async (req, res) => {
       lastRun: s.last_started || 'never',
       runCount: parseInt(s.run_count) || 0,
       policy: s.policy || '',
+      source: s.source || '',
+      comment: s.comment || '',
     }));
 
     res.json(data.length > 0 ? data : []);
@@ -1754,24 +1757,20 @@ app.post('/api/hotspot/user/remove', async (req, res) => {
 
 const scriptExecutions = new Map();
 
-const ALLOWED_SCRIPTS = new Set([
-  'system_info', 'daily_backup', 'health_check', 'cleanup_logs',
-  'interface_monitor', 'bandwidth_report', 'firewall_stats', 'dhcp_status',
-  'wireless_monitor', 'vpn_check', 'system_update_check', 'backup_restore',
-  'reset_interface', 'restart_service', 'check_dns',
-]);
-
 app.post('/api/scripts/execute', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
     const { scriptName } = req.body;
-    if (!scriptName || typeof scriptName !== 'string') {
+    if (!scriptName || typeof scriptName !== 'string' || !/^[a-zA-Z0-9._-]{1,64}$/.test(scriptName)) {
       return res.status(400).json({ error: 'Invalid script name format' });
     }
-    if (!ALLOWED_SCRIPTS.has(scriptName)) {
-      return res.status(403).json({ error: 'Script not allowed' });
+    // Verify the script actually exists on the router before running
+    const conn = getConnection(sessionId);
+    const existing = parseRouterOSOutput(await conn.execute('/system script print'));
+    if (!existing.some(s => s.name === scriptName)) {
+      return res.status(404).json({ error: `Script "${scriptName}" not found on router` });
     }
 
     const executionId = Math.random().toString(36).substring(7);
@@ -1783,8 +1782,8 @@ app.post('/api/scripts/execute', async (req, res) => {
 
     (async () => {
       try {
-        const conn = getConnection(sessionId);
-        execution.output = await conn.execute(`/system script run name="${scriptName}"`);
+        execution.output = await conn.execute(`/system script run "${scriptName}"`);
+        if (!execution.output) execution.output = '(script completed — no output)';
         execution.status = 'done';
         execution.exitCode = 0;
       } catch (err) {
@@ -1929,9 +1928,13 @@ app.post('/api/scripts/add', async (req, res) => {
     if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name)) return res.status(400).json({ error: 'Invalid script name' });
     const conn = getConnection(sessionId);
     const pol = policy || 'read,write,policy,test';
-    const out = await conn.execute(`/system script add name="${name}" policy="${pol}" source="${source.replace(/"/g, '\\"')}"`);
-    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
-    res.json({ success: true, message: `Script "${name}" added` });
+    // Upsert: try add, fall back to set if name already exists
+    const addOut = await conn.execute(`/system script add name="${name}" policy="${pol}" source="${source.replace(/"/g, '\\"')}"`);
+    if (rosError(addOut)) {
+      const setOut = await conn.execute(`/system script set [find name="${name}"] policy="${pol}" source="${source.replace(/"/g, '\\"')}"`);
+      if (rosError(setOut)) return res.status(500).json({ error: setOut.trim().split('\n')[0] || 'Failed to save script' });
+    }
+    res.json({ success: true, message: `Script "${name}" saved` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1946,7 +1949,7 @@ app.post('/api/scripts/remove', async (req, res) => {
     if (!name) return res.status(400).json({ error: 'Script name required' });
     const conn = getConnection(sessionId);
     const out = await conn.execute(`/system script remove [find name="${name}"]`);
-    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `Script "${name}" removed` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
