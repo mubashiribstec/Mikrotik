@@ -211,10 +211,10 @@ const API = {
     return await response.json();
   },
 
-  async login(host, port, username, password) {
+  async login(host, port, username, password, connectionType = 'ssh', apiPort = 8728) {
     return this.call(null, '/api/login', {
       method: 'POST',
-      body: JSON.stringify({ host, port: parseInt(port) || 22, username, password }),
+      body: JSON.stringify({ host, port: parseInt(port) || 22, username, password, connectionType, apiPort: parseInt(apiPort) || 8728 }),
     });
   },
 
@@ -1146,6 +1146,8 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
   const [saveCredentials, setSaveCredentials] = React.useState(true);
   const [recents, setRecents] = React.useState([]);
   const [activeIdx, setActiveIdx] = React.useState(null);
+  const [connType, setConnType] = React.useState('ssh'); // 'ssh' | 'api'
+  const [apiPort, setApiPort] = React.useState('8728');
 
   // Load recent connections on mount
   React.useEffect(() => {
@@ -1207,19 +1209,20 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
     setError(null);
     setLoading(true);
     try {
-      const result = await API.login(host, port, username, password);
+      const result = await API.login(host, port, username, password, connType, apiPort);
       const sid = result.sessionId;
+      const connPort = connType === 'api' ? parseInt(apiPort) || 8728 : parseInt(port) || 22;
       try {
         localStorage.setItem('netforge_session', JSON.stringify({
-          sessionId: sid, host, port: parseInt(port) || 22, username, ts: Date.now(),
+          sessionId: sid, host, port: connPort, username, ts: Date.now(),
         }));
       } catch {}
       API.initWebSocket(sid); // background — no blocking
       if (saveCredentials) {
-        saveRecent({ name: deviceLabel, host, port: parseInt(port) || 22, username, timestamp: Date.now() });
+        saveRecent({ name: deviceLabel, host, port: connPort, username, timestamp: Date.now() });
       }
       setSessionId(sid);
-      setRouter({ host, port: parseInt(port), username });
+      setRouter({ host, port: connPort, username, connectionType: connType });
       setPage('Dashboard');
     } catch (err) {
       setError(err.message || 'Connection failed');
@@ -1232,10 +1235,10 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
     setError(null);
     setTesting(true);
     try {
-      const r = await API.login(host, port, username, password);
+      const r = await API.login(host, port, username, password, connType, apiPort);
       if (r.sessionId) {
         try { await API.logout(r.sessionId); } catch {}
-        setError('✓ Connection successful — router is reachable');
+        setError(`✓ Connection successful via ${r.connectionType === 'api' ? 'RouterOS API' : 'SSH'}`);
       }
     } catch (err) {
       setError(err.message || 'Connection failed');
@@ -1316,13 +1319,29 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <ALabeledField label="Host" sub="ip address or hostname" value={host} onChange={e => { setHost(e.target.value); setActiveIdx(null); }} mono />
+
+            {/* Connection type selector */}
+            <div>
+              <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 6 }}>Connection type</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                {[['ssh','SSH (port 22)','Secure Shell — standard, widely supported'],['api','RouterOS API (8728)','Native API — faster live data, no SSH needed']].map(([v, label, sub]) => (
+                  <div key={v} onClick={() => setConnType(v)} style={{ padding: '8px 10px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${connType === v ? A.accent : A.border}`, background: connType === v ? 'rgba(59,130,246,0.1)' : 'transparent' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: connType === v ? '#93C5FD' : A.text }}>{label}</div>
+                    <div style={{ fontSize: 10, color: A.textFaint, marginTop: 2 }}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 10 }}>
-              <ALabeledField label="Username" sub="ssh user" value={username} onChange={e => setUsername(e.target.value)} />
-              <ALabeledField label="Port" sub="ssh port" value={port} onChange={e => setPort(e.target.value)} mono type="number" />
+              <ALabeledField label="Username" sub="router username" value={username} onChange={e => setUsername(e.target.value)} />
+              {connType === 'ssh'
+                ? <ALabeledField label="SSH Port" sub="default 22" value={port} onChange={e => setPort(e.target.value)} mono type="number" />
+                : <ALabeledField label="API Port" sub="default 8728" value={apiPort} onChange={e => setApiPort(e.target.value)} mono type="number" />
+              }
             </div>
             <ALabeledField label="Password" sub="router password" value={password} onChange={e => setPassword(e.target.value)} type="password" mono />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <AToggleRow label="Use TLS (api-ssl)" sub="api-ssl port 8729" on={useTls} onChange={setUseTls} />
               <AToggleRow label="Save credentials" sub="stored locally" on={saveCredentials} onChange={setSaveCredentials} />
             </div>
           </div>

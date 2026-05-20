@@ -3,6 +3,8 @@ const ssh2 = require('ssh2');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
+const crypto = require('crypto');
 const WebSocket = require('ws');
 const http = require('http');
 const rateLimit = require('express-rate-limit');
@@ -152,6 +154,303 @@ class RouterConnection {
       try { this.conn.end(); } catch {}
       this.conn = null;
     }
+  }
+}
+
+// ========== ROUTEROS API CLIENT (port 8728 — alternative to SSH) ==========
+
+// Protocol encoding
+function _apiEncLen(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  if (n < 0x4000) return Buffer.from([(n >> 8) | 0x80, n & 0xFF]);
+  if (n < 0x200000) return Buffer.from([(n >> 16) | 0xC0, (n >> 8) & 0xFF, n & 0xFF]);
+  return Buffer.from([(n >> 24) | 0xE0, (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF]);
+}
+function _apiDecLen(buf, pos) {
+  const b = buf[pos];
+  if ((b & 0x80) === 0x00) return { len: b, skip: 1 };
+  if ((b & 0xC0) === 0x80) return { len: ((b & 0x3F) << 8) | buf[pos + 1], skip: 2 };
+  if ((b & 0xE0) === 0xC0) return { len: ((b & 0x1F) << 16) | (buf[pos + 1] << 8) | buf[pos + 2], skip: 3 };
+  return { len: ((b & 0x0F) << 24) | (buf[pos + 1] << 16) | (buf[pos + 2] << 8) | buf[pos + 3], skip: 4 };
+}
+function _apiEncWord(w) { const wb = Buffer.from(w, 'utf-8'); return Buffer.concat([_apiEncLen(wb.length), wb]); }
+function _apiEncSentence(words) { return Buffer.concat([...words.map(_apiEncWord), Buffer.from([0])]); }
+
+// Parse raw TCP stream into complete RouterOS API sentences
+function _apiParseBuf(buf) {
+  const sentences = [];
+  let pos = 0;
+  outer: while (pos < buf.length) {
+    const start = pos;
+    const words = [];
+    while (true) {
+      if (pos >= buf.length) { pos = start; break outer; }
+      const { len, skip } = _apiDecLen(buf, pos);
+      pos += skip;
+      if (len === 0) { sentences.push(words); break; }
+      if (pos + len > buf.length) { pos = start; break outer; }
+      words.push(buf.slice(pos, pos + len).toString('utf-8'));
+      pos += len;
+    }
+  }
+  return { sentences, remaining: buf.slice(pos) };
+}
+
+// Tokenize a RouterOS CLI command (handles quoted strings and [find ...] blocks)
+function _cliTokenize(cmd) {
+  const tokens = []; let i = 0; const s = cmd.trim();
+  while (i < s.length) {
+    while (i < s.length && s[i] === ' ') i++;
+    if (i >= s.length) break;
+    if (s[i] === '"') {
+      let j = i + 1, str = '';
+      while (j < s.length && s[j] !== '"') { if (s[j] === '\\') { str += s[j + 1]; j += 2; } else { str += s[j++]; } }
+      tokens.push(str); i = j + 1;
+    } else if (s[i] === '[') {
+      let depth = 0, j = i;
+      while (j < s.length) { if (s[j] === '[') depth++; else if (s[j] === ']') { if (--depth === 0) { j++; break; } } j++; }
+      tokens.push(s.slice(i, j)); i = j;
+    } else {
+      // Handle key="value with spaces" inside unquoted token
+      let j = i; let inQ = false;
+      while (j < s.length) {
+        if (s[j] === '"') inQ = !inQ;
+        else if (s[j] === ' ' && !inQ) break;
+        j++;
+      }
+      const tok = s.slice(i, j);
+      // Strip surrounding quotes from value part: key="val" → key=val
+      const eqPos = tok.indexOf('=');
+      if (eqPos > 0) {
+        let v = tok.slice(eqPos + 1);
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+        tokens.push(tok.slice(0, eqPos + 1) + v);
+      } else { tokens.push(tok); }
+      i = j;
+    }
+  }
+  return tokens;
+}
+
+const _API_ACTIONS = new Set(['print', 'add', 'remove', 'set', 'enable', 'disable', 'flush', 'reset', 'run', 'export', 'move', 'cancel', 'monitor', 'unset', 'getall']);
+
+function _cliToApi(cmd) {
+  const tokens = _cliTokenize(cmd.trim());
+  if (!tokens.length) return null;
+  const pathTokens = []; let action = ''; let i = 0;
+  for (; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (_API_ACTIONS.has(t.toLowerCase()) && !t.startsWith('/')) { action = t.toLowerCase(); i++; break; }
+    if (!t.startsWith('[') && !t.includes('=')) pathTokens.push(t);
+    else break;
+  }
+  const rest = tokens.slice(i);
+  const cleanParts = pathTokens.join(' ').replace(/^\/+/, '').split(/[\/ ]+/).filter(Boolean);
+  if (action) cleanParts.push(action);
+  const apiPath = '/' + cleanParts.join('/');
+  const findToken = rest.find(t => /^\[find/i.test(t));
+  if (findToken) {
+    const inner = findToken.replace(/^\[find\s*/i, '').replace(/\]$/, '');
+    const findQ = {};
+    _cliTokenize(inner).forEach(t => { const eq = t.indexOf('='); if (eq > 0) findQ[t.slice(0, eq)] = t.slice(eq + 1); });
+    const afterFind = rest.filter(t => t !== findToken && t.includes('='));
+    return { path: apiPath, params: [], findQuery: findQ, setAfterFind: afterFind };
+  }
+  const params = [];
+  for (const t of rest) {
+    if (/^\d+$/.test(t)) params.push(`=numbers=${t}`);
+    else if (t.includes('=')) { const eq = t.indexOf('='); params.push(`=${t.slice(0, eq)}=${t.slice(eq + 1)}`); }
+    else if (t === 'detail') params.push('=detail=');
+  }
+  return { path: apiPath, params, findQuery: null, setAfterFind: [] };
+}
+
+// Convert API rows → tabular text compatible with parseRouterOSOutput
+function _apiRowsToTabular(rows) {
+  if (!rows.length) return '';
+  const allKV = rows.map(row => {
+    const kv = {};
+    for (const w of row) {
+      if (!w.startsWith('=')) continue;
+      const eq = w.indexOf('=', 1); if (eq === -1) continue;
+      kv[w.slice(1, eq).toLowerCase().replace(/-/g, '_')] = w.slice(eq + 1);
+    }
+    return kv;
+  });
+  const keyList = []; const seen = new Set();
+  for (const kv of allKV) for (const k of Object.keys(kv)) { if (!seen.has(k)) { seen.add(k); keyList.push(k); } }
+  const widths = keyList.map(k => Math.min(Math.max(k.length, ...allKV.map(kv => (kv[k] || '').length)) + 2, 32));
+  // Header: " #   " (5-char prefix) + padded column names
+  let header = ' #   '; const colPos = {}; let pos = 5;
+  for (let j = 0; j < keyList.length; j++) {
+    colPos[keyList[j]] = pos;
+    header += keyList[j].toUpperCase().replace(/_/g, '-').padEnd(widths[j]);
+    pos += widths[j];
+  }
+  const lines = [header];
+  for (let i = 0; i < allKV.length; i++) {
+    const kv = allKV[i];
+    const R = (kv.running === 'true' || kv.running === 'yes') ? 'R' : ' ';
+    const X = (kv.disabled === 'true' || kv.disabled === 'yes') ? 'X' : ' ';
+    let line = ` ${i} ${R}${X}`; // 5 chars for single-digit rows
+    for (let j = 0; j < keyList.length; j++) {
+      while (line.length < colPos[keyList[j]]) line += ' ';
+      line += (kv[keyList[j]] || '').padEnd(widths[j]);
+    }
+    lines.push(line);
+  }
+  return lines.join('\n');
+}
+
+// Convert single API row → key:value text compatible with parseRouterOSKeyValue
+function _apiRowToKeyValue(row) {
+  return row.filter(w => w.startsWith('=')).map(w => {
+    const eq = w.indexOf('=', 1); if (eq === -1) return '';
+    return `                   ${w.slice(1, eq)}: ${w.slice(eq + 1)}`;
+  }).join('\n');
+}
+
+// RouterOS API low-level client
+class RouterOSAPIClient {
+  constructor(config) {
+    this.host = config.host; this.port = config.apiPort || 8728;
+    this.username = config.username; this.password = config.password;
+    this.socket = null; this.buf = Buffer.alloc(0);
+    this.pending = new Map(); this.tagSeq = 1;
+  }
+
+  async connect() {
+    return new Promise((resolve, reject) => {
+      const sock = net.createConnection(this.port, this.host);
+      let settled = false;
+      const done = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
+      const timer = setTimeout(() => { sock.destroy(); done(reject, new Error('API connection timeout (30s)')); }, 30000);
+      sock.on('connect', async () => {
+        clearTimeout(timer);
+        this.socket = sock;
+        try { await this._login(); done(resolve); }
+        catch (e) { sock.destroy(); done(reject, e); }
+      });
+      sock.on('data', (data) => {
+        this.buf = Buffer.concat([this.buf, data]);
+        const { sentences, remaining } = _apiParseBuf(this.buf);
+        this.buf = remaining;
+        for (const s of sentences) this._handle(s);
+      });
+      sock.on('error', (e) => done(reject, new Error(`RouterOS API: ${e.message}`)));
+      sock.on('close', () => {
+        for (const req of this.pending.values()) req.reject(new Error('API connection closed'));
+        this.pending.clear();
+      });
+    });
+  }
+
+  async _login() {
+    // Try new-style plaintext login (RouterOS 6.43+ / all RouterOS 7)
+    try { await this._send(['/login', `=name=${this.username}`, `=password=${this.password}`]); return; } catch {}
+    // Old-style MD5 challenge-response login
+    const rows = await this._send(['/login']);
+    const challWord = rows.flat().find(w => w.startsWith('=ret='));
+    if (!challWord) throw new Error('API login: no challenge received');
+    const hash = crypto.createHash('md5')
+      .update(Buffer.concat([Buffer.from([0]), Buffer.from(this.password, 'utf-8'), Buffer.from(challWord.slice(5), 'hex')]))
+      .digest('hex');
+    await this._send(['/login', `=name=${this.username}`, `=response=00${hash}`]);
+  }
+
+  _handle(words) {
+    const type = words[0];
+    const tagWord = words.find(w => w.startsWith('.tag=')); if (!tagWord) return;
+    const req = this.pending.get(tagWord.slice(5)); if (!req) return;
+    const data = words.slice(1).filter(w => !w.startsWith('.tag='));
+    if (type === '!re') { req.rows.push(data); }
+    else if (type === '!done') { clearTimeout(req.timer); req.resolve(req.rows); this.pending.delete(tagWord.slice(5)); }
+    else if (type === '!trap' || type === '!fatal') {
+      clearTimeout(req.timer);
+      const msg = (data.find(w => w.startsWith('=message=')) || '=message=unknown error').slice(9);
+      req.reject(new Error(msg)); this.pending.delete(tagWord.slice(5));
+    }
+  }
+
+  async _send(words) {
+    const tag = String(this.tagSeq++);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(tag); reject(new Error(`API timeout: ${words[0]}`)); }, 25000);
+      this.pending.set(tag, { rows: [], resolve, reject, timer });
+      this.socket.write(_apiEncSentence([...words, `.tag=${tag}`]));
+    });
+  }
+
+  async sendCommand(words) { return this._send(words); }
+  close() { if (this.socket) { try { this.socket.destroy(); } catch {} this.socket = null; } }
+}
+
+// RouterAPI Connection — same interface as RouterConnection, uses port 8728
+class RouterAPIConnection {
+  constructor(config) {
+    this.config = config; this.client = null;
+    this.isConnected = false; this.lastActivity = Date.now();
+    this._connectPromise = null;
+  }
+
+  async connect() {
+    if (this._connectPromise) return this._connectPromise;
+    this._connectPromise = (async () => {
+      this.client = new RouterOSAPIClient(this.config);
+      await this.client.connect();
+      this.isConnected = true; this._connectPromise = null;
+    })();
+    return this._connectPromise;
+  }
+
+  async execute(cmd) {
+    if (!this.isConnected) await this.connect();
+    this.lastActivity = Date.now();
+    try {
+      const spec = _cliToApi(cmd.trim());
+      if (!spec) return '';
+
+      // Two-step: [find ...] → get .id → execute
+      if (spec.findQuery && Object.keys(spec.findQuery).length > 0) {
+        const printPath = spec.path.replace(/\/(set|remove|enable|disable|unset)$/, '/print');
+        const qWords = [printPath, '=.proplist=.id'];
+        for (const [k, v] of Object.entries(spec.findQuery)) qWords.push(`?=${k}=${v}`);
+        const found = await this.client.sendCommand(qWords);
+        if (!found.length) return '';
+        for (const row of found) {
+          const idW = row.find(w => w.startsWith('=.id=')); if (!idW) continue;
+          await this.client.sendCommand([spec.path, `=.id=${idW.slice(5)}`, ...spec.setAfterFind.map(p => `=${p}`)]);
+        }
+        return '';
+      }
+
+      // Handle numbers=N (find by index, then execute by .id)
+      const numParam = spec.params.find(p => p.startsWith('=numbers='));
+      if (numParam && !spec.path.endsWith('/print')) {
+        const idx = parseInt(numParam.slice(9));
+        const printPath = spec.path.replace(/\/(set|remove|enable|disable|unset)$/, '/print');
+        const found = await this.client.sendCommand([printPath, '=.proplist=.id']);
+        if (idx >= found.length) return '';
+        const idW = found[idx].find(w => w.startsWith('=.id=')); if (!idW) return '';
+        const otherParams = spec.params.filter(p => !p.startsWith('=numbers='));
+        await this.client.sendCommand([spec.path, `=.id=${idW.slice(5)}`, ...otherParams]);
+        return '';
+      }
+
+      // Direct command
+      const rows = await this.client.sendCommand([spec.path, ...spec.params]);
+      if (!spec.path.endsWith('/print') && !spec.path.endsWith('/monitor')) return '';
+      if (!rows.length) return '';
+      // Single row → key-value format; multiple rows → tabular
+      return rows.length === 1 ? _apiRowToKeyValue(rows[0]) : _apiRowsToTabular(rows);
+    } catch (err) {
+      return `failure: ${err.message}`;
+    }
+  }
+
+  async close() {
+    this.isConnected = false; this._connectPromise = null;
+    if (this.client) { try { this.client.close(); } catch {} this.client = null; }
   }
 }
 
@@ -710,7 +1009,7 @@ async function fetchTraffic(sessionId, conn) {
 
 app.post('/api/login', loginLimiter, async (req, res) => {
   try {
-    const { host, port = 22, username, password } = req.body || {};
+    const { host, port = 22, username, password, connectionType = 'ssh', apiPort = 8728 } = req.body || {};
 
     if (!host || !username || !password) {
       return res.status(400).json({ error: 'Missing credentials: host, username, password required' });
@@ -720,10 +1019,13 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Invalid input length' });
     }
 
-    const config = { host, port: parseInt(port), username, password };
+    const useApi = connectionType === 'api';
+    const config = useApi
+      ? { host, apiPort: parseInt(apiPort), username, password }
+      : { host, port: parseInt(port), username, password };
 
     // Open the connection once and KEEP IT — don't open+close+open a second one
-    const conn = new RouterConnection(config);
+    const conn = useApi ? new RouterAPIConnection(config) : new RouterConnection(config);
     try {
       await conn.connect();
       await conn.execute('/system identity print'); // verify credentials work
@@ -733,8 +1035,9 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     }
 
     const sessionId = Math.random().toString(36).substring(7);
+    const connPort = useApi ? parseInt(apiPort) : parseInt(port);
     sessions.set(sessionId, {
-      sessionId, host, port: parseInt(port), username,
+      sessionId, host, port: connPort, username, connectionType,
       createdAt: Date.now(), lastActivity: Date.now(),
     });
     connections.set(sessionId, conn);
@@ -752,7 +1055,7 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       }
     }, 30 * 60 * 1000);
 
-    res.json({ sessionId, message: 'Connected successfully', router: `${host}:${port}` });
+    res.json({ sessionId, message: 'Connected successfully', router: `${host}:${connPort}`, connectionType });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1724,9 +2027,7 @@ function rosError(output) {
 }
 
 // Server-authoritative domain lists — never trust client-sent domains.
-// Only base/parent domains are listed; with match-subdomain=yes (RouterOS 7.6+)
-// one DNS static entry covers ALL subdomains. We still list separate CDN/auxiliary
-// domains because they're different base names (not subdomains of each other).
+// match-subdomain=yes (RouterOS 7.6+) covers all subdomains per entry.
 const BLOCK_SERVICE_DOMAINS = {
   youtube:  ['youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'youtube-nocookie.com'],
   facebook: ['facebook.com', 'fbcdn.net', 'instagram.com', 'fb.com', 'messenger.com', 'whatsapp.net'],
@@ -1736,6 +2037,19 @@ const BLOCK_SERVICE_DOMAINS = {
   torrents: ['thepiratebay.org', '1337x.to', 'rarbg.to', 'nyaa.si', 'kickasstorrents.to', 'torrentgalaxy.to'],
   gambling: ['bet365.com', 'pokerstars.com', '888casino.com', 'draftkings.com', 'fanduel.com', 'betway.com'],
   crypto:   ['coinhive.com', 'cryptoloot.pro', 'minero.cc', 'jsecoin.com'],
+};
+
+// Known stable IP CIDR ranges for mangle/IP blocking method.
+// These supplement DNS blocking for clients that bypass DNS (hardcoded IPs, DoH, etc.)
+const BLOCK_SERVICE_IPS = {
+  youtube:  ['172.217.0.0/16', '142.250.0.0/15', '74.125.0.0/16', '64.233.160.0/19', '216.58.192.0/19'],
+  facebook: ['157.240.0.0/16', '179.60.192.0/22', '31.13.24.0/21', '129.134.0.0/17', '185.89.216.0/22'],
+  tiktok:   ['161.117.0.0/16', '43.152.0.0/14', '23.106.56.0/21'],
+  netflix:  ['198.38.96.0/19', '198.45.48.0/20', '23.246.0.0/18', '37.77.184.0/21'],
+  adult:    [], // DNS blocking only
+  torrents: [], // L7 + DNS blocking
+  gambling: [], // DNS blocking only
+  crypto:   [], // DNS blocking only
 };
 
 // Standard well-known DoH endpoints — when blocking is active and the user wants
@@ -1885,152 +2199,118 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
     };
 
     if (block) {
-      // --------------------------------------------------------------------
-      // LAYER-7 METHOD
-      // L7 cannot run in /ip firewall raw (raw is pre-conntrack). So:
-      //   1. /ip firewall layer7-protocol — add the pattern
-      //   2. /ip firewall mangle prerouting — when L7 matches, add SOURCE to
-      //      a per-service address list with 30m timeout
-      //   3. /ip firewall raw prerouting    — drop everything from that list
-      // This is the standard MikroTik wiki pattern for L7 domain blocking.
-      // --------------------------------------------------------------------
+      // ----------------------------------------------------------------
+      // SHARED DNS FOUNDATION — all methods apply this first.
+      // DNS static entries → 0.0.0.0 + NAT redirect + filter DROP rule.
+      // The filter rule IS visible in the Firewall screen.
+      // ----------------------------------------------------------------
+
+      // 1. Enable DNS server on the router
+      try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
+
+      // 2. DNS redirect — intercepts clients using 8.8.8.8 directly.
+      //    Try with in-interface-list=LAN first; fall back without it.
+      const natOut = await conn.execute('/ip firewall nat print');
+      if (!natOut.includes('netforge-dns-redirect')) {
+        let n1 = await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 in-interface-list=LAN comment="netforge-dns-redirect"');
+        if (rosError(n1)) n1 = await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+        let n2 = await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 in-interface-list=LAN comment="netforge-dns-redirect"');
+        if (rosError(n2)) n2 = await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
+        report.steps.push({ ok: !rosError(n1), name: 'DNS NAT redirect (port 53 intercept)' });
+      } else {
+        report.steps.push({ ok: true, name: 'DNS NAT redirect already in place' });
+      }
+
+      // 3. DNS static entries → 0.0.0.0 (with match-subdomain=yes for RouterOS 7.6+)
+      let dnsAdded = 0;
+      const dnsErrors = [];
+      for (const domain of domains) {
+        const o1 = await conn.execute(`/ip dns static add name="${domain}" match-subdomain=yes address=0.0.0.0 type=A comment="${comment}"`);
+        if (rosError(o1)) {
+          const o2 = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
+          if (rosError(o2)) {
+            const o3 = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 type=A comment="${comment}"`);
+            if (rosError(o3)) dnsErrors.push(domain); else dnsAdded++;
+          } else dnsAdded++;
+        } else dnsAdded++;
+      }
+      report.steps.push({ ok: dnsAdded > 0, name: `DNS static entries: ${dnsAdded}/${domains.length} added`, errors: dnsErrors.slice(0, 3) });
+
+      // 4. Filter forward DROP for the DNS sink (0.0.0.0).
+      //    This creates a visible rule in /ip firewall filter.
+      //    Appended to end of chain — no place-before needed in RouterOS 7.
+      const fOut = await conn.execute(`/ip firewall filter add chain=forward dst-address=0.0.0.0 action=drop comment="${comment}"`);
+      report.steps.push({ ok: !rosError(fOut), name: rosError(fOut) ? `Filter rule failed: ${fOut.trim().split('\n')[0]}` : 'Filter forward DROP rule added (visible in Firewall screen)' });
+
+      // ----------------------------------------------------------------
+      // METHOD-SPECIFIC ADDITIONS
+      // ----------------------------------------------------------------
+
       if (blockMethod === 'layer7') {
+        // L7 METHOD: Add L7 pattern + filter forward DROP for L7-matched traffic.
+        // Using /ip firewall filter chain=forward directly (RouterOS 7 supports this).
+        // L7 inspects plaintext + TLS SNI bytes to match domain keywords.
+
         if (serviceId === 'torrents') {
           await blockTorrentsL7(conn);
-          report.steps.push({ ok: true, name: 'torrent L7+P2P rules installed' });
+          report.steps.push({ ok: true, name: 'Torrent L7+P2P rules installed' });
         } else {
-          // Match keyword bytes (e.g. 'youtube') in HTTP host header / TLS SNI
-          const pattern = domains.slice(0, 5)
-            .map(d => d.split('.')[0])
-            .filter(Boolean)
-            .join('|');
+          const pattern = [...new Set(domains.slice(0, 6).map(d => d.split('.')[0]).filter(Boolean))].join('|');
           const regexp = `(${pattern})`;
-          const srcList = `${comment}-src`;
 
-          // 1. L7 protocol
-          const l7Out = await conn.execute(`/ip firewall layer7-protocol add name="${comment}" comment="${comment}" regexp="${regexp}"`);
+          // Add L7 protocol definition (use set if already exists)
+          const l7Out = await conn.execute(`/ip firewall layer7-protocol add name="${comment}" regexp="${regexp}" comment="${comment}"`);
           if (rosError(l7Out)) {
-            return res.status(500).json({ error: `Failed to add Layer-7 protocol: ${l7Out.trim().split('\n')[0]}`, report });
+            await conn.execute(`/ip firewall layer7-protocol set [find name="${comment}"] regexp="${regexp}"`);
           }
-          report.steps.push({ ok: true, name: `Layer-7 protocol added (regex: ${regexp})` });
+          report.steps.push({ ok: true, name: `L7 protocol: regexp=(${pattern})` });
 
-          // 2. Mangle: when L7 detects pattern, add source IP to short-term block list
-          const mOut = await conn.execute(`/ip firewall mangle add chain=prerouting layer7-protocol="${comment}" action=add-src-to-address-list address-list="${srcList}" address-list-timeout=30m comment="${comment}"`);
-          if (rosError(mOut)) {
-            return res.status(500).json({ error: `Mangle rule failed: ${mOut.trim().split('\n')[0]}`, report });
+          // Filter forward DROP when L7 matches (appended, no place-before)
+          const lf = await conn.execute(`/ip firewall filter add chain=forward layer7-protocol="${comment}" action=drop comment="${comment}"`);
+          if (!rosError(lf)) {
+            report.steps.push({ ok: true, name: 'L7 filter rule added (chain=forward)' });
+          } else {
+            report.steps.push({ ok: false, name: `L7 filter rule failed: ${lf.trim().split('\n')[0]}` });
           }
-          report.steps.push({ ok: true, name: `mangle: L7 match → ${srcList} (30m TTL)` });
-
-          // 3. Raw drop: kills traffic from any source on the block list.
-          // Raw is processed BEFORE filter / defconf rules — no positioning needed.
-          const rOut = await conn.execute(`/ip firewall raw add chain=prerouting src-address-list="${srcList}" action=drop comment="${comment}"`);
-          if (rosError(rOut)) {
-            return res.status(500).json({ error: `Raw drop rule failed: ${rOut.trim().split('\n')[0]}`, report });
-          }
-          report.steps.push({ ok: true, name: 'raw-drop rule installed (pre-conntrack)' });
-
-          // 4. DNS fallback — L7 only inspects ~10 packets / 2KB and misses DoH/DoT
-          for (const domain of domains) {
-            await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
-          }
-          report.steps.push({ ok: true, name: `${domains.length} DNS fallback entries added` });
         }
 
-      // --------------------------------------------------------------------
-      // MANGLE / ADDRESS-LIST METHOD
-      // Use /ip firewall raw instead of /ip firewall filter for the drop rule.
-      // Raw is processed BEFORE conntrack and the filter chain, so we don't
-      // need place-before (which fails on RouterOS 7 with 'no such item').
-      // --------------------------------------------------------------------
       } else if (blockMethod === 'mangle') {
-        let alAdded = 0;
-        const alErrors = [];
-        for (const domain of domains) {
-          const out = await conn.execute(`/ip firewall address-list add list="${comment}" address="${domain}" comment="${comment}"`);
-          if (rosError(out)) {
-            alErrors.push(`${domain}: ${out.trim().split('\n')[0]}`);
-          } else {
-            alAdded++;
-          }
-        }
-        report.steps.push({ ok: alAdded > 0, name: `address-list: ${alAdded}/${domains.length} domains added`, errors: alErrors.slice(0, 3) });
+        // MANGLE/IP METHOD: Add known IP CIDR ranges to address-list + filter rule.
+        // RouterOS address-lists only accept IPs/CIDRs (not domain names).
+        // DNS blocking above handles domain-based connections.
 
-        if (alAdded === 0) {
-          return res.status(500).json({ error: `Could not add any domains to address-list. RouterOS: ${alErrors[0] || 'unknown'}`, report });
+        const ipRanges = BLOCK_SERVICE_IPS[serviceId] || [];
+        let ipAdded = 0;
+        for (const cidr of ipRanges) {
+          const o = await conn.execute(`/ip firewall address-list add list="${comment}" address="${cidr}" comment="${comment}"`);
+          if (!rosError(o)) ipAdded++;
         }
 
-        // Raw drop rule — chain is empty by default, no place-before needed
-        const rOut = await conn.execute(`/ip firewall raw add chain=prerouting dst-address-list="${comment}" action=drop comment="${comment}"`);
-        if (rosError(rOut)) {
-          return res.status(500).json({ error: `Address list created but DROP rule failed: ${rOut.trim().split('\n')[0]}`, report });
-        }
-        report.steps.push({ ok: true, name: 'raw-drop rule installed (pre-conntrack, no chain-order dependency)' });
-
-      // --------------------------------------------------------------------
-      // DNS METHOD (default)
-      // Multi-layered: DNS static + NAT-redirect to force-through router DNS
-      // + DROP external DNS (so 8.8.8.8 / 1.1.1.1 don't bypass)
-      // No place-before — RouterOS 7 throws 'no such item' on empty chains.
-      // --------------------------------------------------------------------
-      } else {
-        try { await conn.execute('/ip dns set allow-remote-requests=yes'); } catch {}
-
-        // Force LAN DNS traffic through the router (intercepts clients using 8.8.8.8 directly)
-        const natOut = await conn.execute('/ip firewall nat print');
-        if (!natOut.includes('netforge-dns-redirect')) {
-          const n1 = await conn.execute('/ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
-          const n2 = await conn.execute('/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="netforge-dns-redirect"');
-          if (rosError(n1) || rosError(n2)) {
-            report.steps.push({ ok: false, name: 'NAT redirect failed', error: (rosError(n1) ? n1 : n2).trim().split('\n')[0] });
-          } else {
-            report.steps.push({ ok: true, name: 'DNS NAT redirect installed (port-53 intercept)' });
-          }
+        if (ipAdded > 0) {
+          // Filter forward DROP for the address-list (IP-based blocking)
+          const rfOut = await conn.execute(`/ip firewall filter add chain=forward dst-address-list="${comment}" action=drop comment="${comment}"`);
+          report.steps.push({ ok: !rosError(rfOut), name: `IP ranges: ${ipAdded} CIDRs added + filter rule${rosError(rfOut) ? ' (filter failed)' : ''}` });
         } else {
-          report.steps.push({ ok: true, name: 'DNS NAT redirect already in place' });
+          report.steps.push({ ok: true, name: 'No IP ranges available for this service — DNS blocking active' });
         }
 
-        // Add static entries with match-subdomain=yes (RouterOS 7.6+)
-        let added = 0;
-        const errors = [];
-        for (const domain of domains) {
-          const addOut = await conn.execute(`/ip dns static add name="${domain}" match-subdomain=yes address=0.0.0.0 type=A comment="${comment}"`);
-          if (rosError(addOut)) {
-            // Fallback without match-subdomain for older RouterOS
-            const addOut2 = await conn.execute(`/ip dns static add name="${domain}" address=0.0.0.0 type=A comment="${comment}"`);
-            if (rosError(addOut2)) {
-              const setOut = await conn.execute(`/ip dns static set [find name="${domain}"] address=0.0.0.0 type=A comment="${comment}"`);
-              if (rosError(setOut)) errors.push(`${domain}: ${setOut.trim().split('\n')[0]}`);
-              else added++;
-            } else { added++; }
-          } else { added++; }
-        }
-
-        // Verify by re-reading the router state
-        const verifyOut = await conn.execute('/ip dns static print');
-        const verifyEntries = parseRouterOSOutput(verifyOut);
-        const verified = verifyEntries.filter(e =>
-          (e.address || e.data) === '0.0.0.0' && domains.includes((e.name || '').toLowerCase())
-        ).length;
-
-        report.steps.push({ ok: verified > 0, name: `DNS entries: ${added} added, ${verified} verified on router`, errors: errors.slice(0, 3) });
-
-        if (verified === 0) {
-          return res.status(500).json({ error: `Could not write any DNS entries. RouterOS: ${errors[0] || 'no error returned'}`, report });
-        }
       }
+      // DNS method: only the shared foundation above (DNS static + filter rule) — no extra steps.
+
     } else {
-      // UNBLOCK — clean all four chains (raw, filter, mangle, layer7) and both
-      // address lists (`comment` and the `-src` list used by the L7 method)
+      // UNBLOCK — remove all netforge rules for this service
       try { await conn.execute(`/ip dns static remove [find comment="${comment}"]`); } catch {}
-      try { await conn.execute(`/ip firewall raw remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`); } catch {}
+      try { await conn.execute(`/ip firewall raw remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall mangle remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall address-list remove [find list="${comment}-src"]`); } catch {}
       if (serviceId === 'torrents') await unblockTorrentsL7(conn);
+      report.steps.push({ ok: true, name: 'All rules removed' });
     }
 
+    // Always flush DNS cache so changes take effect immediately
     try { await conn.execute('/ip dns cache flush'); } catch {}
 
     res.json({
