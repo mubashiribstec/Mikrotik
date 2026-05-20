@@ -2712,6 +2712,7 @@ const HotspotScreen = ({ sessionId }) => {
   const [newPlan, setNewPlan]     = React.useState('default');
   const [autoDisable, setAutoDisable] = React.useState(false);
   const [formMsg, setFormMsg]     = React.useState('');
+  const [profiles, setProfiles]   = React.useState(['default']);
 
   const loadUsers = React.useCallback(async () => {
     try {
@@ -2719,7 +2720,12 @@ const HotspotScreen = ({ sessionId }) => {
         API.getHotspot(sessionId),
         API.getHotspotUsers(sessionId),
       ]);
-      if (hs.status === 'fulfilled') setHotspot(hs.value);
+      if (hs.status === 'fulfilled') {
+        setHotspot(hs.value);
+        if (Array.isArray(hs.value?.profiles) && hs.value.profiles.length > 0) {
+          setProfiles(hs.value.profiles);
+        }
+      }
       if (us.status === 'fulfilled') setUsers(Array.isArray(us.value) ? us.value : []);
     } catch {}
     setLoading(false);
@@ -2841,21 +2847,10 @@ const HotspotScreen = ({ sessionId }) => {
                 </div>
 
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: A.text, marginBottom: 8 }}>Plan</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {HS_PLANS.map(plan => (
-                      <div key={plan.id} onClick={() => setNewPlan(plan.id)} style={{
-                        padding: '9px 12px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${newPlan === plan.id ? A.accent : A.border}`,
-                        background: newPlan === plan.id ? A.accentSoft : A.surface, transition: 'all 0.15s',
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{plan.label}</span>
-                          {newPlan === plan.id && <APill tone="accent">Selected</APill>}
-                        </div>
-                        <div style={{ fontSize: 10, color: A.textFaint, fontFamily: A.mono }}>↓{plan.down} ↑{plan.up} · {plan.time}</div>
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: A.text, marginBottom: 6 }}>Profile</div>
+                  <select value={newPlan} onChange={e => setNewPlan(e.target.value)} style={{ width: '100%', padding: '9px 11px', background: A.surface, border: `1px solid rgba(255,255,255,0.12)`, borderRadius: 9, fontSize: 12, color: A.text, outline: 'none', boxSizing: 'border-box', cursor: 'pointer' }}>
+                    {profiles.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
                 </div>
 
                 <AToggleRow label="Auto-disable after plan expires" sub="Hotspot only" on={autoDisable} onChange={setAutoDisable} />

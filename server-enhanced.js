@@ -950,6 +950,18 @@ async function fetchLogs(conn) {
   const output = await conn.execute('/log print');
   const data = [];
 
+  // Try structured parse first (RouterOS returns columns including topics)
+  const rows = parseRouterOSOutput(output);
+  if (rows.length > 0 && (rows[0].topics || rows[0].topic || rows[0].time)) {
+    for (const r of rows) {
+      const topic = (r.topics || r.topic || 'system').split(',')[0].trim() || 'system';
+      const source = r.topics?.includes('interface') ? 'interface' : (r.topics?.includes('dhcp') ? 'DHCP' : 'system');
+      data.push({ time: r.time || '', topic, source, msg: (r.message || r.msg || '').substring(0, 100) });
+    }
+    return data.slice(-50).reverse();
+  }
+
+  // Fallback: line-by-line parse
   for (const line of output.split('\n')) {
     if (!line.trim()) continue;
     const parts = line.trim().split(/\s+/);
@@ -1338,7 +1350,8 @@ app.post('/api/ip-addresses/remove', async (req, res) => {
     await getConnection(sessionId).execute(`/ip address remove numbers=${id}`);
     res.json({ success: true, message: 'IP address removed' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1366,7 +1379,8 @@ app.get('/api/routes', async (req, res) => {
       { id: '0', destination: '0.0.0.0/0', gateway: '', distance: '0', disabled: false, comment: 'Default route' },
     ]);
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1386,7 +1400,8 @@ app.post('/api/routes/add', async (req, res) => {
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'Route added' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1401,7 +1416,8 @@ app.post('/api/routes/remove', async (req, res) => {
     await getConnection(sessionId).execute(`/ip route remove numbers=${id}`);
     res.json({ success: true, message: 'Route removed' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1424,7 +1440,8 @@ app.get('/api/dns', async (req, res) => {
       comment: kv.comment || '',
     });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1449,7 +1466,8 @@ app.post('/api/dns/update', async (req, res) => {
     await conn.execute(cmd);
     res.json({ success: true, message: 'DNS settings updated' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1477,7 +1495,8 @@ app.get('/api/nat', async (req, res) => {
 
     res.json(data.length > 0 ? data : []);
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1498,7 +1517,8 @@ app.post('/api/nat/add', async (req, res) => {
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'NAT rule added' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1513,7 +1533,8 @@ app.post('/api/nat/remove', async (req, res) => {
     await getConnection(sessionId).execute(`/ip firewall nat remove numbers=${id}`);
     res.json({ success: true, message: 'NAT rule removed' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1548,7 +1569,9 @@ app.post('/api/dns/static/add', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const { name, address, type = 'A', ttl, comment, matchSubdomain } = req.body;
     if (!name || !address) return res.status(400).json({ error: 'Name and address required' });
-    if (!/^[a-zA-Z0-9._*-]{1,253}$/.test(name)) return res.status(400).json({ error: 'Invalid domain name' });
+    if (!/^(\*\.)?[a-zA-Z0-9]([a-zA-Z0-9._-]{0,251}[a-zA-Z0-9])?$/.test(name) && name !== '*') {
+      return res.status(400).json({ error: 'Invalid domain name' });
+    }
 
     const conn = getConnection(sessionId);
     let cmd = `/ip dns static add name="${name}" address=${address} type=${type}`;
@@ -1605,7 +1628,8 @@ app.get('/api/masquerade', async (req, res) => {
       res.json({ enabled: false, srcAddress: '', outInterface: '', protocols: [], comment: '' });
     }
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1619,7 +1643,8 @@ app.post('/api/masquerade/toggle', async (req, res) => {
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: `Masquerade ${enabled ? 'enabled' : 'disabled'}` });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1643,13 +1668,8 @@ app.get('/api/hotspot', async (req, res) => {
 
     let profiles = [];
     try {
-      const profOut = await conn.execute('/ip hotspot profile print');
-      const profRows = parseRouterOSOutput(profOut);
-      profiles = profRows.map(p => ({
-        id: p.numbers || '',
-        name: p.name || 'default',
-        comment: p.comment || '',
-      }));
+      const profOut = await conn.execute('/ip hotspot user profile print');
+      profiles = parseRouterOSOutput(profOut).map(p => p.name || 'default');
     } catch (e) { /* optional */ }
 
     res.json({
@@ -1658,7 +1678,8 @@ app.get('/api/hotspot', async (req, res) => {
       profiles,
     });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1719,7 +1740,8 @@ app.get('/api/hotspot/users', async (req, res) => {
 
     res.json([...hsData, ...pppoeData]);
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1737,7 +1759,8 @@ app.post('/api/hotspot/user/add', async (req, res) => {
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'Hotspot user added' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1752,7 +1775,8 @@ app.post('/api/hotspot/user/remove', async (req, res) => {
     await getConnection(sessionId).execute(`/ip hotspot user remove numbers=${id}`);
     res.json({ success: true, message: 'Hotspot user removed' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1911,7 +1935,7 @@ app.post('/api/interfaces/reset-mac', async (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'Interface name required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/interface ethernet reset-mac-address "${name}"`);
+    const out = await conn.execute(`/interface ethernet reset-mac-address [find name="${name}"]`);
     if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `MAC address reset for ${name}` });
   } catch (err) {
@@ -2208,7 +2232,7 @@ app.post('/api/firewall/service/toggle', async (req, res) => {
       try { await conn.execute(`/ip firewall mangle remove [find comment="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall layer7-protocol remove [find name="${comment}"]`); } catch {}
       try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`); } catch {}
-      try { await conn.execute(`/ip firewall address-list remove [find comment="${comment}-src"]`); } catch {}
+      try { await conn.execute(`/ip firewall address-list remove [find list="${comment}"]`); } catch {}
     }
 
     const report = { method: blockMethod, steps: [] };
@@ -2438,7 +2462,11 @@ app.post('/api/vpn/peer/add', async (req, res) => {
     const ips = allowedIps || '10.0.0.2/32';
 
     await conn.execute(`/interface wireguard peers add interface=${wgIface} allowed-address=${ips} comment="${name}"`);
-    res.json({ success: true, message: `WireGuard peer "${name}" added to ${wgIface}` });
+    // Fetch the newly created peer's public key
+    const peers = parseRouterOSOutput(await conn.execute(`/interface wireguard peers print`));
+    const newPeer = peers.find(p => p.comment === name);
+    const publicKey = newPeer?.public_key || '';
+    res.json({ success: true, message: `WireGuard peer "${name}" added to ${wgIface}`, publicKey });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -2476,8 +2504,14 @@ app.post('/api/vpn/pptp/toggle', async (req, res) => {
     if (enabled) {
       // Create IP pool if needed
       const poolOut = await conn.execute(`/ip pool add name="pptp-pool" ranges=${remoteStart}-${remoteEnd}`);
+      if (rosError(poolOut)) {
+        await conn.execute(`/ip pool set [find name="pptp-pool"] ranges=${remoteStart}-${remoteEnd}`);
+      }
       // Create PPP profile
       const profOut = await conn.execute(`/ppp profile add name="pptp-profile" local-address=${localAddress} remote-address=pptp-pool use-encryption=yes`);
+      if (rosError(profOut)) {
+        await conn.execute(`/ppp profile set [find name="pptp-profile"] local-address=${localAddress} remote-address=pptp-pool use-encryption=yes`);
+      }
       // Enable PPTP server
       await conn.execute('/interface pptp-server server set enabled=yes default-profile=pptp-profile');
       res.json({ success: true, message: 'PPTP server enabled' });
@@ -2517,7 +2551,13 @@ app.post('/api/vpn/l2tp/toggle', async (req, res) => {
     const conn = getConnection(sessionId);
     if (enabled) {
       const poolOut = await conn.execute(`/ip pool add name="l2tp-pool" ranges=${remoteStart}-${remoteEnd}`);
+      if (rosError(poolOut)) {
+        await conn.execute(`/ip pool set [find name="l2tp-pool"] ranges=${remoteStart}-${remoteEnd}`);
+      }
       const profOut = await conn.execute(`/ppp profile add name="l2tp-profile" local-address=${localAddress} remote-address=l2tp-pool use-encryption=yes`);
+      if (rosError(profOut)) {
+        await conn.execute(`/ppp profile set [find name="l2tp-profile"] local-address=${localAddress} remote-address=l2tp-pool use-encryption=yes`);
+      }
       await conn.execute(`/interface l2tp-server server set enabled=yes default-profile=l2tp-profile use-ipsec=yes ipsec-secret="${ipsecSecret}"`);
       res.json({ success: true, message: 'L2TP/IPsec server enabled' });
     } else {
@@ -2942,7 +2982,7 @@ app.post('/api/network/ping', async (req, res) => {
     const { host = '1.1.1.1', count = 5, size = 56 } = req.body;
     if (!/^[\w.\-:]+$/.test(host)) return res.status(400).json({ error: 'Invalid host' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/tool ping address=${host} count=${Math.min(count, 10)} size=${size} once`);
+    const out = await conn.execute(`/tool ping address=${host} count=${Math.min(count, 10)} size=${size}`);
     // Parse RouterOS ping output: extract avg/min/max
     const lines = out.split('\n').filter(l => l.trim());
     const stats = {};
@@ -3066,16 +3106,19 @@ app.post('/api/nat/port-forward', async (req, res) => {
     const { externalPort, internalIp, internalPort, protocol = 'tcp', comment = '', wanInterface = '' } = req.body;
     if (!externalPort || !internalIp) return res.status(400).json({ error: 'externalPort and internalIp required' });
 
-    const intPort = internalPort || externalPort;
+    const extPort = parseInt(externalPort);
+    const intPort = parseInt(internalPort || externalPort);
+    if (isNaN(extPort) || extPort < 1 || extPort > 65535) return res.status(400).json({ error: 'External port must be 1–65535' });
+    if (isNaN(intPort) || intPort < 1 || intPort > 65535) return res.status(400).json({ error: 'Internal port must be 1–65535' });
     const conn = getConnection(sessionId);
     const label = comment || `port-forward-${externalPort}`;
 
-    let cmd = `/ip firewall nat add chain=dstnat protocol=${protocol} dst-port=${externalPort} action=dst-nat to-addresses=${internalIp} to-ports=${intPort} comment="netforge-${label}"`;
+    let cmd = `/ip firewall nat add chain=dstnat protocol=${protocol} dst-port=${extPort} action=dst-nat to-addresses=${internalIp} to-ports=${intPort} comment="netforge-${label}"`;
     if (wanInterface) cmd += ` in-interface="${wanInterface}"`;
 
     const out = await conn.execute(cmd);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
-    res.json({ success: true, message: `Port forward ${externalPort}→${internalIp}:${intPort} (${protocol}) created` });
+    res.json({ success: true, message: `Port forward ${extPort}→${internalIp}:${intPort} (${protocol}) created` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -3286,8 +3329,8 @@ app.post('/api/terminal/exec', async (req, res) => {
     const { command } = req.body;
     if (!command || typeof command !== 'string') return res.status(400).json({ error: 'command required' });
     // Reject obviously destructive commands
-    const danger = /^\s*(rm|format|dd |mkfs|:foreach.*remove|\/system\s+reset|\/system\s+shutdown|\/system\s+reboot)/i;
-    if (danger.test(command)) return res.status(403).json({ error: 'Blocked: use the reboot/reset buttons in the UI' });
+    const danger = /^\s*(\/system\s+reset|\/system\s+shutdown|\/system\s+reboot|\/file\s+remove|\/file\s+print.*remove)/i;
+    if (danger.test(command)) return res.status(403).json({ error: 'Blocked: use the UI buttons for reboot/reset/shutdown' });
     const conn = getConnection(sessionId);
     const out = await conn.execute(command);
     res.json({ output: out || '(no output)' });
