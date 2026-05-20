@@ -1230,7 +1230,8 @@ app.get('/api/scripts', async (req, res) => {
 
     res.json(data.length > 0 ? data : []);
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1302,7 +1303,8 @@ app.get('/api/ip-addresses', async (req, res) => {
       { id: '0', address: '192.168.1.1/24', interface: 'ether1', disabled: false, comment: 'LAN' },
     ]);
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1320,7 +1322,8 @@ app.post('/api/ip-addresses/add', async (req, res) => {
 
     res.json({ success: true, message: 'IP address added' });
   } catch (err) {
-    res.status(401).json({ error: err.message });
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
