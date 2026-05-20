@@ -533,6 +533,24 @@ const API = {
     return this.call(sessionId, '/api/nat/port-forward', { method: 'POST', body: JSON.stringify({ externalPort, internalIp, internalPort, protocol, comment, wanInterface }) });
   },
 
+  // Access Control
+  async getAccessStatus(sessionId) { return this.call(sessionId, '/api/access/status'); },
+  async addAllowedIp(sessionId, address, comment) {
+    return this.call(sessionId, '/api/access/allowed-ip/add', { method: 'POST', body: JSON.stringify({ address, comment }) });
+  },
+  async removeAllowedIp(sessionId, id) {
+    return this.call(sessionId, '/api/access/allowed-ip/remove', { method: 'POST', body: JSON.stringify({ id }) });
+  },
+  async applyAccessControl(sessionId, ports, bruteForce) {
+    return this.call(sessionId, '/api/access/apply', { method: 'POST', body: JSON.stringify({ ports, bruteForce }) });
+  },
+  async removeAccessControl(sessionId) {
+    return this.call(sessionId, '/api/access/remove', { method: 'POST', body: JSON.stringify({}) });
+  },
+  async unblockIp(sessionId, id) {
+    return this.call(sessionId, '/api/access/unblock-ip', { method: 'POST', body: JSON.stringify({ id }) });
+  },
+
   // Hotspot
   async getHotspot(sessionId) {
     return this.call(sessionId, '/api/hotspot');
@@ -752,6 +770,7 @@ const NAV_ITEMS = [
   { label: 'Automation',        page: 'Automation',   sub: 'scheduler · recipes',   icon: 'M4 2h8v2H4zM2 6h12v2H2zM3 10h10l-1 4H4z' },
   { label: 'Network Health',    page: 'NetworkHealth',sub: 'ping · traceroute · sla',icon: 'M1 8h2l2-5 2 10 2-6 2 4 2-3h2' },
   { label: 'Port Forwards',     page: 'PortForward',  sub: 'dstnat · wizard',       icon: 'M2 8h12M10 4l4 4-4 4M5 4v8' },
+  { label: 'Access Control',    page: 'AccessControl',sub: 'allowed IPs · brute-force', icon: 'M8 1L3 4v4c0 3.5 2.2 6.7 5 7.4C10.8 14.7 13 11.5 13 8V4zM6 8l1.5 1.5L10 6' },
   { label: 'Settings',          page: 'Settings',     sub: 'preferences · theme',   icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 6v4M8 10v.5' },
 ];
 
@@ -4242,6 +4261,274 @@ const PortForwardScreen = ({ sessionId }) => {
   );
 };
 
+// ========== ACCESS CONTROL SCREEN ==========
+
+const ACCESS_PORT_LIST = [
+  { port: 8291, name: 'Winbox',  desc: 'MikroTik GUI' },
+  { port: 22,   name: 'SSH',     desc: 'Secure Shell' },
+  { port: 80,   name: 'HTTP',    desc: 'Web interface' },
+  { port: 443,  name: 'HTTPS',   desc: 'Web interface SSL' },
+  { port: 8728, name: 'API',     desc: 'RouterOS API' },
+  { port: 8729, name: 'API-SSL', desc: 'RouterOS API SSL' },
+];
+
+const AccessControlScreen = ({ sessionId }) => {
+  const [status, setStatus]         = React.useState(null);
+  const [loading, setLoading]       = React.useState(true);
+  const [applying, setApplying]     = React.useState(false);
+  const [msg, setMsg]               = React.useState(null);
+  const [selPorts, setSelPorts]     = React.useState([8291, 22, 80, 443, 8728]);
+  const [bruteForce, setBruteForce] = React.useState(true);
+  const [newIp, setNewIp]           = React.useState('');
+  const [newComment, setNewComment] = React.useState('');
+  const [addMsg, setAddMsg]         = React.useState(null);
+  const [tab, setTab]               = React.useState('allowed'); // 'allowed' | 'blocked'
+
+  const load = async () => {
+    setLoading(true);
+    try { const d = await API.getAccessStatus(sessionId); setStatus(d); } catch {}
+    setLoading(false);
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  const togglePort = (p) => setSelPorts(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
+
+  const handleApply = async () => {
+    setApplying(true); setMsg(null);
+    try {
+      await API.applyAccessControl(sessionId, selPorts, bruteForce);
+      setMsg({ ok: true, text: `Access control applied — ${selPorts.length} ports protected` });
+      load();
+    } catch (e) { setMsg({ ok: false, text: e.message }); }
+    setApplying(false);
+  };
+
+  const handleRemove = async () => {
+    if (!confirm('Remove all access control rules? All ports will be open to everyone.')) return;
+    setApplying(true); setMsg(null);
+    try {
+      await API.removeAccessControl(sessionId);
+      setMsg({ ok: true, text: 'Access control rules removed' });
+      load();
+    } catch (e) { setMsg({ ok: false, text: e.message }); }
+    setApplying(false);
+  };
+
+  const handleAddIp = async () => {
+    if (!newIp.trim()) return;
+    setAddMsg(null);
+    try {
+      await API.addAllowedIp(sessionId, newIp.trim(), newComment.trim());
+      setNewIp(''); setNewComment('');
+      setAddMsg({ ok: true, text: `${newIp.trim()} added` });
+      load();
+    } catch (e) { setAddMsg({ ok: false, text: e.message }); }
+  };
+
+  const handleRemoveIp = async (id) => {
+    try { await API.removeAllowedIp(sessionId, id); load(); } catch {}
+  };
+
+  const handleUnblock = async (id) => {
+    try { await API.unblockIp(sessionId, id); load(); } catch {}
+  };
+
+  const isActive = status?.active;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+      {/* Status + deploy bar */}
+      <ACard>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: isActive ? '#22C55E' : '#EF4444', flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>Router Access Control</span>
+              <span style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{isActive ? 'ACTIVE' : 'INACTIVE'}</span>
+            </div>
+            <div style={{ fontSize: 11, color: A.textFaint }}>
+              Restricts Winbox / SSH / API access to allowed IPs only. Blocks brute-force login attempts.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {isActive && (
+              <button onClick={handleRemove} disabled={applying}
+                style={{ padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600, border: '1px solid rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.1)', color: '#FCA5A5', cursor: 'pointer' }}>
+                {applying ? '…' : 'Disable'}
+              </button>
+            )}
+            <button onClick={handleApply} disabled={applying || selPorts.length === 0}
+              style={{ padding: '7px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600, border: 'none', background: selPorts.length === 0 ? 'rgba(59,130,246,0.2)' : A.accent, color: '#fff', cursor: selPorts.length === 0 ? 'not-allowed' : 'pointer', opacity: applying ? 0.7 : 1 }}>
+              {applying ? 'Applying…' : isActive ? 'Re-apply' : 'Apply Rules'}
+            </button>
+          </div>
+        </div>
+
+        {msg && (
+          <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: 7, fontSize: 12, background: msg.ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)', color: msg.ok ? '#86EFAC' : '#FCA5A5', border: `1px solid ${msg.ok ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}` }}>
+            {msg.text}
+          </div>
+        )}
+
+        {/* Safety warning */}
+        <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', fontSize: 11, color: '#FCD34D' }}>
+          ⚠ Make sure your current IP or subnet is in the Allowed IPs list before applying, or you will be locked out of the router.
+        </div>
+      </ACard>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+
+        {/* Port selection */}
+        <ACard>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Protected Ports</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 12 }}>Select which ports to restrict to allowed IPs only</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {ACCESS_PORT_LIST.map(p => {
+              const on = selPorts.includes(p.port);
+              return (
+                <div key={p.port} onClick={() => togglePort(p.port)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, cursor: 'pointer', background: on ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.02)', border: `1px solid ${on ? A.accent : A.border}` }}>
+                  <div style={{ width: 16, height: 16, borderRadius: 4, background: on ? A.accent : 'transparent', border: `2px solid ${on ? A.accent : A.border}`, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                    {on && <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5l2.5 2.5L8 2.5" stroke="#fff" strokeWidth="1.5" fill="none" strokeLinecap="round"/></svg>}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, fontFamily: A.mono, color: on ? '#93C5FD' : A.text }}>{p.port}</span>
+                    <span style={{ fontSize: 12, color: A.textFaint, marginLeft: 8 }}>{p.name}</span>
+                  </div>
+                  <span style={{ fontSize: 10, color: A.textFaint }}>{p.desc}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Brute force toggle */}
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${A.border}` }}>
+            <div onClick={() => setBruteForce(v => !v)}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, cursor: 'pointer', background: bruteForce ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.02)', border: `1px solid ${bruteForce ? A.accent : A.border}` }}>
+              <div style={{ width: 32, height: 18, borderRadius: 999, background: bruteForce ? A.accent : 'rgba(255,255,255,0.1)', position: 'relative', flexShrink: 0 }}>
+                <div style={{ width: 14, height: 14, borderRadius: 999, background: '#fff', position: 'absolute', top: 2, left: bruteForce ? 16 : 2, transition: 'left 0.2s' }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Brute-force Protection</div>
+                <div style={{ fontSize: 10, color: A.textFaint }}>Track login attempts → auto-block after repeated hits (1 day ban)</div>
+              </div>
+            </div>
+          </div>
+        </ACard>
+
+        {/* Allowed IPs */}
+        <ACard>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Allowed IPs / Subnets</div>
+
+          {/* Add form */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+            <input value={newIp} onChange={e => setNewIp(e.target.value)}
+              placeholder="IP or CIDR (e.g. 192.168.1.0/24)"
+              style={{ flex: 2, background: A.input, border: `1px solid ${A.border}`, borderRadius: 7, padding: '7px 10px', color: A.text, fontSize: 12, fontFamily: A.mono, outline: 'none' }} />
+            <input value={newComment} onChange={e => setNewComment(e.target.value)}
+              placeholder="Label (optional)"
+              style={{ flex: 1, background: A.input, border: `1px solid ${A.border}`, borderRadius: 7, padding: '7px 10px', color: A.text, fontSize: 12, outline: 'none' }} />
+            <button onClick={handleAddIp}
+              style={{ padding: '7px 12px', borderRadius: 7, background: A.accent, color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
+              + Add
+            </button>
+          </div>
+          {addMsg && <div style={{ fontSize: 11, color: addMsg.ok ? '#86EFAC' : '#FCA5A5', marginBottom: 8 }}>{addMsg.text}</div>}
+
+          {/* Allowed list */}
+          {loading ? (
+            <div style={{ color: A.textFaint, fontSize: 12 }}>Loading…</div>
+          ) : (status?.allowedIps || []).length === 0 ? (
+            <div style={{ color: A.textFaint, fontSize: 12, textAlign: 'center', padding: 20 }}>No allowed IPs yet. Add your IP/subnet above.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' }}>
+              {(status.allowedIps || []).map(ip => (
+                <div key={ip.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 7, background: 'rgba(255,255,255,0.02)', border: `1px solid ${A.border}` }}>
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#22C55E" strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="8" r="6"/><path d="M5 8l2 2 4-4"/></svg>
+                  <span style={{ flex: 1, fontFamily: A.mono, fontSize: 12 }}>{ip.address}</span>
+                  {ip.comment && <span style={{ fontSize: 11, color: A.textFaint }}>{ip.comment}</span>}
+                  <button onClick={() => handleRemoveIp(ip.id)}
+                    style={{ background: 'rgba(239,68,68,0.12)', color: '#FCA5A5', border: 'none', borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </ACard>
+      </div>
+
+      {/* Blocked IPs */}
+      <ACard>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>Auto-blocked IPs</div>
+          <span style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>brute-force detection · login_attempts → blocked_ips</span>
+          <button onClick={load} style={{ marginLeft: 'auto', background: 'transparent', border: `1px solid ${A.border}`, borderRadius: 6, padding: '3px 10px', color: A.textFaint, cursor: 'pointer', fontSize: 11 }}>Refresh</button>
+        </div>
+
+        {loading ? (
+          <div style={{ color: A.textFaint, fontSize: 12 }}>Loading…</div>
+        ) : (status?.blockedIps || []).length === 0 ? (
+          <div style={{ color: A.textFaint, fontSize: 12, textAlign: 'center', padding: 16 }}>No blocked IPs — brute-force protection is clean</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${A.border}` }}>
+                  {['IP Address', 'List', 'Timeout', ''].map(h => (
+                    <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: A.textFaint, fontWeight: 500, fontSize: 11 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(status.blockedIps || []).map(ip => (
+                  <tr key={ip.id} style={{ borderBottom: `1px solid ${A.border}` }}>
+                    <td style={{ padding: '7px 10px', fontFamily: A.mono, color: '#FCA5A5' }}>{ip.address}</td>
+                    <td style={{ padding: '7px 10px', color: A.textFaint, fontFamily: A.mono, fontSize: 11 }}>{ip.list}</td>
+                    <td style={{ padding: '7px 10px', color: A.textFaint }}>{ip.timeout || '—'}</td>
+                    <td style={{ padding: '7px 10px' }}>
+                      <button onClick={() => handleUnblock(ip.id)}
+                        style={{ background: 'rgba(34,197,94,0.1)', color: '#86EFAC', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontSize: 11 }}>
+                        Unblock
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ACard>
+
+      {/* Reference script */}
+      <ACard>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Generated RouterOS Script</div>
+        <div style={{ fontSize: 11, color: A.textFaint, marginBottom: 10 }}>Equivalent commands that will be applied to the router</div>
+        <pre style={{ background: 'rgba(0,0,0,0.3)', border: `1px solid ${A.border}`, borderRadius: 8, padding: 12, fontSize: 10.5, fontFamily: A.mono, color: '#93C5FD', overflowX: 'auto', lineHeight: 1.6 }}>{
+`/ip firewall address-list
+${(status?.allowedIps || []).map(ip => `add list=allowed_ips address=${ip.address}${ip.comment ? ` comment="${ip.comment}"` : ''}`).join('\n') || '# (add IPs above)'}
+
+/ip firewall filter
+${selPorts.map(port => {
+  const p = ACCESS_PORT_LIST.find(x => x.port === port);
+  return `add chain=input protocol=tcp dst-port=${port} src-address-list=allowed_ips action=accept comment="Allow ${p?.name} from Allowed IPs"\nadd chain=input protocol=tcp dst-port=${port} action=drop comment="Drop ${p?.name} from Other IPs"`;
+}).join('\n')}
+${bruteForce ? `
+/ip firewall mangle
+${selPorts.map(port => {
+  const p = ACCESS_PORT_LIST.find(x => x.port === port);
+  return `add chain=prerouting protocol=tcp dst-port=${port} action=add-src-to-address-list address-list=login_attempts address-list-timeout=1m comment="Track ${p?.name} Login Attempts"`;
+}).join('\n')}
+
+/ip firewall filter
+add chain=input src-address-list=login_attempts action=add-src-to-address-list address-list=blocked_ips address-list-timeout=1d comment="Block IPs with Multiple Login Attempts"
+add chain=input src-address-list=blocked_ips action=drop comment="Drop Traffic from Blocked IPs"` : ''}`}
+        </pre>
+      </ACard>
+    </div>
+  );
+};
+
 // ========== USERS SCREEN ==========
 
 const UsersScreen = ({ sessionId }) => {
@@ -5177,6 +5464,7 @@ const App = () => {
       case 'Automation':    return <AutomationScreen sessionId={sessionId} />;
       case 'NetworkHealth': return <NetworkHealthScreen sessionId={sessionId} />;
       case 'PortForward':   return <PortForwardScreen sessionId={sessionId} />;
+      case 'AccessControl': return <AccessControlScreen sessionId={sessionId} />;
       case 'Settings':      return <SettingsScreen sessionId={sessionId} router={router} />;
       default:            return null;
     }

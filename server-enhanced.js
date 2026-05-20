@@ -2931,6 +2931,201 @@ app.post('/api/nat/port-forward', async (req, res) => {
   }
 });
 
+// ========== ACCESS CONTROL — RESTRICT ROUTER ACCESS ==========
+
+// Ports the router exposes — used to build allow/drop rules on chain=input
+const ACCESS_PORTS = [
+  { port: 8291, name: 'Winbox',  proto: 'tcp' },
+  { port: 22,   name: 'SSH',     proto: 'tcp' },
+  { port: 80,   name: 'HTTP',    proto: 'tcp' },
+  { port: 443,  name: 'HTTPS',   proto: 'tcp' },
+  { port: 8728, name: 'API',     proto: 'tcp' },
+  { port: 8729, name: 'API-SSL', proto: 'tcp' },
+];
+
+// Remove all netforge access-control rules from a given chain
+async function cleanAccessRules(conn) {
+  // Try regex removal first (RouterOS 7), then fall back to individual removes
+  try { await conn.execute('/ip firewall filter remove [find comment~"netforge-access"]'); } catch {}
+  try { await conn.execute('/ip firewall mangle remove [find comment~"netforge-brute"]'); } catch {}
+  // Individual removes as fallback for older RouterOS
+  for (const { name } of ACCESS_PORTS) {
+    try { await conn.execute(`/ip firewall filter remove [find comment="netforge-access-allow-${name}"]`); } catch {}
+    try { await conn.execute(`/ip firewall filter remove [find comment="netforge-access-drop-${name}"]`); } catch {}
+    try { await conn.execute(`/ip firewall mangle remove [find comment="netforge-brute-track-${name}"]`); } catch {}
+  }
+  try { await conn.execute('/ip firewall filter remove [find comment="netforge-brute-block"]'); } catch {}
+  try { await conn.execute('/ip firewall filter remove [find comment="netforge-brute-drop"]'); } catch {}
+}
+
+// GET /api/access/status
+app.get('/api/access/status', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+
+    const alOut = await conn.execute('/ip firewall address-list print');
+    const alRows = parseRouterOSOutput(alOut);
+
+    const allowedIps = alRows
+      .filter(r => r.list === 'allowed_ips')
+      .map(r => ({ id: r.numbers, address: r.address || '', comment: r.comment || '', disabled: r.disabled === 'true' }));
+
+    const blockedIps = alRows
+      .filter(r => r.list === 'blocked_ips' || r.list === 'login_attempts')
+      .map(r => ({ id: r.numbers, address: r.address || '', list: r.list, comment: r.comment || '', timeout: r.timeout || '' }));
+
+    const filterOut = await conn.execute('/ip firewall filter print');
+    const active = filterOut.includes('netforge-access');
+
+    const mangleOut = await conn.execute('/ip firewall mangle print');
+    const bruteForceActive = mangleOut.includes('netforge-brute');
+
+    res.json({ allowedIps, blockedIps, active, bruteForceActive });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/access/allowed-ip/add
+app.post('/api/access/allowed-ip/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { address, comment } = req.body;
+    if (!address) return res.status(400).json({ error: 'address required' });
+    if (!/^[\d.:/]+$/.test(address) && !/^[\da-fA-F:./]+$/.test(address)) {
+      return res.status(400).json({ error: 'Invalid IP/CIDR format' });
+    }
+    const conn = getConnection(sessionId);
+    const commentPart = comment ? ` comment="${comment}"` : '';
+    const out = await conn.execute(`/ip firewall address-list add list=allowed_ips address=${address}${commentPart}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: `${address} added to allowed_ips` });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/access/allowed-ip/remove
+app.post('/api/access/allowed-ip/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { id } = req.body;
+    if (id === undefined) return res.status(400).json({ error: 'id required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip firewall address-list remove numbers=${id}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/access/apply — deploy full ruleset matching the user's reference script
+app.post('/api/access/apply', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { ports = [8291, 22, 80, 443, 8728], bruteForce = true } = req.body;
+    const conn = getConnection(sessionId);
+    const report = [];
+
+    // Clean up old netforge access rules before re-applying
+    await cleanAccessRules(conn);
+
+    // Build filter rules: for each protected port:
+    //   1. ACCEPT from allowed_ips (must come BEFORE the drop rule)
+    //   2. DROP from all others
+    // The two rules form a pair — accept first, drop second.
+    const selectedPorts = ACCESS_PORTS.filter(p => ports.includes(p.port));
+    for (const { port, name, proto } of selectedPorts) {
+      const aOut = await conn.execute(
+        `/ip firewall filter add chain=input protocol=${proto} dst-port=${port} ` +
+        `src-address-list=allowed_ips action=accept comment="netforge-access-allow-${name}"`
+      );
+      const dOut = await conn.execute(
+        `/ip firewall filter add chain=input protocol=${proto} dst-port=${port} ` +
+        `action=drop comment="netforge-access-drop-${name}"`
+      );
+      report.push({
+        port, name,
+        accept: rosError(aOut) ? `FAIL: ${aOut.trim().split('\n')[0]}` : 'OK',
+        drop:   rosError(dOut) ? `FAIL: ${dOut.trim().split('\n')[0]}` : 'OK',
+      });
+    }
+
+    // Brute-force protection:
+    //   Mangle: track all connection attempts on protected ports → login_attempts list (1m TTL)
+    //   Filter: any IP in login_attempts → move to blocked_ips (1d)
+    //   Filter: drop everything from blocked_ips
+    if (bruteForce) {
+      for (const { port, name, proto } of selectedPorts) {
+        await conn.execute(
+          `/ip firewall mangle add chain=prerouting protocol=${proto} dst-port=${port} ` +
+          `action=add-src-to-address-list address-list=login_attempts address-list-timeout=1m ` +
+          `comment="netforge-brute-track-${name}"`
+        );
+      }
+      const bf1 = await conn.execute(
+        `/ip firewall filter add chain=input src-address-list=login_attempts ` +
+        `action=add-src-to-address-list address-list=blocked_ips address-list-timeout=1d ` +
+        `comment="netforge-brute-block"`
+      );
+      const bf2 = await conn.execute(
+        `/ip firewall filter add chain=input src-address-list=blocked_ips ` +
+        `action=drop comment="netforge-brute-drop"`
+      );
+      report.push({
+        bruteForce: true,
+        block: rosError(bf1) ? `FAIL: ${bf1.trim().split('\n')[0]}` : 'OK',
+        drop:  rosError(bf2) ? `FAIL: ${bf2.trim().split('\n')[0]}` : 'OK',
+      });
+    }
+
+    res.json({ success: true, message: `Access control applied for ${selectedPorts.length} ports`, report });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/access/remove — disable all access control
+app.post('/api/access/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    await cleanAccessRules(conn);
+    res.json({ success: true, message: 'Access control rules removed' });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/access/unblock-ip
+app.post('/api/access/unblock-ip', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { id } = req.body;
+    if (id === undefined) return res.status(400).json({ error: 'id required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip firewall address-list remove numbers=${id}`);
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    res.json({ success: true, message: 'IP unblocked' });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== SERVE STATIC FILES ==========
 
 app.use(express.static(path.join(__dirname)));
