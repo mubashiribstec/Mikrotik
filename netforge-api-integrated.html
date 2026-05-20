@@ -1906,19 +1906,15 @@ const WANScreen = ({ sessionId }) => {
       });
     };
     let unsubscribe, interval;
-    if (API.wsManager?.isConnected) {
-      API.subscribe('/api/wan-status', handleData);
-      unsubscribe = () => API.unsubscribe('/api/wan-status', handleData);
-    } else {
-      let firstLoad = true;
-      const poll = async () => {
-        if (firstLoad) setLoading(true);
-        try { const d = await API.getWanStatus(sessionId); handleData(d); } catch { if (firstLoad) setLoading(false); }
-        firstLoad = false;
-      };
-      poll();
-      interval = setInterval(poll, 5000);
-    }
+    // Always do an immediate HTTP fetch on mount for fast first paint
+    const poll = async () => {
+      try { const d = await API.getWanStatus(sessionId); handleData(d); } catch { setLoading(false); }
+    };
+    poll();
+    // Also subscribe to WebSocket pushes for live updates
+    API.subscribe('/api/wan-status', handleData);
+    unsubscribe = () => API.unsubscribe('/api/wan-status', handleData);
+    interval = setInterval(poll, 8000);
     return () => { if (unsubscribe) unsubscribe(); if (interval) clearInterval(interval); };
   }, [sessionId]);
 

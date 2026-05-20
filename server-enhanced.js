@@ -871,6 +871,7 @@ async function fetchVpn(conn) {
   const result = {
     wireguard: { enabled: false, interfaces: [], peers: [] },
     l2tp: { enabled: false, peers: 0 },
+    pptp: { enabled: false, peers: 0 },
     ovpn: { enabled: false, peers: 0 },
   };
 
@@ -918,6 +919,16 @@ async function fetchVpn(conn) {
       } catch {}
     }
   } catch {}
+
+  // PPTP
+  try {
+    const pptpOut = await conn.execute('/interface pptp-server server print');
+    const pptpRows = parseRouterOSKeyValue(pptpOut);
+    const pptpCfg = pptpRows[0] || {};
+    result.pptp = { enabled: pptpCfg.enabled === 'yes', peers: 0 };
+    const pptpActive = parseRouterOSOutput(await conn.execute('/interface pptp-server print'));
+    result.pptp.peers = pptpActive.length;
+  } catch { result.pptp = { enabled: false, peers: 0 }; }
 
   // OpenVPN server (RouterOS 7+ only)
   try {
@@ -1975,10 +1986,12 @@ app.post('/api/users/add', async (req, res) => {
     if (!name || !password) return res.status(400).json({ error: 'name and password required' });
     if (!/^[a-zA-Z0-9._-]{1,32}$/.test(name)) return res.status(400).json({ error: 'Invalid username' });
     const conn = getConnection(sessionId);
-    let cmd = `/ip user add name="${name}" password="${password}" group=${group}`;
-    if (comment) cmd += ` comment="${comment}"`;
+    // Sanitize comment to prevent command injection
+    const safeComment = (comment || '').replace(/["\\]/g, '');
+    let cmd = `/ip user add name="${name}" password="${password}" group="${group}"`;
+    if (safeComment) cmd += ` comment="${safeComment}"`;
     const out = await conn.execute(cmd);
-    if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
+    if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to add user' });
     res.json({ success: true, message: `User "${name}" added` });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
@@ -2037,6 +2050,7 @@ const BLOCK_SERVICE_DOMAINS = {
   torrents: ['thepiratebay.org', '1337x.to', 'rarbg.to', 'nyaa.si', 'kickasstorrents.to', 'torrentgalaxy.to'],
   gambling: ['bet365.com', 'pokerstars.com', '888casino.com', 'draftkings.com', 'fanduel.com', 'betway.com'],
   crypto:   ['coinhive.com', 'cryptoloot.pro', 'minero.cc', 'jsecoin.com'],
+  snapchat: ['snapchat.com', 'sc-static.net', 'snapfiles.com', 'snap.com', 'snapads.com'],
 };
 
 // Known stable IP CIDR ranges for mangle/IP blocking method.
@@ -2050,6 +2064,7 @@ const BLOCK_SERVICE_IPS = {
   torrents: [], // L7 + DNS blocking
   gambling: [], // DNS blocking only
   crypto:   [], // DNS blocking only
+  snapchat: ['52.22.0.0/16', '54.88.0.0/16', '35.168.0.0/13', '34.192.0.0/12'],
 };
 
 // Standard well-known DoH endpoints — when blocking is active and the user wants
@@ -2066,6 +2081,8 @@ const DOH_ENDPOINTS = [
 // Escaping note: each \\ in this JS string becomes \ in the sent SSH command,
 // which RouterOS then interprets in its regexp engine.
 const L7_TORRENT_REGEXP = `^(\\\\x13bittorrent protocol|azver\\\\x01\\$|get /scrape\\\\\\?info_hash=get /announce\\\\\\?info_hash=|get /client/bitcomet/|GET /data\\\\\\?fid=)|d1:ad2:id20:|\\\\x08'7P\\\\)[RP]`;
+
+const L7_SNAPCHAT_REGEXP = `^.+(snapchat\\.com|sc-static\\.net|snapfiles\\.com|snap\\.com).*$`;
 
 async function blockTorrentsL7(conn) {
   const comment = 'netforge-svc-torrents';
