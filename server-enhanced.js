@@ -706,7 +706,6 @@ async function fetchWanStatus(conn) {
       type === 'pppoe-out' || type === 'l2tp-out' || type === 'pptp-out' ||
       comment.includes('wan') || comment.includes('isp') ||
       name.includes('wan')    || name.includes('isp') ||
-      /^ether\d/.test(name)   || /^sfp\d/.test(name) ||
       /^lte\d/.test(name)     ||
       /^pppoe/.test(name)     || /^pptp/.test(name) || /^l2tp/.test(name) ||
       ifaceGateway[iface.name] !== undefined
@@ -717,7 +716,7 @@ async function fetchWanStatus(conn) {
 
   // Build from interfaces (NOT addresses) so PPPoE/DHCP-only interfaces still appear
   const wanIfaces = ifaces.filter(i => wanNames.has(i.name));
-  const source = wanIfaces.length > 0 ? wanIfaces : ifaces.slice(0, 8);
+  const source = wanIfaces.length > 0 ? wanIfaces : ifaces.filter(i => ifaceGateway[i.name]).slice(0, 4);
 
   return source.map((iface, idx) => {
     const addr = addresses.find(a => a.interface === iface.name);
@@ -845,26 +844,29 @@ async function fetchDhcpClients(conn) {
 }
 
 async function fetchWireless(conn) {
-  const output = await conn.execute('/interface wireless print');
-  const ifaces = parseRouterOSOutput(output);
-
-  let clients = [];
+  // Try RouterOS 7 wifi first, then legacy wireless
+  let rows = [];
   try {
-    clients = parseRouterOSOutput(await conn.execute('/interface wireless registration-table print'));
-  } catch (e) { /* no wireless or not supported */ }
-
-  return ifaces.map(iface => {
-    const connectedClients = clients.filter(c => c.interface === iface.name).length;
-    let freq = '2.4 GHz';
-    if ((iface.band || '').includes('5') || (iface.name || '').includes('5')) freq = '5 GHz';
-
-    return {
-      name: iface.name || 'wlan0',
-      freq,
-      clients: Math.max(0, connectedClients),
-      signal: 0,
-    };
-  });
+    const out = await conn.execute('/interface wifi print');
+    rows = parseRouterOSOutput(out);
+    if (rows.length === 0) throw new Error('no wifi interfaces');
+  } catch {
+    try {
+      const out = await conn.execute('/interface wireless print');
+      rows = parseRouterOSOutput(out);
+    } catch { rows = []; }
+  }
+  return rows.map(w => ({
+    name: w.name || '',
+    ssid: w.ssid || w.configuration_ssid || '',
+    channel: w.channel || w.frequency || '',
+    band: w.band || w.configuration_band || '',
+    clients: parseInt(w.registered_clients || w.clients || '0') || 0,
+    running: w.running === 'true' || w.active === 'true',
+    disabled: w.disabled === 'true',
+    macAddress: w.mac_address || '',
+    txPower: w.tx_power || '',
+  }));
 }
 
 async function fetchVpn(conn) {
@@ -1178,9 +1180,7 @@ app.get('/api/dhcp-clients', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const data = await fetchDhcpClients(getConnection(sessionId));
-    res.json(data.length > 0 ? data : [
-      { hostname: '', vendor: 'Device', ip: '192.168.1.100', mac: '00:00:00:00:00:00', iface: 'ether1', lease: '24h', tx: 0, rx: 0 },
-    ]);
+    res.json(data);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1192,7 +1192,7 @@ app.get('/api/wireless', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const data = await fetchWireless(getConnection(sessionId));
-    res.json(data.length > 0 ? data : [{ name: 'wlan0', freq: '2.4 GHz', clients: 0, signal: 0 }]);
+    res.json(data);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1280,11 +1280,6 @@ app.get('/api/backups', async (req, res) => {
       };
     });
 
-    if (data.length === 0) {
-      const today = new Date().toISOString().split('T')[0];
-      data.push({ filename: `backup-${today}.backup`, size: '0 MB', timestamp: new Date().toLocaleString(), trigger: 'Manual' });
-    }
-
     res.json(data);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
@@ -1311,9 +1306,7 @@ app.get('/api/ip-addresses', async (req, res) => {
       comment: addr.comment || '',
     }));
 
-    res.json(data.length > 0 ? data : [
-      { id: '0', address: '192.168.1.1/24', interface: 'ether1', disabled: false, comment: 'LAN' },
-    ]);
+    res.json(data);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1375,9 +1368,7 @@ app.get('/api/routes', async (req, res) => {
       comment: route.comment || '',
     }));
 
-    res.json(data.length > 0 ? data : [
-      { id: '0', destination: '0.0.0.0/0', gateway: '', distance: '0', disabled: false, comment: 'Default route' },
-    ]);
+    res.json(data);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1482,15 +1473,19 @@ app.get('/api/nat', async (req, res) => {
     const output = await conn.execute('/ip firewall nat print');
     const rules = parseRouterOSOutput(output);
 
-    const data = rules.map(rule => ({
-      id: rule.numbers || '',
-      chain: rule.chain || 'srcnat',
-      srcAddress: rule.src_address || '',
-      dstAddress: rule.dst_address || '',
-      protocol: rule.protocol || '',
-      action: rule.action || 'masquerade',
-      disabled: rule.disabled === 'true',
-      comment: rule.comment || '',
+    const data = rules.map(r => ({
+      id: r.numbers || '',
+      chain: r.chain || '',
+      action: r.action || '',
+      protocol: r.protocol || '',
+      srcAddress: r.src_address || '',
+      dstAddress: r.dst_address || '',
+      dstPort: r.dst_port || '',
+      toAddresses: r.to_addresses || '',
+      toPort: r.to_ports || '',
+      inInterface: r.in_interface || '',
+      disabled: r.disabled === 'true',
+      comment: r.comment || '',
     }));
 
     res.json(data.length > 0 ? data : []);
@@ -1505,14 +1500,18 @@ app.post('/api/nat/add', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
-    const { chain, srcAddress, dstAddress, action, protocol, comment } = req.body;
+    const { chain, action, protocol, srcAddress, dstAddress, dstPort, toAddresses, toPort, inInterface, comment } = req.body;
     if (!chain || !action) return res.status(400).json({ error: 'Chain and action required' });
 
     let cmd = `/ip firewall nat add chain=${chain} action=${action}`;
-    if (srcAddress) cmd += ` src-address=${srcAddress}`;
-    if (dstAddress) cmd += ` dst-address=${dstAddress}`;
-    if (protocol) cmd += ` protocol=${protocol}`;
-    if (comment) cmd += ` comment="${comment}"`;
+    if (protocol)    cmd += ` protocol=${protocol}`;
+    if (srcAddress)  cmd += ` src-address=${srcAddress}`;
+    if (dstAddress)  cmd += ` dst-address=${dstAddress}`;
+    if (dstPort)     cmd += ` dst-port=${dstPort}`;
+    if (toAddresses) cmd += ` to-addresses=${toAddresses}`;
+    if (toPort)      cmd += ` to-ports=${toPort}`;
+    if (inInterface) cmd += ` in-interface="${inInterface}"`;
+    if (comment)     cmd += ` comment="${(comment).replace(/"/g,'')}"`;
 
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'NAT rule added' });
@@ -1725,7 +1724,7 @@ app.get('/api/hotspot/users', async (req, res) => {
       pppoeData = pppoeRows.map(p => {
         const active = pppoeActive.find(a => a.name === p.name);
         return {
-          id:       `pppoe-${p.numbers || ''}`,
+          id:       p.name || '',
           name:     p.name || '',
           type:     'pppoe',
           profile:  p.profile || 'default',
@@ -1768,12 +1767,16 @@ app.post('/api/hotspot/user/remove', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'User ID required' });
-
-    await getConnection(sessionId).execute(`/ip hotspot user remove numbers=${id}`);
-    res.json({ success: true, message: 'Hotspot user removed' });
+    const { id, type } = req.body;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    const conn = getConnection(sessionId);
+    if (type === 'pppoe') {
+      // PPPoE users are /ppp secret entries
+      await conn.execute(`/ppp secret remove [find name="${id}"]`);
+    } else {
+      await conn.execute(`/ip hotspot user remove numbers=${id}`);
+    }
+    res.json({ success: true });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -2449,7 +2452,7 @@ app.post('/api/vpn/peer/add', async (req, res) => {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
 
-    const { name, allowedIps, interfaceName } = req.body;
+    const { name, allowedIps, interfaceName, publicKey } = req.body;
     if (!name) return res.status(400).json({ error: 'Peer name required' });
 
     const conn = getConnection(sessionId);
@@ -2461,12 +2464,20 @@ app.post('/api/vpn/peer/add', async (req, res) => {
     const wgIface = interfaceName || wgIfaces[0].name;
     const ips = allowedIps || '10.0.0.2/32';
 
-    await conn.execute(`/interface wireguard peers add interface=${wgIface} allowed-address=${ips} comment="${name}"`);
-    // Fetch the newly created peer's public key
-    const peers = parseRouterOSOutput(await conn.execute(`/interface wireguard peers print`));
-    const newPeer = peers.find(p => p.comment === name);
-    const publicKey = newPeer?.public_key || '';
-    res.json({ success: true, message: `WireGuard peer "${name}" added to ${wgIface}`, publicKey });
+    let peerCmd = `/interface wireguard peers add interface=${wgIface} allowed-address=${ips} comment="${name}"`;
+    if (publicKey && /^[A-Za-z0-9+/]{43}=$/.test(publicKey)) {
+      peerCmd += ` public-key="${publicKey}"`;
+    }
+    await conn.execute(peerCmd);
+    // Fetch the newly created peer's info including public-key
+    const peers = parseRouterOSOutput(await conn.execute('/interface wireguard peers print'));
+    const newPeer = peers.find(p => (p.comment || '') === name) || {};
+    res.json({
+      success: true,
+      message: `WireGuard peer "${name}" added to ${wgIface}`,
+      publicKey: newPeer.public_key || publicKey || '',
+      allowedAddress: newPeer.allowed_address || ips,
+    });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -2882,7 +2893,7 @@ app.post('/api/automation/deploy-recipe', async (req, res) => {
       await conn.execute(`/system script remove [find name="nf-wan-down"]`).catch(() => {});
       await conn.execute(`/system script add name="nf-wan-down" policy="read,write,policy,test" source="${downScript}"`);
       await conn.execute(`/tool netwatch remove [find comment="netforge-wan-health"]`).catch(() => {});
-      const nwOut = await conn.execute(`/tool netwatch add host=${target} interval=10s up-script="" down-script="nf-wan-down" comment="netforge-wan-health"`);
+      const nwOut = await conn.execute(`/tool netwatch add host=${target} interval=10s up-script="/system script run nf-wan-up" down-script="/system script run nf-wan-down" comment="netforge-wan-health"`);
       if (rosError(nwOut)) return res.status(500).json({ error: nwOut.trim().split('\n')[0] });
       steps.push(`Netwatch: pings ${target} every 10s`);
       steps.push(wanIface ? `On failure: restarts ${wanIface.name}` : 'On failure: logs warning');
@@ -3142,11 +3153,16 @@ async function cleanAccessRules(conn) {
   // Try regex removal first (RouterOS 7), then fall back to individual removes
   try { await conn.execute('/ip firewall filter remove [find comment~"netforge-access"]'); } catch {}
   try { await conn.execute('/ip firewall mangle remove [find comment~"netforge-brute"]'); } catch {}
+  try { await conn.execute('/ip firewall filter remove [find comment~"netforge-brute-drop"]'); } catch {}
+  try { await conn.execute('/ip firewall filter remove [find comment~"netforge-brute-block"]'); } catch {}
+  try { await conn.execute('/ip firewall mangle remove [find comment~"netforge-brute-count"]'); } catch {}
   // Individual removes as fallback for older RouterOS
   for (const { name } of ACCESS_PORTS) {
     try { await conn.execute(`/ip firewall filter remove [find comment="netforge-access-allow-${name}"]`); } catch {}
     try { await conn.execute(`/ip firewall filter remove [find comment="netforge-access-drop-${name}"]`); } catch {}
     try { await conn.execute(`/ip firewall mangle remove [find comment="netforge-brute-track-${name}"]`); } catch {}
+    try { await conn.execute(`/ip firewall filter remove [find comment="netforge-brute-drop-${name}"]`); } catch {}
+    try { await conn.execute(`/ip firewall filter remove [find comment="netforge-brute-block-${name}"]`); } catch {}
   }
   try { await conn.execute('/ip firewall filter remove [find comment="netforge-brute-block"]'); } catch {}
   try { await conn.execute('/ip firewall filter remove [find comment="netforge-brute-drop"]'); } catch {}
@@ -3230,6 +3246,12 @@ app.post('/api/access/apply', async (req, res) => {
     const conn = getConnection(sessionId);
     const report = [];
 
+    // Safety: refuse to apply if no allowed IPs configured — would lock everyone out
+    const alRows = parseRouterOSOutput(await conn.execute('/ip firewall address-list print where list=allowed_ips'));
+    if (alRows.length === 0) {
+      return res.status(400).json({ error: 'Add at least one allowed IP before applying — applying with an empty list locks everyone out.' });
+    }
+
     // Clean up old netforge access rules before re-applying
     await cleanAccessRules(conn);
 
@@ -3254,32 +3276,26 @@ app.post('/api/access/apply', async (req, res) => {
       });
     }
 
-    // Brute-force protection:
-    //   Mangle: track all connection attempts on protected ports → login_attempts list (1m TTL)
-    //   Filter: any IP in login_attempts → move to blocked_ips (1d)
-    //   Filter: drop everything from blocked_ips
+    // Brute-force protection (3-strike / 5-attempt approach):
+    //   Filter: drop immediately if already in blocked_ips
+    //   Mangle: count new connections per port → login_attempts list (1m TTL)
+    //   Filter: after 5 new connections in 1m, add to blocked_ips (1d)
     if (bruteForce) {
+      // Track new connection attempts per port
       for (const { port, name, proto } of selectedPorts) {
-        await conn.execute(
-          `/ip firewall mangle add chain=prerouting protocol=${proto} dst-port=${port} ` +
-          `action=add-src-to-address-list address-list=login_attempts address-list-timeout=1m ` +
-          `comment="netforge-brute-track-${name}"`
-        );
+        // Step 1: if already in blocked_ips, drop immediately
+        await conn.execute(`/ip firewall filter add chain=input protocol=${proto} dst-port=${port} src-address-list=blocked_ips action=drop comment="netforge-brute-drop-${name}"`);
+        // Step 2: count new connections — add to login_attempts (5-attempt window)
+        await conn.execute(`/ip firewall mangle add chain=prerouting protocol=${proto} dst-port=${port} connection-state=new action=add-src-to-address-list address-list=login_attempts address-list-timeout=1m comment="netforge-brute-track-${name}"`);
       }
-      const bf1 = await conn.execute(
-        `/ip firewall filter add chain=input src-address-list=login_attempts ` +
-        `action=add-src-to-address-list address-list=blocked_ips address-list-timeout=1d ` +
-        `comment="netforge-brute-block"`
-      );
-      const bf2 = await conn.execute(
-        `/ip firewall filter add chain=input src-address-list=blocked_ips ` +
-        `action=drop comment="netforge-brute-drop"`
-      );
-      report.push({
-        bruteForce: true,
-        block: rosError(bf1) ? `FAIL: ${bf1.trim().split('\n')[0]}` : 'OK',
-        drop:  rosError(bf2) ? `FAIL: ${bf2.trim().split('\n')[0]}` : 'OK',
-      });
+      // Step 3: after 5 entries in login_attempts (meaning 5 new connections in 1m), add to blocked_ips
+      // RouterOS counts address-list entries — use a second list for the threshold
+      await conn.execute(`/ip firewall mangle add chain=prerouting src-address-list=login_attempts action=add-src-to-address-list address-list=login_attempts_count address-list-timeout=1m comment="netforge-brute-count"`);
+      // Block IPs that have 5+ entries (approximated via connection-limit matcher)
+      for (const { port, name, proto } of selectedPorts) {
+        await conn.execute(`/ip firewall filter add chain=input protocol=${proto} dst-port=${port} connection-limit=5,32 src-address-list=!allowed_ips action=add-src-to-address-list address-list=blocked_ips address-list-timeout=1d comment="netforge-brute-block-${name}"`);
+      }
+      report.push({ bruteForce: true });
     }
 
     res.json({ success: true, message: `Access control applied for ${selectedPorts.length} ports`, report });

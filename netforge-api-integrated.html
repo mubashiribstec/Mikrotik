@@ -627,12 +627,13 @@ const ACard = ({ children, pad = 12, style, onClick }) => (
   </div>
 );
 
-const ABtn = ({ children, kind, variant, icon, onClick, disabled = false, full = false }) => {
+const ABtn = ({ children, kind, variant, icon, onClick, disabled = false, full = false, style: styleProp }) => {
   const k = kind || variant || 'ghost';
   const s = {
     primary:   { bg: A.accent,        fg: '#fff',    border: 'transparent',  shadow: '0 1px 0 rgba(255,255,255,0.15) inset, 0 4px 14px rgba(59,130,246,0.35)' },
     secondary: { bg: 'rgba(255,255,255,0.06)', fg: A.text, border: 'rgba(255,255,255,0.12)', shadow: 'none' },
     ghost:     { bg: 'transparent',   fg: A.textDim, border: 'transparent',  shadow: 'none' },
+    danger:    { bg: 'rgba(239,68,68,0.15)', fg: '#FCA5A5', border: 'rgba(239,68,68,0.3)', shadow: 'none' },
   }[k] || { bg: 'transparent', fg: A.textDim, border: 'transparent', shadow: 'none' };
   return (
     <button onClick={onClick} disabled={disabled} style={{
@@ -642,6 +643,7 @@ const ABtn = ({ children, kind, variant, icon, onClick, disabled = false, full =
       cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: s.shadow,
       opacity: disabled ? 0.5 : 1, transition: 'opacity 0.15s',
       width: full ? '100%' : undefined,
+      ...styleProp,
     }}>
       {icon && <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{icon}</span>}
       {children}
@@ -660,8 +662,8 @@ const NetForgeMark = ({ size = 16, color = 'currentColor' }) => (
   </svg>
 );
 
-const ALabeledField = ({ label, sub, value, onChange, type = 'text', mono = false }) => (
-  <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+const ALabeledField = ({ label, sub, value, onChange, type = 'text', mono = false, style: styleProp }) => (
+  <label style={{ display: 'flex', flexDirection: 'column', gap: 6, ...styleProp }}>
     <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
       <span style={{ fontSize: 12, fontWeight: 500 }}>{label}</span>
       {sub && <span style={{ fontSize: 11, color: A.textFaint, fontFamily: A.mono }}>{sub}</span>}
@@ -2870,15 +2872,7 @@ const HotspotScreen = ({ sessionId }) => {
   );
 };
 
-const MOCK_APS = [
-  { name: 'AP-reception',  model: 'cAP ax',  channel: 36,  width: '80MHz', band: '5G',   status: 'online',     clients: 12 },
-  { name: 'AP-conference', model: 'cAP ax',  channel: 149, width: '80MHz', band: '5G',   status: 'online',     clients: 8  },
-  { name: 'AP-warehouse',  model: 'wAP ac',  channel: 6,   width: '20MHz', band: '2.4G', status: 'low-signal', clients: 4  },
-  { name: 'AP-rooftop',    model: 'cAP ax',  channel: '—', width: '—',     band: '5G',   status: 'offline',    clients: 0  },
-];
-
 const CH_5G = [36,40,44,48,149,153,157,161];
-const CH_UTIL = { 36:28, 40:15, 44:10, 48:22, 149:82, 153:45, 157:30, 161:8 };
 
 const WirelessScreen = ({ sessionId }) => {
   const [wireless, setWireless] = React.useState([]);
@@ -5316,12 +5310,12 @@ const RoutesScreen = ({ sessionId }) => {
             {totalPages > 1 && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', borderTop: `1px solid ${A.border}`, paddingTop: 16 }}>
                 <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} style={{
-                  padding: '6px 12px', background: page === 0 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  padding: '6px 12px', background: page === 0 ? A.surface : A.accent, color: A.text, border: 'none',
                   borderRadius: 4, cursor: page === 0 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === 0 ? 0.5 : 1
                 }}>← Prev</button>
                 <span style={{ color: A.textDim, fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
                 <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page === totalPages - 1} style={{
-                  padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accent, color: A.text, border: 'none',
                   borderRadius: 4, cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === totalPages - 1 ? 0.5 : 1
                 }}>Next →</button>
               </div>
@@ -5616,12 +5610,12 @@ const NatScreen = ({ sessionId }) => {
             {totalPages > 1 && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', borderTop: `1px solid ${A.border}`, paddingTop: 16 }}>
                 <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} style={{
-                  padding: '6px 12px', background: page === 0 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  padding: '6px 12px', background: page === 0 ? A.surface : A.accent, color: A.text, border: 'none',
                   borderRadius: 4, cursor: page === 0 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === 0 ? 0.5 : 1
                 }}>← Prev</button>
                 <span style={{ color: A.textDim, fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
                 <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page === totalPages - 1} style={{
-                  padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accentLine, color: A.text, border: 'none',
+                  padding: '6px 12px', background: page === totalPages - 1 ? A.surface : A.accent, color: A.text, border: 'none',
                   borderRadius: 4, cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', fontSize: 12, opacity: page === totalPages - 1 ? 0.5 : 1
                 }}>Next →</button>
               </div>
