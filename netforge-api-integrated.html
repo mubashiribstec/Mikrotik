@@ -284,10 +284,10 @@ const API = {
     return this.call(sessionId, '/api/firewall/service-status');
   },
 
-  async toggleFirewallService(sessionId, serviceId, block, blockMethod = 'dns') {
+  async toggleFirewallService(sessionId, serviceId, block, blockMethod = 'dns', applyTo = 'all') {
     return this.call(sessionId, '/api/firewall/service/toggle', {
       method: 'POST',
-      body: JSON.stringify({ serviceId, block, blockMethod }),
+      body: JSON.stringify({ serviceId, block, blockMethod, applyTo }),
     });
   },
 
@@ -298,10 +298,10 @@ const API = {
     });
   },
 
-  async addBandwidthQueue(sessionId, name, target, down, up, priority, burst) {
+  async addBandwidthQueue(sessionId, name, target, down, up, priority, burst, pcq) {
     return this.call(sessionId, '/api/bandwidth/queue/add', {
       method: 'POST',
-      body: JSON.stringify({ name, target, down, up, priority, burst }),
+      body: JSON.stringify({ name, target, down, up, priority, burst, pcq }),
     });
   },
 
@@ -352,10 +352,10 @@ const API = {
     });
   },
 
-  async applyLoadBalance(sessionId, wans, method, healthCheck) {
+  async applyLoadBalance(sessionId, wans, method, healthCheck, pinBanking, connMark, removeOnUninstall) {
     return this.call(sessionId, '/api/wan/apply-lb', {
       method: 'POST',
-      body: JSON.stringify({ wans, method, healthCheck }),
+      body: JSON.stringify({ wans, method, healthCheck, pinBanking, connMark, removeOnUninstall }),
     });
   },
 
@@ -1301,8 +1301,7 @@ const LoginScreen = ({ setPage, setSessionId, setRouter }) => {
           </div>
 
           <div style={{ marginTop: 14, display: 'flex', gap: 8, flexShrink: 0 }}>
-            <ABtn kind="secondary">Discover on LAN</ABtn>
-            <ABtn kind="ghost">+ New profile</ABtn>
+            <ABtn kind="secondary" disabled title="Not yet implemented">Discover on LAN</ABtn>
           </div>
         </div>
 
@@ -1945,7 +1944,7 @@ const WANScreen = ({ sessionId }) => {
     setApplying(true); setApplyMsg('Applying rules…');
     try {
       const wansWithWeights = selectedWans.map(w => ({ ...w, weight: wanConfig[w.name]?.weight || 1 }));
-      const result = await API.applyLoadBalance(sessionId, wansWithWeights, lbMethod, healthCheck);
+      const result = await API.applyLoadBalance(sessionId, wansWithWeights, lbMethod, healthCheck, pinBanking, connMark, removeOnUninstall);
       setApplyMsg('✓ ' + result.message);
     } catch (e) { setApplyMsg('✗ ' + e.message); }
     setApplying(false);
@@ -2214,7 +2213,7 @@ const FirewallScreen = ({ sessionId }) => {
     setToggling(prev => ({ ...prev, [svc.id]: true }));
     setToggleMsg('');
     try {
-      await API.toggleFirewallService(sessionId, svc.id, newState, method);
+      await API.toggleFirewallService(sessionId, svc.id, newState, method, applyTo);
       setToggleMsg(`✓ ${svc.label} ${newState ? 'blocked' : 'unblocked'} via ${method}`);
       setTimeout(() => setToggleMsg(''), 4000);
     } catch (e) {
@@ -2439,7 +2438,7 @@ const BandwidthScreen = ({ sessionId }) => {
     if (!qName.trim() || !qTarget.trim()) { setAddMsg('Name and target required'); return; }
     setAddMsg('Adding queue…');
     try {
-      const result = await API.addBandwidthQueue(sessionId, qName.trim(), qTarget.trim(), qDown, qUp, qPrio, qBurst);
+      const result = await API.addBandwidthQueue(sessionId, qName.trim(), qTarget.trim(), qDown, qUp, qPrio, qBurst, qPcq);
       setAddMsg('✓ ' + result.message);
       setQName(''); setQTarget(''); setShowPanel(false);
       // Refresh queue list
@@ -2740,8 +2739,15 @@ const HotspotScreen = ({ sessionId }) => {
     return () => clearInterval(iv);
   }, [sessionId, loadUsers]);
 
-  const handleRemove = async (id) => {
-    try { await API.removeHotspotUser(sessionId, id); await loadUsers(); } catch {}
+  const handleRemove = async (user) => {
+    if (!window.confirm(`Remove "${user.name || user.username}"?`)) return;
+    try {
+      await API.call(sessionId, '/api/hotspot/user/remove', {
+        method: 'POST',
+        body: JSON.stringify({ id: user.id, type: user.type || 'hotspot' }),
+      });
+      await loadUsers();
+    } catch (e) { alert(e.message); }
   };
 
   const handleCreate = async () => {
@@ -2827,7 +2833,7 @@ const HotspotScreen = ({ sessionId }) => {
                 <span style={COL.time}>{u.uptime || '—'}</span>
                 <span style={COL.time}>{u.bytesIn ? `${(u.bytesIn/1e6).toFixed(1)} MB` : '—'}</span>
                 <APill tone={u.disabled ? 'dim' : 'good'}>{u.disabled ? 'Offline' : 'Online'}</APill>
-                <button onClick={() => handleRemove(u.id)} style={{ background: 'rgba(239,68,68,0.15)', border: 'none', borderRadius: 5, color: '#FCA5A5', fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Del</button>
+                <button onClick={() => handleRemove(u)} style={{ background: 'rgba(239,68,68,0.15)', border: 'none', borderRadius: 5, color: '#FCA5A5', fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Del</button>
               </div>
             ))}
           </div>
@@ -2872,8 +2878,6 @@ const HotspotScreen = ({ sessionId }) => {
   );
 };
 
-const CH_5G = [36,40,44,48,149,153,157,161];
-
 const WirelessScreen = ({ sessionId }) => {
   const [wireless, setWireless] = React.useState([]);
   const [loading, setLoading]   = React.useState(true);
@@ -2891,19 +2895,26 @@ const WirelessScreen = ({ sessionId }) => {
     return () => clearInterval(iv);
   }, [sessionId]);
 
-  const ssids = wireless.length > 0 ? wireless : [
-    { name: 'NetForge-WiFi',  security: 'WPA2/3', vlan: 88, clients: 24 },
-    { name: 'NetForge-Guest', security: 'WPA2',   vlan: 99, clients: 6  },
-    { name: 'NetForge-IoT',   security: 'WPA2',   vlan: 77, clients: 18 },
-  ];
-
-  const aps = MOCK_APS;
-  const totalClients = aps.reduce((s, a) => s + a.clients, 0);
-  const onlineAps    = aps.filter(a => a.status === 'online').length;
-
-  const apStatusTone = (s) => s === 'online' ? 'good' : s === 'low-signal' ? 'warn' : 'dim';
-
   if (loading) return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ASkeleton /></div>;
+
+  if (wireless.length === 0) {
+    return (
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '14px 20px 12px', flexShrink: 0 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Wireless · CAPsMAN</div>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>centralized AP control</div>
+        </div>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
+          <ACard pad={32} style={{ maxWidth: 480, textAlign: 'center' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: A.text, marginBottom: 8 }}>No wireless interfaces detected</div>
+            <div style={{ fontSize: 12, color: A.textFaint, lineHeight: 1.6 }}>
+              This router may not have wireless capability or may use /interface wifi (RouterOS 7+).
+            </div>
+          </ACard>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -2911,11 +2922,7 @@ const WirelessScreen = ({ sessionId }) => {
       <div style={{ padding: '14px 20px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600, color: A.text }}>Wireless · CAPsMAN</div>
-          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>centralized AP control · {aps.length} APs · {totalClients} clients</div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <ABtn kind="secondary">Provision all</ABtn>
-          <ABtn kind="primary">+ New SSID</ABtn>
+          <div style={{ fontSize: 11, color: A.textFaint, marginTop: 2 }}>centralized AP control · {wireless.length} interface{wireless.length !== 1 ? 's' : ''}</div>
         </div>
       </div>
 
@@ -2925,15 +2932,15 @@ const WirelessScreen = ({ sessionId }) => {
           <ACard pad={0}>
             <div style={{ padding: '10px 14px 9px', borderBottom: `1px solid ${A.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: A.textDim, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Networks (SSIDs)</span>
-              <span style={{ fontSize: 10, color: A.textFaint }}>/caps-man configuration</span>
+              <span style={{ fontSize: 10, color: A.textFaint }}>/interface wireless</span>
             </div>
-            {ssids.map((ssid, i) => (
+            {wireless.map((ssid, i) => (
               <div key={i} onClick={() => setSelectedSsid(selectedSsid === i ? null : i)} style={{
-                padding: '11px 14px', borderBottom: i < ssids.length - 1 ? `1px solid ${A.border}` : 'none',
+                padding: '11px 14px', borderBottom: i < wireless.length - 1 ? `1px solid ${A.border}` : 'none',
                 cursor: 'pointer', background: selectedSsid === i ? 'rgba(59,130,246,0.08)' : 'transparent', transition: 'background 0.1s',
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{ssid.name || ssid.ssid}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>{ssid.name || ssid.ssid || '—'}</span>
                   <APill tone="good" mono>{ssid.clients || ssid.clientCount || 0}</APill>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -2942,70 +2949,28 @@ const WirelessScreen = ({ sessionId }) => {
                 </div>
               </div>
             ))}
-            <div style={{ padding: '10px 14px' }}>
-              <ABtn kind="secondary" full>+ Add</ABtn>
-            </div>
           </ACard>
         </div>
 
-        {/* right: APs table + channel util */}
+        {/* right: detail */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* AP table */}
-          <ACard pad={0}>
-            <div style={{ padding: '10px 16px 9px', borderBottom: `1px solid ${A.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: A.text }}>Access points</span>
-              <APill tone={onlineAps === aps.length ? 'good' : 'warn'}>{onlineAps}/{aps.length} online</APill>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '160px 100px 80px 80px 60px 80px 60px', padding: '8px 16px', borderBottom: `1px solid ${A.border}`, fontSize: 10, color: A.textFaint, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              <span>AP name</span><span>Model</span><span>Channel</span><span>Width</span><span>Band</span><span>Status</span><span>Clients</span>
-            </div>
-            {aps.map((ap, i) => (
-              <div key={i} style={{
-                display: 'grid', gridTemplateColumns: '160px 100px 80px 80px 60px 80px 60px',
-                padding: '10px 16px', borderBottom: i < aps.length - 1 ? `1px solid ${A.border}` : 'none',
-                background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent', alignItems: 'center',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 7, height: 7, borderRadius: 999, background: ap.status === 'online' ? A.good : ap.status === 'low-signal' ? A.warn : 'rgba(255,255,255,0.15)', flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, fontWeight: 500, color: A.text, fontFamily: A.mono }}>{ap.name}</span>
-                </div>
-                <span style={{ fontSize: 11, color: A.textDim }}>{ap.model}</span>
-                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.text }}>{ap.channel}</span>
-                <span style={{ fontSize: 11, fontFamily: A.mono, color: A.textDim }}>{ap.width}</span>
-                <APill tone={ap.band === '5G' ? 'accent' : 'dim'}>{ap.band}</APill>
-                <APill tone={apStatusTone(ap.status)}>{ap.status}</APill>
-                <span style={{ fontSize: 12, fontWeight: 600, color: A.text, fontFamily: A.mono }}>{ap.clients}</span>
-              </div>
-            ))}
-          </ACard>
-
-          {/* Channel utilization */}
-          <ACard pad={16}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 4 }}>Channel utilization · 5 GHz · last 5m</div>
-            <div style={{ fontSize: 10, color: A.textFaint, marginBottom: 14 }}>Channel 149 is congested (82%) — recommend moving AP-conference to ch 161</div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
-              {CH_5G.map(ch => {
-                const util = CH_UTIL[ch] || 0;
-                const isCongested = util >= 75;
-                const isRec = ch === 161;
-                return (
-                  <div key={ch} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                    <div style={{ width: '100%', height: 64, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
-                      <div style={{ width: '70%', background: isCongested ? A.bad : isRec ? A.good : A.accent, borderRadius: '3px 3px 0 0', height: `${util}%`, opacity: isRec ? 1 : 0.7, transition: 'height 0.4s', minHeight: 3 }} />
-                    </div>
-                    <span style={{ fontSize: 9, fontFamily: A.mono, color: isCongested ? '#FCA5A5' : isRec ? '#86EFAC' : A.textFaint }}>{ch}</span>
-                    <span style={{ fontSize: 9, fontFamily: A.mono, color: A.textFaint }}>{util}%</span>
+          {selectedSsid !== null && wireless[selectedSsid] ? (
+            <ACard pad={16}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: A.text, marginBottom: 12 }}>{wireless[selectedSsid].name || wireless[selectedSsid].ssid}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {Object.entries(wireless[selectedSsid]).map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', gap: 8, fontSize: 11 }}>
+                    <span style={{ color: A.textFaint, width: 140, flexShrink: 0, fontFamily: A.mono }}>{k}</span>
+                    <span style={{ color: A.text, fontFamily: A.mono }}>{String(v)}</span>
                   </div>
-                );
-              })}
-            </div>
-            <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
-              <APill tone="bad">ch 149 · 82% congested</APill>
-              <APill tone="good">ch 161 · 8% free</APill>
-              <div style={{ flex: 1 }} />
-              <ABtn kind="secondary">Move AP-conference → ch 161</ABtn>
-            </div>
-          </ACard>
+                ))}
+              </div>
+            </ACard>
+          ) : (
+            <ACard pad={24}>
+              <div style={{ textAlign: 'center', color: A.textFaint, fontSize: 12 }}>Select a wireless interface to view details</div>
+            </ACard>
+          )}
         </div>
       </div>
     </div>
@@ -3593,7 +3558,21 @@ const ScriptsScreen = ({ sessionId }) => {
     setNewMsg('Saving…');
     try {
       await API.addScript(sessionId, newName.trim(), newSource);
-      setNewMsg('✓ Saved');
+      // If a schedule was selected, wire it to the scheduler
+      if (schedule && schedule !== 'manual') {
+        const schedMap = {
+          'startup': 'startup',
+          'hourly': '01:00:00',
+          'daily': '00:00:00',
+          'weekly': '00:00:00',
+        };
+        const startTime = schedMap[schedule] || '00:00:00';
+        const interval = schedule === 'startup' ? '0s' : schedule === 'hourly' ? '1h' : schedule === 'daily' ? '1d' : '7d';
+        try {
+          await API.addScheduler(sessionId, `sched-${newName.trim()}`, newName.trim(), startTime, interval, `NetForge: run ${newName.trim()}`);
+        } catch {}
+      }
+      setNewMsg('✓ Saved' + (schedule !== 'manual' ? ' + scheduled' : ''));
       setNewName(''); setShowNew(false);
       const d = await API.getScripts(sessionId); setScripts(d);
     } catch (e) { setNewMsg('✗ ' + e.message); }
@@ -3732,6 +3711,8 @@ const BackupScreen = ({ sessionId }) => {
   const [destinations, setDests]  = React.useState(BACKUP_DESTINATIONS.map(d => ({ ...d })));
   const [backingUp, setBackingUp] = React.useState(false);
   const [backupMsg, setBackupMsg] = React.useState('');
+  const [schedTime, setSchedTime] = React.useState('02:00:00');
+  const [schedMsg, setSchedMsg]   = React.useState('');
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -3759,6 +3740,22 @@ const BackupScreen = ({ sessionId }) => {
     setTimeout(() => setBackupMsg(''), 4000);
   };
 
+  const handleScheduleBackup = async () => {
+    setSchedMsg('Scheduling…');
+    try {
+      await API.addScheduler(
+        sessionId,
+        'nf-scheduled-backup',
+        `/system backup save name=("auto-backup-" . [/system clock get date])`,
+        schedTime || '02:00:00',
+        '1d',
+        'NetForge: scheduled backup'
+      );
+      setSchedMsg('✓ Backup scheduled');
+    } catch (e) { setSchedMsg('✗ ' + e.message); }
+    setTimeout(() => setSchedMsg(''), 3000);
+  };
+
   const typeTone = (t) => {
     if (!t) return 'dim';
     const s = t.toLowerCase();
@@ -3779,7 +3776,7 @@ const BackupScreen = ({ sessionId }) => {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {backupMsg && <span style={{ fontSize: 11, color: backupMsg.includes('✓') ? A.good : A.textDim, fontFamily: A.mono }}>{backupMsg}</span>}
-          <ABtn kind="secondary">Restore from file…</ABtn>
+          <ABtn kind="secondary" onClick={() => alert('To restore: upload the .backup file via Winbox or /file upload, then run /system backup load.')}>Restore from file…</ABtn>
           <ABtn kind="primary" onClick={handleBackupNow} disabled={backingUp}>{backingUp ? 'Saving…' : 'Backup now'}</ABtn>
         </div>
       </div>
@@ -3825,6 +3822,17 @@ const BackupScreen = ({ sessionId }) => {
                   </div>
                 </div>
               ))}
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, color: A.textDim, flexShrink: 0 }}>Start time</span>
+                <input type="time" value={schedTime.slice(0, 5)} onChange={e => setSchedTime(e.target.value + ':00')}
+                  style={{ flex: 1, padding: '5px 8px', background: A.surface, border: `1px solid ${A.border}`, borderRadius: 7, color: A.text, fontFamily: A.mono, fontSize: 12, outline: 'none' }} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <ABtn kind="primary" full onClick={handleScheduleBackup}>Schedule</ABtn>
+                {schedMsg && <span style={{ fontSize: 11, color: schedMsg.includes('✓') ? A.good : A.bad, fontFamily: A.mono, flexShrink: 0 }}>{schedMsg}</span>}
+              </div>
             </div>
           </ACard>
 
@@ -4324,6 +4332,11 @@ const PortForwardScreen = ({ sessionId }) => {
   const [comment, setComment]     = React.useState('');
   const [wanIface, setWanIface]   = React.useState('');
   const [addMsg, setAddMsg]       = React.useState('');
+  const [pfProto, setPfProto]     = React.useState('tcp');
+  const [pfDstPort, setPfDstPort] = React.useState('');
+  const [pfToAddr, setPfToAddr]   = React.useState('');
+  const [pfToPort, setPfToPort]   = React.useState('');
+  const [pfInIface, setPfInIface] = React.useState('');
 
   const loadRules = React.useCallback(async () => {
     setLoadingRules(true);
@@ -4350,12 +4363,25 @@ const PortForwardScreen = ({ sessionId }) => {
   };
 
   const handleAdd = async () => {
-    if (!extPort || !intIp) { setAddMsg('External port and internal IP required'); return; }
+    const dstPort = pfDstPort || extPort;
+    const toAddr  = pfToAddr  || intIp;
+    if (!dstPort || !toAddr) { setAddMsg('External port and internal IP required'); return; }
     setAddMsg('Creating…');
     try {
-      const r = await API.portForward(sessionId, parseInt(extPort), intIp.trim(), intPort ? parseInt(intPort) : parseInt(extPort), proto, comment, wanIface);
+      const r = await API.call(sessionId, '/api/nat/port-forward', {
+        method: 'POST',
+        body: JSON.stringify({
+          dstPort: parseInt(dstPort),
+          toAddresses: toAddr.trim(),
+          toPort: (pfToPort || intPort) ? parseInt(pfToPort || intPort) : parseInt(dstPort),
+          inInterface: pfInIface || wanIface || '',
+          protocol: pfProto || proto,
+          comment,
+        }),
+      });
       setAddMsg('✓ ' + r.message);
       setExtPort(''); setIntIp(''); setIntPort(''); setComment(''); setPreset(null);
+      setPfDstPort(''); setPfToAddr(''); setPfToPort(''); setPfInIface('');
       await loadRules();
     } catch (e) { setAddMsg('✗ ' + e.message); }
     setTimeout(() => setAddMsg(''), 4000);
@@ -4424,7 +4450,7 @@ const PortForwardScreen = ({ sessionId }) => {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, fontWeight: 500, color: A.text }}>{r.comment || `Rule ${r.id}`}</div>
                   <div style={{ fontSize: 10, fontFamily: A.mono, color: A.textFaint }}>
-                    ext:{r.dstPort || '?'} → {r.toAddresses || r.dstAddress || '?'}:{r.toPort || r.dstPort || '?'} · {r.protocol || 'tcp'}
+                    {r.protocol || '—'} · {r.dstPort || '—'} → {r.toAddresses ? r.toAddresses + (r.toPort ? ':' + r.toPort : '') : '—'}
                   </div>
                 </div>
                 <APill tone={r.disabled ? 'dim' : 'good'}>{r.disabled ? 'off' : 'active'}</APill>
@@ -4472,6 +4498,9 @@ const AccessControlScreen = ({ sessionId }) => {
   const togglePort = (p) => setSelPorts(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
 
   const handleApply = async () => {
+    if (!status?.allowedIps?.length) {
+      if (!window.confirm('WARNING: No allowed IPs configured. Applying will lock EVERYONE out of the router including you. Are you absolutely sure?')) return;
+    }
     setApplying(true); setMsg(null);
     try {
       await API.applyAccessControl(sessionId, selPorts, bruteForce);
@@ -5075,6 +5104,7 @@ const IpAddressesScreen = ({ sessionId }) => {
   const [newIp, setNewIp] = React.useState('');
   const [newIface, setNewIface] = React.useState('ether1');
   const [newComment, setNewComment] = React.useState('');
+  const [ifaces, setIfaces] = React.useState([]);
 
   React.useEffect(() => {
     if (!sessionId) return;
@@ -5089,6 +5119,10 @@ const IpAddressesScreen = ({ sessionId }) => {
       } finally {
         setLoading(false);
       }
+      try {
+        const ifData = await API.getInterfaces(sessionId);
+        setIfaces(Array.isArray(ifData) ? ifData.map(i => i.name).filter(Boolean) : []);
+      } catch {}
     };
     fetch();
   }, [sessionId]);
@@ -5143,11 +5177,10 @@ const IpAddressesScreen = ({ sessionId }) => {
             <label style={{ fontSize: 11, color: A.textDim, marginBottom: 4, display: 'block' }}>Interface</label>
             <select value={newIface} onChange={e => setNewIface(e.target.value)}
               style={{ width: '100%', padding: 8, background: A.surface, color: A.text, border: `1px solid ${A.border}`, borderRadius: 6, fontFamily: A.ui, marginBottom: 12 }}>
-              <option>ether1</option>
-              <option>ether2</option>
-              <option>ether3</option>
-              <option>ether4</option>
-              <option>ether5</option>
+              {ifaces.length > 0
+                ? ifaces.map(name => <option key={name} value={name}>{name}</option>)
+                : ['ether1','ether2','ether3','ether4','ether5','bridge','wlan1'].map(n => <option key={n} value={n}>{n}</option>)
+              }
             </select>
           </div>
           <div style={{ marginBottom: 12 }}>
@@ -5693,6 +5726,13 @@ const App = () => {
     showHistory,
     toggleHistory: () => setShowHistory(s => !s)
   };
+
+  // Re-init WebSocket when session is restored from localStorage on page load
+  React.useEffect(() => {
+    if (sessionId) {
+      API.initWebSocket(sessionId);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle session expiry (401 from any API call)
   React.useEffect(() => {
