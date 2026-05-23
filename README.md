@@ -1,276 +1,207 @@
-# NetForge - MikroTik Router Management Platform
+# NetForge — MikroTik Router Manager
 
-A modern web-based management interface for MikroTik routers with real-time monitoring, configuration, and control.
+A modern, single-page web interface for managing MikroTik routers via SSH or RouterOS API. Real-time monitoring, firewall management, VPN setup, service blocking, and full terminal access — all in a browser.
 
-![Status](https://img.shields.io/badge/status-production%20ready-brightgreen)
-![Node Version](https://img.shields.io/badge/node-%3E%3D16.0-green)
-![License](https://img.shields.io/badge/license-MIT-blue)
-
-## Features
-
-✨ **Real-time Monitoring**
-- Live system metrics (CPU, memory, storage)
-- Network interface status
-- Bandwidth utilization tracking
-- Connected clients monitoring
-
-🔐 **Network Management**
-- Route configuration (add/delete)
-- NAT rule management
-- Firewall rules overview
-- IP address configuration
-- DNS settings
-
-🌐 **Advanced Features**
-- DHCP client management
-- Hotspot user management
-- VPN connection monitoring
-- System backups list
-- Real-time log streaming
-- Script execution (15 templates)
-
-🎨 **User Interface**
-- Dark mode responsive design
-- Real-time WebSocket updates
-- Automatic polling fallback
-- Pagination for large datasets
-- Smart alert system with history
-- Settings/reconnection capability
-
-## Quick Start
-
-### Prerequisites
-- Node.js v16+ 
-- npm v7+
-- SSH access to MikroTik router
-
-### Installation
-
-```bash
-# Clone repository
-git clone https://github.com/mubashiribstec/Mikrotik.git
-cd Mikrotik
-
-# Install dependencies
-npm install
-
-# Start server
-npm start
-
-# Open browser
-# http://localhost:4444
-```
-
-### Connect to Router
-
-1. Open http://localhost:4444
-2. Enter your MikroTik credentials:
-   - **Host**: Router IP (e.g., 192.168.88.1)
-   - **Port**: 22 (SSH)
-   - **Username**: admin
-   - **Password**: [your password]
-3. Click "Connect"
-
-## System Architecture
-
-```
-┌─────────────────────┐
-│  Web Browser        │
-│  (React 18 + Babel) │
-└──────────┬──────────┘
-           │ HTTP/WebSocket
-           ↓
-┌─────────────────────────────┐
-│  Express.js API Server      │
-│  (port 3001)                │
-├─────────────────────────────┤
-│ - Session Management        │
-│ - Rate Limiting             │
-│ - WebSocket Real-time       │
-│ - SSH Connection Pool       │
-└──────────┬──────────────────┘
-           │ SSH (port 22)
-           ↓
-┌─────────────────────┐
-│  MikroTik Router    │
-│  RouterOS v6.40+    │
-└─────────────────────┘
-```
-
-## File Structure
-
-```
-├── netforge-api-integrated.html    # Frontend (React components)
-├── server-enhanced.js              # Backend (Express + SSH2)
-├── package.json                    # Node.js dependencies
-├── test-endpoints.js               # API authentication tests
-├── SETUP.md                        # Detailed setup guide
-├── README.md                       # This file
-└── .gitignore                      # Git configuration
-```
-
-## API Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/login` | POST | Create session with router |
-| `/api/system-stats` | GET | CPU, memory, uptime |
-| `/api/interfaces` | GET | Network interfaces |
-| `/api/firewall` | GET | Firewall rules |
-| `/api/routes` | GET/POST | IP routing |
-| `/api/nat` | GET/POST | NAT rules |
-| `/api/dhcp-clients` | GET | DHCP clients |
-| `/api/hotspot` | GET/POST | Hotspot users |
-| `/api/vpn` | GET | VPN connections |
-| `/api/backups` | GET | System backups |
-| `/api/logs` | GET | System logs |
-| `/api/scripts` | GET/POST | Script execution |
-
-See [SETUP.md](SETUP.md) for complete API reference.
-
-## Performance
-
-- **18 API Endpoints** with real data parsing
-- **Real-time Updates** via WebSocket
-- **Pagination** enabled for large datasets
-- **Rate Limiting** - 100 req/min per client
-- **Session Management** - Auto cleanup
-- **SSH Connection Pool** - Persistent connections
-
-## Security Features
-
-✅ Session-based authentication
-✅ API rate limiting
-✅ Input validation
-✅ Secure SSH connections
-✅ CORS protection
-✅ No hardcoded credentials
-
-## Running in Production
-
-### Option 1: systemd (Ubuntu/Debian)
-```bash
-sudo cp netforge.service /etc/systemd/system/
-sudo systemctl enable netforge
-sudo systemctl start netforge
-```
-
-### Option 2: supervisor
-```bash
-sudo apt-get install supervisor
-# Configure /etc/supervisor/conf.d/netforge.conf
-sudo supervisorctl update
-sudo supervisorctl start netforge
-```
-
-### Option 3: Alpine Linux (nohup)
-```bash
-nohup npm start > netforge.log 2>&1 &
-echo $! > netforge.pid
-tail -f netforge.log
-```
-
-## Testing
-
-```bash
-# Run endpoint authentication tests
-npm start &
-node test-endpoints.js
-
-# Expected: 18 passed, 0 failed
-```
-
-## Troubleshooting
-
-### Connection Issues
-- Verify SSH access: `ssh admin@192.168.88.1`
-- Check firewall: Router menu → IP → Services → SSH enabled
-- Verify credentials and router IP
-
-### Port Already in Use
-```bash
-# Find process on port 3001
-lsof -i :4444
-# Or: netstat -tulpn | grep 3001
-# Kill it
-kill -9 <PID>
-```
-
-### Dependencies Failed
-```bash
-rm -rf node_modules package-lock.json
-npm install
-```
-
-See [SETUP.md](SETUP.md) for detailed troubleshooting guide.
-
-## Technology Stack
-
-- **Frontend**: React 18, Babel (CDN), CSS-in-JS
-- **Backend**: Node.js, Express.js, SSH2
-- **Real-time**: WebSocket (ws), Polling fallback
-- **Security**: Express rate-limit, CORS, Session management
-- **Testing**: Custom HTTP test suite
-
-## Browser Support
-
-- Chrome/Edge 90+
-- Firefox 88+
-- Safari 14+
-- Mobile browsers (iOS Safari, Chrome Mobile)
-
-## Requirements
-
-### Minimum
-- Node.js v16.0.0
-- npm v7.0.0
-- 256MB RAM
-- 100MB storage
-
-### Recommended
-- Node.js v18.0.0+
-- npm v8.0.0+
-- 512MB RAM
-- Fast network connection to router
-
-### MikroTik
-- RouterOS v6.40+ (recommended: v7.0+)
-- SSH enabled (port 22)
-- Admin credentials
-
-## Development
-
-```bash
-# Install dev dependencies
-npm install
-
-# Run tests
-node test-endpoints.js
-
-# Start with auto-reload (requires nodemon)
-npm install --save-dev nodemon
-npx nodemon server-enhanced.js
-```
-
-## Contributing
-
-Found an issue? Have a feature request?
-- Open an issue on GitHub
-- Submit pull requests
-- Report security vulnerabilities responsibly
-
-## License
-
-MIT License - See LICENSE file
-
-## Support
-
-📖 **Documentation**: See [SETUP.md](SETUP.md) for detailed setup guide
-🐛 **Issues**: GitHub issues page
-📧 **Contact**: Via GitHub
+![Dashboard](screenshots/02-dashboard.png)
 
 ---
 
-**Ready to manage your MikroTik routers like a pro!** 🚀
+## Features
 
-For detailed setup instructions, see [SETUP.md](SETUP.md)
+| Category | Features |
+|---|---|
+| **Monitoring** | Live CPU / RAM / storage / uptime, interface status, bandwidth graphs, top talkers |
+| **Network** | IP addresses, routes, NAT rules, DNS (static + cache flush), DHCP leases |
+| **Firewall** | Filter rules, one-click service blocking (YouTube, TikTok, Snapchat, etc.), L7 + DNS + IP blocking |
+| **VPN** | WireGuard (create interface + add peers), L2TP/IPsec, PPTP server management |
+| **WAN** | Multi-WAN load balance (PCC / NTH / Failover), health checks, auto-restart |
+| **Access Control** | Allowed-IP allowlist per service port, brute-force protection |
+| **Wireless** | Interface status, SSID info (RouterOS 6 wireless + RouterOS 7 wifi) |
+| **Hotspot / PPPoE** | User management, live session stats, profile assignment |
+| **Automation** | Scheduler, script library with real RouterOS source, deploy-and-run templates |
+| **Terminal** | Full RouterOS CLI passthrough with command history |
+| **Backup** | Create backups, list existing, schedule automatic daily backups |
+| **Users** | Router user management (`/user add/remove`) |
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td><img src="screenshots/01-login.png" width="480"/><br><sub>Login — SSH or RouterOS API</sub></td>
+<td><img src="screenshots/02-dashboard.png" width="480"/><br><sub>Dashboard — live system metrics</sub></td>
+</tr>
+<tr>
+<td><img src="screenshots/03-firewall.png" width="480"/><br><sub>Firewall — service blocking + rules</sub></td>
+<td><img src="screenshots/04-vpn.png" width="480"/><br><sub>VPN — WireGuard, L2TP, PPTP</sub></td>
+</tr>
+<tr>
+<td><img src="screenshots/06-wan.png" width="480"/><br><sub>WAN & Load Balance</sub></td>
+<td><img src="screenshots/05-dhcp.png" width="480"/><br><sub>DHCP & Connected Clients</sub></td>
+</tr>
+<tr>
+<td><img src="screenshots/15-access-control.png" width="480"/><br><sub>Access Control — allowed IPs per port</sub></td>
+<td><img src="screenshots/16-terminal.png" width="480"/><br><sub>Terminal — RouterOS CLI</sub></td>
+</tr>
+<tr>
+<td><img src="screenshots/11-scripts.png" width="480"/><br><sub>Scripts & Scheduler</sub></td>
+<td><img src="screenshots/12-logs.png" width="480"/><br><sub>Logs — live system log stream</sub></td>
+</tr>
+<tr>
+<td><img src="screenshots/13-bandwidth.png" width="480"/><br><sub>Bandwidth — queue management</sub></td>
+<td><img src="screenshots/10-hotspot.png" width="480"/><br><sub>Hotspot / PPPoE users</sub></td>
+</tr>
+<tr>
+<td><img src="screenshots/23-automation.png" width="480"/><br><sub>Automation — recipes & scheduler</sub></td>
+<td><img src="screenshots/22-network-health.png" width="480"/><br><sub>Network Health — ping & traceroute</sub></td>
+</tr>
+</table>
+
+---
+
+## Requirements
+
+- **Node.js** v16 or later
+- **npm** v7 or later
+- A MikroTik router with **SSH enabled** (port 22) **or** RouterOS API enabled (port 8728)
+
+---
+
+## Installation
+
+### Option 1 — Direct (Linux / macOS / WSL)
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/mubashiribstec/mikrotik.git
+cd mikrotik
+
+# 2. Install dependencies
+npm install
+
+# 3. Start the server
+npm start
+```
+
+Open **http://localhost:4444** in your browser.
+
+---
+
+### Option 2 — Docker
+
+```bash
+# Build and run with Docker Compose
+docker compose up -d
+
+# Or manually
+docker build -t netforge .
+docker run -d -p 4444:4444 --name netforge netforge
+```
+
+Open **http://localhost:4444** in your browser.
+
+---
+
+### Option 3 — Windows (install.bat)
+
+Double-click **`install.bat`** — it installs Node.js (if needed), runs `npm install`, and starts the server automatically.
+
+---
+
+## First Login
+
+1. Open **http://localhost:4444**
+2. Enter your router's **IP address**
+3. Choose connection type:
+   - **SSH** (default, port 22) — works on all MikroTik routers
+   - **RouterOS API** (port 8728) — faster, requires API service enabled on router
+4. Enter your router **username** and **password**
+5. Click **Connect**
+
+> **Tip:** Create a dedicated NetForge user on your router:
+> ```routeros
+> /user add name=netforge password=strongpass group=full comment="NetForge"
+> ```
+
+---
+
+## Router Prerequisites
+
+### Enable SSH (if not already active)
+```routeros
+/ip service enable ssh
+/ip service set ssh port=22
+```
+
+### Enable RouterOS API (optional, for API connection mode)
+```routeros
+/ip service enable api
+/ip service set api port=8728
+```
+
+---
+
+## Configuration
+
+The server runs on port **4444** by default. Override with an environment variable:
+
+```bash
+PORT=8080 npm start
+```
+
+No config file needed — all UI preferences are stored in browser `localStorage`.
+
+---
+
+## Security Notes
+
+- NetForge runs entirely on your local network — no data leaves your infrastructure
+- Sessions expire after 2 hours of inactivity
+- Use the **Access Control** screen to restrict which IPs can reach management ports
+- For internet-facing deployments, run behind a reverse proxy (nginx / Caddy) with HTTPS + authentication
+
+---
+
+## All Screens
+
+| Screen | Description |
+|---|---|
+| Dashboard | Live CPU, RAM, uptime, interface status, bandwidth, top clients |
+| Interfaces | All interfaces with traffic counters, enable/disable |
+| IP Addresses | Add / remove IP assignments per interface |
+| Routes | Routing table — add, delete, view distances |
+| DNS | Server settings, static entries, cache flush |
+| NAT | Masquerade, dst-nat, port forward rules |
+| WAN & Load Balance | Multi-WAN PCC / NTH / Failover with health checks |
+| Firewall | Rules list + one-click block for 9 services |
+| Bandwidth | Simple queue per-IP rate limits |
+| DHCP & Clients | Active leases, ARP table, static reservations |
+| Hotspot / PPPoE | Hotspot and PPPoE user sessions and management |
+| Wireless | WiFi interface status (RouterOS 6 + RouterOS 7) |
+| VPN | WireGuard interfaces & peers, L2TP/IPsec, PPTP |
+| Logs | Live system log with topic and severity filters |
+| Scripts | Script library with RouterOS templates, deploy & run |
+| Backup | Create backups, list files, schedule daily auto-backup |
+| Users | Router user accounts — add, remove, set password |
+| Automation | Scheduler entries and pre-built automation recipes |
+| Network Health | Ping, traceroute, SLA uptime monitoring |
+| Port Forwards | DSTNAT port forward wizard |
+| Access Control | Per-port IP allowlist + brute-force connection limiting |
+| Terminal | Full RouterOS CLI with ↑↓ history and Ctrl+L clear |
+| Settings | UI preferences, reconnect, theme |
+
+---
+
+## Tech Stack
+
+- **Backend:** Node.js · Express · ssh2 · ws
+- **Frontend:** React 18 (Babel standalone — no build step required)
+- **Protocols:** SSH (`ssh2` library) or RouterOS binary API (port 8728, built-in implementation)
+- **Realtime:** WebSocket push from server, automatic HTTP polling fallback
+
+---
+
+## License
+
+MIT
