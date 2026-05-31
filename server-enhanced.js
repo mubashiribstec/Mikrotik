@@ -7,7 +7,67 @@ const net = require('net');
 const crypto = require('crypto');
 const WebSocket = require('ws');
 const http = require('http');
+const https = require('https');
 const rateLimit = require('express-rate-limit');
+
+// ========== NOTIFICATION CONFIG ==========
+
+const NOTIF_CONFIG_PATH = path.join(__dirname, 'notif-config.json');
+let notifConfigCache = null;
+
+function loadNotifConfig() {
+  if (notifConfigCache) return notifConfigCache;
+  try {
+    notifConfigCache = JSON.parse(fs.readFileSync(NOTIF_CONFIG_PATH, 'utf8'));
+  } catch {
+    notifConfigCache = {
+      type: 'none',
+      telegram: { token: '', chatId: '' },
+      webhook: { url: '' },
+      thresholds: { cpu: 90, memory: 95 },
+      events: { cpuHigh: true, memHigh: true, wanDown: true },
+    };
+  }
+  return notifConfigCache;
+}
+
+function saveNotifConfig(cfg) {
+  notifConfigCache = cfg;
+  try { fs.writeFileSync(NOTIF_CONFIG_PATH, JSON.stringify(cfg, null, 2)); } catch {}
+}
+
+function httpPost(url, body) {
+  return new Promise((resolve, reject) => {
+    try {
+      const u = new URL(url);
+      const mod = u.protocol === 'https:' ? https : http;
+      const req = mod.request({
+        hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+        path: u.pathname + u.search, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        timeout: 10000,
+      }, res => { res.resume(); res.on('end', resolve); });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.write(body); req.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+async function sendNotification(msg) {
+  const cfg = loadNotifConfig();
+  if (cfg.type === 'telegram' && cfg.telegram.token && cfg.telegram.chatId) {
+    await httpPost(
+      `https://api.telegram.org/bot${cfg.telegram.token}/sendMessage`,
+      JSON.stringify({ chat_id: cfg.telegram.chatId, text: `🔔 NetForge Alert\n${msg}`, parse_mode: 'HTML' })
+    );
+  } else if (cfg.type === 'webhook' && cfg.webhook.url) {
+    await httpPost(cfg.webhook.url, JSON.stringify({ text: msg, source: 'netforge', ts: Date.now() }));
+  }
+}
+
+// Cooldown per alert type (global — avoids duplicate alerts across sessions)
+const alertCooldowns = new Map(); // alertType → lastSentMs
 
 const app = express();
 app.use(cors());
@@ -574,7 +634,7 @@ function parseRouterOSKeyValue(output) {
 // ========== SHARED DATA FETCHERS ==========
 // These are called by both REST handlers and the WebSocket broadcaster.
 
-async function fetchSystemStats(conn) {
+async function fetchSystemStats(conn, sessionId = null) {
   const output = await conn.execute('/system resource print');
   const kv = parseRouterOSKeyValue(output)[0] || {};
 
@@ -590,6 +650,13 @@ async function fetchSystemStats(conn) {
 
   const cpuLoad = parseInt(kv.cpu_load) || 0;
 
+  if (sessionId) {
+    if (!statsHistory.has(sessionId)) statsHistory.set(sessionId, { cpu: new Array(28).fill(0), memory: new Array(28).fill(0) });
+    const sh = statsHistory.get(sessionId);
+    sh.cpu = [...sh.cpu.slice(1), Math.max(0, Math.min(100, cpuLoad))];
+    sh.memory = [...sh.memory.slice(1), Math.max(0, Math.min(100, memoryPercent))];
+  }
+
   const fmtMB = (b) => b >= 1073741824 ? `${(b/1073741824).toFixed(1)} GB` : `${(b/1048576).toFixed(0)} MB`;
 
   return {
@@ -602,6 +669,8 @@ async function fetchSystemStats(conn) {
     memoryDetail: totalMemory > 0 ? `${fmtMB(memoryUsed)} / ${fmtMB(totalMemory)}` : '',
     storageDetail: totalHdd > 0 ? `${fmtMB(hddUsed)} / ${fmtMB(totalHdd)}` : '',
     cpuCount: parseInt(kv.cpu_count) || 1,
+    cpuHistory: statsHistory.get(sessionId)?.cpu || [],
+    memoryHistory: statsHistory.get(sessionId)?.memory || [],
   };
 }
 
@@ -988,36 +1057,48 @@ async function fetchLogs(conn) {
   return data.slice(-50).reverse();
 }
 
-// Rolling traffic history per session (28 data-points, updated each poll)
+// Rolling traffic history per session (180 data-points = 15 min at 5s intervals)
 const trafficHistory = new Map();
+// CPU/memory history per session (28 points for sparklines)
+const statsHistory = new Map();
+// Config snapshots per session (max 10)
+const configSnapshots = new Map();
 
 async function fetchTraffic(sessionId, conn) {
   const statsOut = await conn.execute('/interface print stats');
   const ifaces = parseRouterOSOutput(statsOut);
 
   let totalRx = 0, totalTx = 0;
+  const ifaceBytes = {};
   for (const iface of ifaces) {
-    totalRx += parseInt(iface.rx_byte) || 0;
-    totalTx += parseInt(iface.tx_byte) || 0;
+    const rx = parseInt(iface.rx_byte) || 0;
+    const tx = parseInt(iface.tx_byte) || 0;
+    totalRx += rx;
+    totalTx += tx;
+    ifaceBytes[iface.name] = { rx, tx };
   }
 
   const now = Date.now();
 
   if (!trafficHistory.has(sessionId)) {
+    const perIface = {};
+    for (const name of Object.keys(ifaceBytes)) {
+      perIface[name] = { rx: new Array(180).fill(0), tx: new Array(180).fill(0), lastRx: ifaceBytes[name].rx, lastTx: ifaceBytes[name].tx };
+    }
     trafficHistory.set(sessionId, {
-      rx: new Array(28).fill(0),
-      tx: new Array(28).fill(0),
+      rx: new Array(180).fill(0),
+      tx: new Array(180).fill(0),
+      perIface,
       lastRx: totalRx,
       lastTx: totalTx,
       lastTime: now,
     });
-    return { rx: new Array(28).fill(0), tx: new Array(28).fill(0) };
+    return { rx: new Array(180).fill(0), tx: new Array(180).fill(0), perIface: {} };
   }
 
   const hist = trafficHistory.get(sessionId);
   const elapsed = Math.max(1, (now - hist.lastTime) / 1000);
 
-  // Convert bytes/s to Kbps
   const rxKbps = Math.max(0, Math.round(((totalRx - hist.lastRx) * 8) / elapsed / 1024));
   const txKbps = Math.max(0, Math.round(((totalTx - hist.lastTx) * 8) / elapsed / 1024));
 
@@ -1027,7 +1108,23 @@ async function fetchTraffic(sessionId, conn) {
   hist.lastTx = totalTx;
   hist.lastTime = now;
 
-  return { rx: hist.rx, tx: hist.tx };
+  // Per-interface deltas
+  const perIfaceOut = {};
+  for (const [name, bytes] of Object.entries(ifaceBytes)) {
+    if (!hist.perIface[name]) {
+      hist.perIface[name] = { rx: new Array(180).fill(0), tx: new Array(180).fill(0), lastRx: bytes.rx, lastTx: bytes.tx };
+    }
+    const pi = hist.perIface[name];
+    const irx = Math.max(0, Math.round(((bytes.rx - pi.lastRx) * 8) / elapsed / 1024));
+    const itx = Math.max(0, Math.round(((bytes.tx - pi.lastTx) * 8) / elapsed / 1024));
+    pi.rx = [...pi.rx.slice(1), irx];
+    pi.tx = [...pi.tx.slice(1), itx];
+    pi.lastRx = bytes.rx;
+    pi.lastTx = bytes.tx;
+    perIfaceOut[name] = { rx: pi.rx, tx: pi.tx };
+  }
+
+  return { rx: hist.rx, tx: hist.tx, perIface: perIfaceOut };
 }
 
 // ========== AUTH ENDPOINTS ==========
@@ -1077,6 +1174,8 @@ app.post('/api/login', loginLimiter, async (req, res) => {
         sessions.delete(sessionId);
         connections.delete(sessionId);
         trafficHistory.delete(sessionId);
+        statsHistory.delete(sessionId);
+        configSnapshots.delete(sessionId);
       }
     }, 30 * 60 * 1000);
 
@@ -1098,6 +1197,8 @@ app.post('/api/logout', (req, res) => {
     sessions.delete(sessionId);
     connections.delete(sessionId);
     trafficHistory.delete(sessionId);
+    statsHistory.delete(sessionId);
+    configSnapshots.delete(sessionId);
 
     res.json({ message: 'Logged out' });
   } catch (err) {
@@ -1123,7 +1224,7 @@ app.get('/api/system-stats', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-    res.json(await fetchSystemStats(getConnection(sessionId)));
+    res.json(await fetchSystemStats(getConnection(sessionId), sessionId));
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1855,7 +1956,16 @@ app.get('/api/traffic', async (req, res) => {
   try {
     const sessionId = req.headers['x-session-id'];
     if (!sessionId) return res.status(401).json({ error: 'No session' });
-    res.json(await fetchTraffic(sessionId, getConnection(sessionId)));
+    const data = await fetchTraffic(sessionId, getConnection(sessionId));
+    // Slice by requested range: 1m=12pts(60s), 5m=60pts, 15m=180pts(default)
+    const range = req.query.range || '5m';
+    const pts = range === '1m' ? 12 : range === '5m' ? 60 : 180;
+    const slice = arr => arr.slice(-pts);
+    const perIfaceSliced = {};
+    for (const [name, pi] of Object.entries(data.perIface || {})) {
+      perIfaceSliced[name] = { rx: slice(pi.rx), tx: slice(pi.tx) };
+    }
+    res.json({ rx: slice(data.rx), tx: slice(data.tx), perIface: perIfaceSliced });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -1869,20 +1979,38 @@ app.get('/api/top-talkers', async (req, res) => {
 
     const conn = getConnection(sessionId);
 
-    // Use DHCP leases as the authoritative list of active clients
-    const output = await conn.execute('/ip dhcp-server lease print');
-    const leases = parseRouterOSOutput(output);
+    // Use connection counts per source IP as activity proxy, enriched with DHCP hostnames
+    const [leasesOut, connOut] = await Promise.allSettled([
+      conn.execute('/ip dhcp-server lease print'),
+      conn.execute('/ip firewall connection print'),
+    ]);
+    const leases = leasesOut.status === 'fulfilled' ? parseRouterOSOutput(leasesOut.value) : [];
+    const conns = connOut.status === 'fulfilled' ? parseRouterOSOutput(connOut.value) : [];
 
-    // RouterOS does not expose per-client bandwidth without accounting;
-    // report the client list with zero rx/tx (accurate, not fabricated).
-    const data = leases.slice(0, 5).map(l => ({
-      ip: l.address || '0.0.0.0',
-      mac: l.mac_address || '',
-      rx: 0,
-      tx: 0,
-    }));
+    // Build hostname map from DHCP
+    const hostMap = {};
+    for (const l of leases) { if (l.address) hostMap[l.address] = l.host_name || l.address; }
 
-    res.json(data.length > 0 ? data : [{ ip: '0.0.0.0', mac: '', rx: 0, tx: 0 }]);
+    // Count connections per source IP
+    const connCount = {};
+    for (const c of conns) {
+      const ip = (c.src_address || '').split(':')[0];
+      if (ip) connCount[ip] = (connCount[ip] || 0) + 1;
+    }
+
+    // Build result: active DHCP clients ranked by connection count
+    const data = leases.slice(0, 10)
+      .map(l => ({
+        ip: l.address || '',
+        mac: l.mac_address || '',
+        hostname: l.host_name || l.address || '',
+        connections: connCount[l.address] || 0,
+        rx: 0, tx: 0,
+      }))
+      .sort((a, b) => b.connections - a.connections)
+      .slice(0, 5);
+
+    res.json(data.length > 0 ? data : [{ ip: '0.0.0.0', mac: '', hostname: '', connections: 0, rx: 0, tx: 0 }]);
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
     res.status(500).json({ error: err.message });
@@ -2074,29 +2202,55 @@ function rosError(output) {
 // Server-authoritative domain lists — never trust client-sent domains.
 // match-subdomain=yes (RouterOS 7.6+) covers all subdomains per entry.
 const BLOCK_SERVICE_DOMAINS = {
-  youtube:  ['youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'youtube-nocookie.com'],
-  facebook: ['facebook.com', 'fbcdn.net', 'instagram.com', 'fb.com', 'messenger.com', 'whatsapp.net'],
-  tiktok:   ['tiktok.com', 'tiktokcdn.com', 'tiktokv.com', 'musical.ly', 'bytedance.com'],
-  netflix:  ['netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxext.com', 'nflxso.net'],
-  adult:    ['pornhub.com', 'xvideos.com', 'xnxx.com', 'xhamster.com', 'redtube.com', 'youporn.com'],
-  torrents: ['thepiratebay.org', '1337x.to', 'rarbg.to', 'nyaa.si', 'kickasstorrents.to', 'torrentgalaxy.to'],
-  gambling: ['bet365.com', 'pokerstars.com', '888casino.com', 'draftkings.com', 'fanduel.com', 'betway.com'],
-  crypto:   ['coinhive.com', 'cryptoloot.pro', 'minero.cc', 'jsecoin.com'],
-  snapchat: ['snapchat.com', 'sc-static.net', 'snapfiles.com', 'snap.com', 'snapads.com'],
+  youtube:   ['youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'youtube-nocookie.com'],
+  facebook:  ['facebook.com', 'fbcdn.net', 'fb.com'],
+  instagram: ['instagram.com', 'cdninstagram.com', 'i.instagram.com'],
+  whatsapp:  ['whatsapp.com', 'whatsapp.net', 'wa.me'],
+  messenger: ['messenger.com', 'fbmessenger.com', 'm.me'],
+  discord:   ['discord.com', 'discord.gg', 'discordapp.com', 'discordapp.net', 'discord.media'],
+  twitter:   ['twitter.com', 'x.com', 't.co', 'twimg.com'],
+  reddit:    ['reddit.com', 'redd.it', 'redditmedia.com', 'reddituploads.com', 'redditstatic.com'],
+  twitch:    ['twitch.tv', 'twitchapps.com', 'jtvnw.net', 'twitchstatic.com'],
+  tiktok:    ['tiktok.com', 'tiktokcdn.com', 'tiktokv.com', 'musical.ly', 'bytedance.com'],
+  netflix:   ['netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxext.com', 'nflxso.net'],
+  adult:     ['pornhub.com', 'xvideos.com', 'xnxx.com', 'xhamster.com', 'redtube.com', 'youporn.com'],
+  torrents:  ['thepiratebay.org', '1337x.to', 'rarbg.to', 'nyaa.si', 'kickasstorrents.to', 'torrentgalaxy.to'],
+  gambling:  ['bet365.com', 'pokerstars.com', '888casino.com', 'draftkings.com', 'fanduel.com', 'betway.com'],
+  crypto:    ['coinhive.com', 'cryptoloot.pro', 'minero.cc', 'jsecoin.com'],
+  snapchat:  ['snapchat.com', 'sc-static.net', 'snap.com', 'snapads.com'],
 };
 
 // Known stable IP CIDR ranges for mangle/IP blocking method.
 // These supplement DNS blocking for clients that bypass DNS (hardcoded IPs, DoH, etc.)
 const BLOCK_SERVICE_IPS = {
-  youtube:  ['172.217.0.0/16', '142.250.0.0/15', '74.125.0.0/16', '64.233.160.0/19', '216.58.192.0/19'],
-  facebook: ['157.240.0.0/16', '179.60.192.0/22', '31.13.24.0/21', '129.134.0.0/17', '185.89.216.0/22'],
-  tiktok:   ['161.117.0.0/16', '43.152.0.0/14', '23.106.56.0/21'],
-  netflix:  ['198.38.96.0/19', '198.45.48.0/20', '23.246.0.0/18', '37.77.184.0/21'],
-  adult:    [], // DNS blocking only
-  torrents: [], // L7 + DNS blocking
-  gambling: [], // DNS blocking only
-  crypto:   [], // DNS blocking only
-  snapchat: ['52.22.0.0/16', '54.88.0.0/16', '35.168.0.0/13', '34.192.0.0/12'],
+  youtube:   ['172.217.0.0/16', '142.250.0.0/15', '74.125.0.0/16', '64.233.160.0/19', '216.58.192.0/19'],
+  facebook:  ['157.240.0.0/16', '179.60.192.0/22', '31.13.24.0/21', '129.134.0.0/17', '185.89.216.0/22'],
+  instagram: ['157.240.0.0/16', '129.134.0.0/17'],
+  whatsapp:  ['157.240.0.0/16', '179.60.192.0/22', '31.13.66.0/24'],
+  messenger: ['157.240.0.0/16', '129.134.0.0/17'],
+  discord:   ['162.159.128.0/17', '162.158.0.0/15', '104.16.0.0/13'],
+  twitter:   ['104.244.42.0/23', '192.133.76.0/22', '199.16.156.0/22'],
+  reddit:    ['151.101.0.0/16', '146.75.0.0/16'],
+  twitch:    ['192.16.64.0/20', '192.16.80.0/21'],
+  tiktok:    ['161.117.0.0/16', '43.152.0.0/14', '23.106.56.0/21'],
+  netflix:   ['198.38.96.0/19', '198.45.48.0/20', '23.246.0.0/18', '37.77.184.0/21'],
+  adult:     [],
+  torrents:  [],
+  gambling:  [],
+  crypto:    [],
+  snapchat:  ['52.22.0.0/16', '54.88.0.0/16', '35.168.0.0/13', '34.192.0.0/12'],
+};
+
+// Major CIDR aggregates per country for geo-blocking
+const GEO_BLOCKS = {
+  CN: { label: 'China',       ranges: ['1.0.1.0/24','1.0.2.0/23','1.0.8.0/21','1.0.32.0/19','36.0.0.0/11','39.0.0.0/9','42.0.0.0/9','49.0.0.0/10','58.0.0.0/11','101.0.0.0/9','106.0.0.0/8','110.0.0.0/9','112.0.0.0/10','114.0.0.0/10','116.0.0.0/10','117.128.0.0/10','118.0.0.0/10','119.0.0.0/9','120.0.0.0/9','121.0.0.0/10'] },
+  RU: { label: 'Russia',      ranges: ['2.56.168.0/22','5.8.0.0/14','45.84.0.0/14','46.160.0.0/13','77.72.0.0/13','80.240.0.0/13','91.108.0.0/14','95.56.0.0/14','176.56.0.0/13','185.0.0.0/11','194.0.0.0/12','195.0.0.0/10','212.0.0.0/9','217.0.0.0/10'] },
+  KP: { label: 'North Korea', ranges: ['175.45.176.0/22','210.52.109.0/24','77.94.35.0/24'] },
+  IR: { label: 'Iran',        ranges: ['2.144.0.0/13','5.22.0.0/15','31.2.0.0/15','46.100.0.0/14','46.209.0.0/16','78.39.0.0/16','79.127.0.0/16','80.191.0.0/16','82.99.0.0/16','85.15.0.0/16','91.92.0.0/14','94.182.0.0/16','178.131.0.0/16','185.55.224.0/22'] },
+  BY: { label: 'Belarus',     ranges: ['37.17.0.0/16','46.56.0.0/13','62.118.0.0/16','84.47.0.0/16','85.90.0.0/16','91.148.0.0/14','178.124.0.0/14','185.16.0.0/14','213.184.0.0/13'] },
+  SY: { label: 'Syria',       ranges: ['31.9.0.0/17','46.53.0.0/17','78.111.0.0/16','84.11.0.0/16','109.224.0.0/12','176.65.0.0/16'] },
+  MM: { label: 'Myanmar',     ranges: ['103.0.0.0/14','116.206.0.0/15','124.0.0.0/14','175.0.0.0/14','180.148.0.0/14'] },
+  CU: { label: 'Cuba',        ranges: ['152.206.0.0/16','169.158.0.0/16','200.0.0.0/11'] },
 };
 
 // Standard well-known DoH endpoints — when blocking is active and the user wants
@@ -3356,6 +3510,334 @@ app.post('/api/terminal/exec', async (req, res) => {
   }
 });
 
+// ========== VLANs ==========
+
+app.get('/api/vlans', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/interface vlan print');
+    const rows = parseRouterOSOutput(out);
+    res.json(rows.map(r => ({
+      id: r.numbers || '',
+      name: r.name || '',
+      vlanId: parseInt(r.vlan_id) || 0,
+      interface: r.interface || '',
+      running: r.running === 'true',
+      disabled: r.disabled === 'true',
+      comment: r.comment || '',
+      mtu: r.mtu || '1500',
+    })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vlans/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name, vlanId, interface: iface, comment = '' } = req.body;
+    if (!name || !/^[a-zA-Z0-9._-]{1,30}$/.test(name)) return res.status(400).json({ error: 'Invalid VLAN name (alphanumeric/._- max 30 chars)' });
+    const vid = parseInt(vlanId);
+    if (!vid || vid < 1 || vid > 4094) return res.status(400).json({ error: 'VLAN ID must be 1-4094' });
+    if (!iface) return res.status(400).json({ error: 'Interface required' });
+    const conn = getConnection(sessionId);
+    const cmd = `/interface vlan add name="${name}" vlan-id=${vid} interface="${iface}"${comment ? ` comment="${comment}"` : ''}`;
+    const out = await conn.execute(cmd);
+    if (rosError(out)) return res.status(400).json({ error: out.trim() });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vlans/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/interface vlan remove [find name="${name}"]`);
+    if (rosError(out)) return res.status(400).json({ error: out.trim() });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== FIREWALL EXTRAS ==========
+
+app.get('/api/firewall/services', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  if (!sessionId) return res.status(401).json({ error: 'No session' });
+  const cats = { youtube:'Streaming',facebook:'Social',instagram:'Social',whatsapp:'Messaging',messenger:'Messaging',discord:'Chat',twitter:'Social',reddit:'Social',twitch:'Streaming',tiktok:'Social',netflix:'Streaming',adult:'Adult',torrents:'P2P',gambling:'Gambling',crypto:'Mining',snapchat:'Social' };
+  const labels = { youtube:'YouTube',facebook:'Facebook',instagram:'Instagram',whatsapp:'WhatsApp',messenger:'Messenger',discord:'Discord',twitter:'Twitter / X',reddit:'Reddit',twitch:'Twitch',tiktok:'TikTok',netflix:'Netflix',adult:'Adult Content',torrents:'Torrents',gambling:'Gambling',crypto:'Crypto Mining',snapchat:'Snapchat' };
+  res.json(Object.keys(BLOCK_SERVICE_DOMAINS).map(id => ({
+    id, label: labels[id] || id, category: cats[id] || 'Other', domainCount: BLOCK_SERVICE_DOMAINS[id].length,
+  })));
+});
+
+app.get('/api/firewall/connections', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/ip firewall connection print');
+    if (/connection tracking is disabled/i.test(out)) return res.json({ disabled: true, rows: [] });
+    const rows = parseRouterOSOutput(out);
+    res.json({
+      disabled: false,
+      rows: rows.slice(0, 200).map(r => ({
+        protocol: r.protocol || '',
+        src: r.src_address || '',
+        dst: r.dst_address || '',
+        state: r.tcp_state || r.connection_state || '',
+        bytes: r.orig_bytes || '0',
+        replyBytes: r.repl_bytes || '0',
+      })),
+    });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/address-lists', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/ip firewall address-list print');
+    const rows = parseRouterOSOutput(out);
+    res.json(rows.map(r => ({
+      id: r.numbers || '',
+      list: r.list || '',
+      address: r.address || '',
+      comment: r.comment || '',
+      disabled: r.disabled === 'true',
+      dynamic: r.dynamic === 'true',
+    })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/address-lists/add', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { list, address, comment = '' } = req.body;
+    if (!list || !address) return res.status(400).json({ error: 'list and address required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip firewall address-list add list="${list}" address="${address}"${comment ? ` comment="${comment}"` : ''}`);
+    if (rosError(out)) return res.status(400).json({ error: out.trim() });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/address-lists/remove', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute(`/ip firewall address-list remove numbers=${id}`);
+    if (rosError(out)) return res.status(400).json({ error: out.trim() });
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/firewall/geo-blocks', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/ip firewall address-list print');
+    const rows = parseRouterOSOutput(out);
+    const blocked = {};
+    for (const cc of Object.keys(GEO_BLOCKS)) blocked[cc] = rows.some(r => r.list === `netforge-geo-${cc}`);
+    res.json({ countries: Object.entries(GEO_BLOCKS).map(([cc, info]) => ({ cc, label: info.label, cidrCount: info.ranges.length, blocked: blocked[cc] || false })) });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/firewall/geo-block', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const { country, block } = req.body;
+    if (!country || !GEO_BLOCKS[country]) return res.status(400).json({ error: 'Unknown country code' });
+    const conn = getConnection(sessionId);
+    const listName = `netforge-geo-${country}`;
+    const comment = `netforge-geo-${country}`;
+    if (block) {
+      for (const cidr of GEO_BLOCKS[country].ranges) {
+        await conn.execute(`/ip firewall address-list add list="${listName}" address="${cidr}" comment="${comment}"`);
+      }
+      await conn.execute(`/ip firewall filter add chain=forward src-address-list="${listName}" action=drop comment="${comment}" place-before=0`);
+    } else {
+      await conn.execute(`/ip firewall address-list remove [find comment="${comment}"]`);
+      await conn.execute(`/ip firewall filter remove [find comment="${comment}"]`);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== WireGuard KEY GENERATION ==========
+
+app.post('/api/vpn/wireguard/generate-keys', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    getConnection(sessionId);
+    const privBytes = crypto.randomBytes(32);
+    privBytes[0] &= 248;
+    privBytes[31] &= 127;
+    privBytes[31] |= 64;
+    const privateKey = privBytes.toString('base64');
+    let publicKey = '';
+    try {
+      const der = Buffer.concat([Buffer.from('302e020100300506032b656e04220420', 'hex'), privBytes]);
+      const privObj = crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+      const pubObj = crypto.createPublicKey(privObj);
+      const spki = pubObj.export({ type: 'spki', format: 'der' });
+      publicKey = spki.slice(-32).toString('base64');
+    } catch { publicKey = ''; }
+    res.json({ privateKey, publicKey });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== CONFIG DIFF & SNAPSHOTS ==========
+
+app.get('/api/config/export', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/export');
+    res.json({ config: out });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/config/snapshot', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    const conn = getConnection(sessionId);
+    const out = await conn.execute('/export');
+    const snaps = configSnapshots.get(sessionId) || [];
+    const id = Date.now().toString();
+    snaps.unshift({ id, ts: new Date().toISOString(), size: out.length, text: out });
+    if (snaps.length > 10) snaps.pop();
+    configSnapshots.set(sessionId, snaps);
+    res.json({ id, ts: snaps[0].ts, size: out.length, lines: out.split('\n').length });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/config/snapshots', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    getConnection(sessionId);
+    const snaps = configSnapshots.get(sessionId) || [];
+    res.json(snaps.map(({ id, ts, size }) => ({ id, ts, size })));
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/config/snapshot/:id', async (req, res) => {
+  try {
+    const sessionId = req.headers['x-session-id'];
+    if (!sessionId) return res.status(401).json({ error: 'No session' });
+    getConnection(sessionId);
+    const snaps = configSnapshots.get(sessionId) || [];
+    const snap = snaps.find(s => s.id === req.params.id);
+    if (!snap) return res.status(404).json({ error: 'Snapshot not found' });
+    res.json({ id: snap.id, ts: snap.ts, text: snap.text });
+  } catch (err) {
+    if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== NOTIFICATIONS ==========
+
+app.get('/api/notifications/settings', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  if (!sessionId) return res.status(401).json({ error: 'No session' });
+  try { getConnection(sessionId); } catch (err) { return res.status(401).json({ error: err.message }); }
+  const cfg = loadNotifConfig();
+  res.json({
+    type: cfg.type,
+    telegram: { token: cfg.telegram?.token ? '***' : '', chatId: cfg.telegram?.chatId || '' },
+    webhook: { url: cfg.webhook?.url || '' },
+    thresholds: cfg.thresholds || { cpu: 90, memory: 95 },
+    events: cfg.events || { cpuHigh: true, memHigh: true, wanDown: true },
+  });
+});
+
+app.post('/api/notifications/settings', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  if (!sessionId) return res.status(401).json({ error: 'No session' });
+  try { getConnection(sessionId); } catch (err) { return res.status(401).json({ error: err.message }); }
+  const { type, telegram, webhook, thresholds, events } = req.body;
+  if (!['none', 'telegram', 'webhook'].includes(type)) return res.status(400).json({ error: 'type must be none|telegram|webhook' });
+  const existing = loadNotifConfig();
+  const tgToken = (telegram?.token && telegram.token !== '***') ? telegram.token : (existing.telegram?.token || '');
+  saveNotifConfig({
+    type,
+    telegram: { token: tgToken, chatId: telegram?.chatId || '' },
+    webhook: { url: webhook?.url || '' },
+    thresholds: { cpu: parseInt(thresholds?.cpu) || 90, memory: parseInt(thresholds?.memory) || 95 },
+    events: { cpuHigh: !!events?.cpuHigh, memHigh: !!events?.memHigh, wanDown: !!events?.wanDown },
+  });
+  res.json({ success: true });
+});
+
+app.post('/api/notifications/test', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  if (!sessionId) return res.status(401).json({ error: 'No session' });
+  try { getConnection(sessionId); } catch (err) { return res.status(401).json({ error: err.message }); }
+  const cfg = loadNotifConfig();
+  if (cfg.type === 'none') return res.status(400).json({ error: 'Notifications not configured' });
+  try {
+    await sendNotification('✅ NetForge test notification — your alerts are working!');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to send: ${err.message}` });
+  }
+});
+
 // ========== SERVE STATIC FILES ==========
 
 app.use(express.static(path.join(__dirname)));
@@ -3443,7 +3925,7 @@ class WebSocketManager {
 
         // Map each WebSocket endpoint to the real data-fetcher
         const fetchers = [
-          ['/api/system-stats',  () => fetchSystemStats(conn)],
+          ['/api/system-stats',  () => fetchSystemStats(conn, sessionId)],
           ['/api/interfaces',    () => fetchInterfaces(conn)],
           ['/api/wan-status',    () => fetchWanStatus(conn)],
           ['/api/firewall',      () => fetchFirewall(conn)],
@@ -3462,6 +3944,28 @@ class WebSocketManager {
             // Don't crash the broadcaster if one endpoint fails
           }
         }
+
+        // Server-side threshold alert checker
+        try {
+          const cfg = loadNotifConfig();
+          if (cfg.type !== 'none') {
+            const sh = statsHistory.get(sessionId);
+            const COOLDOWN = 5 * 60 * 1000;
+            const now = Date.now();
+            const check = (key, condition, msg) => {
+              if (condition && (now - (alertCooldowns.get(key) || 0)) > COOLDOWN) {
+                alertCooldowns.set(key, now);
+                sendNotification(msg).catch(() => {});
+              }
+            };
+            if (sh) {
+              const lastCpu = sh.cpu[sh.cpu.length - 1] || 0;
+              const lastMem = sh.memory[sh.memory.length - 1] || 0;
+              check('cpu-high', cfg.events?.cpuHigh && lastCpu >= (cfg.thresholds?.cpu || 90),    `⚠️ CPU at ${lastCpu}% (threshold: ${cfg.thresholds?.cpu || 90}%)`);
+              check('mem-high', cfg.events?.memHigh && lastMem >= (cfg.thresholds?.memory || 95), `⚠️ Memory at ${lastMem}% (threshold: ${cfg.thresholds?.memory || 95}%)`);
+            }
+          }
+        } catch {}
       }
     }, 5000);
   }
