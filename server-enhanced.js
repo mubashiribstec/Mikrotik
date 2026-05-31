@@ -69,6 +69,21 @@ async function sendNotification(msg) {
 // Cooldown per alert type (global — avoids duplicate alerts across sessions)
 const alertCooldowns = new Map(); // alertType → lastSentMs
 
+// Escape a value for embedding inside a RouterOS double-quoted string.
+// Prevents breaking out of "..." via quotes or backslash.
+function rosEscape(val) {
+  if (val === null || val === undefined) return '';
+  return String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+// Validate a value is safe for an unquoted RouterOS token (alphanumeric + safe symbols).
+// Use for interface names, usernames, profile names, etc.
+function rosToken(val, maxLen = 64) {
+  const s = String(val || '');
+  if (!/^[a-zA-Z0-9._@\-]{1,64}$/.test(s) || s.length > maxLen) return null;
+  return s;
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -1141,10 +1156,15 @@ app.post('/api/login', loginLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Invalid input length' });
     }
 
+    const parsedPort    = parseInt(port,    10);
+    const parsedApiPort = parseInt(apiPort, 10);
+    if (!Number.isInteger(parsedPort)    || parsedPort    < 1 || parsedPort    > 65535) return res.status(400).json({ error: 'Invalid port number' });
+    if (!Number.isInteger(parsedApiPort) || parsedApiPort < 1 || parsedApiPort > 65535) return res.status(400).json({ error: 'Invalid API port number' });
+
     const useApi = connectionType === 'api';
     const config = useApi
-      ? { host, apiPort: parseInt(apiPort), username, password }
-      : { host, port: parseInt(port), username, password };
+      ? { host, apiPort: parsedApiPort, username, password }
+      : { host, port: parsedPort, username, password };
 
     // Open the connection once and KEEP IT — don't open+close+open a second one
     const conn = useApi ? new RouterAPIConnection(config) : new RouterConnection(config);
@@ -1612,7 +1632,7 @@ app.post('/api/nat/add', async (req, res) => {
     if (toAddresses) cmd += ` to-addresses=${toAddresses}`;
     if (toPort)      cmd += ` to-ports=${toPort}`;
     if (inInterface) cmd += ` in-interface="${inInterface}"`;
-    if (comment)     cmd += ` comment="${(comment).replace(/"/g,'')}"`;
+    if (comment)     cmd += ` comment="${rosEscape(comment)}"`;
 
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'NAT rule added' });
@@ -1852,9 +1872,11 @@ app.post('/api/hotspot/user/add', async (req, res) => {
 
     const { username, password, profile, comment } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+    const safeProfile = rosToken(profile) || 'default';
 
-    let cmd = `/ip hotspot user add name="${username}" password="${password}" profile=${profile || 'default'}`;
-    if (comment) cmd += ` comment="${comment}"`;
+    let cmd = `/ip hotspot user add name="${rosEscape(username)}" password="${rosEscape(password)}" profile=${safeProfile}`;
+    if (comment) cmd += ` comment="${rosEscape(comment)}"`;
+
 
     await getConnection(sessionId).execute(cmd);
     res.json({ success: true, message: 'Hotspot user added' });
@@ -1872,10 +1894,13 @@ app.post('/api/hotspot/user/remove', async (req, res) => {
     if (!id) return res.status(400).json({ error: 'id required' });
     const conn = getConnection(sessionId);
     if (type === 'pppoe') {
-      // PPPoE users are /ppp secret entries
-      await conn.execute(`/ppp secret remove [find name="${id}"]`);
+      // PPPoE users are /ppp secret entries — escape name to prevent bracket injection
+      await conn.execute(`/ppp secret remove [find name="${rosEscape(id)}"]`);
     } else {
-      await conn.execute(`/ip hotspot user remove numbers=${id}`);
+      // hotspot user IDs are numeric item numbers from RouterOS print output
+      const numId = parseInt(id, 10);
+      if (!Number.isInteger(numId) || numId < 0) return res.status(400).json({ error: 'Invalid user ID' });
+      await conn.execute(`/ip hotspot user remove numbers=${numId}`);
     }
     res.json({ success: true });
   } catch (err) {
@@ -2050,7 +2075,7 @@ app.post('/api/interfaces/rename', async (req, res) => {
     if (!name || !newName) return res.status(400).json({ error: 'name and newName required' });
     if (!/^[a-zA-Z0-9._-]{1,30}$/.test(newName)) return res.status(400).json({ error: 'Invalid interface name' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/interface set [find name="${name}"] name="${newName}"`);
+    const out = await conn.execute(`/interface set [find name="${rosEscape(name)}"] name="${rosEscape(newName)}"`);
     if (/failure|error|bad command/i.test(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `Renamed ${name} → ${newName}` });
   } catch (err) {
@@ -2182,7 +2207,7 @@ app.post('/api/users/set-password', async (req, res) => {
     const { name, password } = req.body;
     if (!name || !password) return res.status(400).json({ error: 'name and password required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/user set [find name="${name}"] password="${password}"`);
+    const out = await conn.execute(`/user set [find name="${rosEscape(name)}"] password="${rosEscape(password)}"`);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `Password updated for ${name}` });
   } catch (err) {
@@ -2697,7 +2722,8 @@ app.post('/api/vpn/pptp/user/add', async (req, res) => {
     const { name, password, profile = 'pptp-profile' } = req.body;
     if (!name || !password) return res.status(400).json({ error: 'name and password required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/ppp secret add name="${name}" password="${password}" service=pptp profile=${profile}`);
+    const safeProfile = rosToken(profile) || 'pptp-profile';
+    const out = await conn.execute(`/ppp secret add name="${rosEscape(name)}" password="${rosEscape(password)}" service=pptp profile=${safeProfile}`);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to add user' });
     res.json({ success: true, message: `PPTP user "${name}" added` });
   } catch (err) {
@@ -2723,7 +2749,7 @@ app.post('/api/vpn/l2tp/toggle', async (req, res) => {
       if (rosError(profOut)) {
         await conn.execute(`/ppp profile set [find name="l2tp-profile"] local-address=${localAddress} remote-address=l2tp-pool use-encryption=yes`);
       }
-      await conn.execute(`/interface l2tp-server server set enabled=yes default-profile=l2tp-profile use-ipsec=yes ipsec-secret="${ipsecSecret}"`);
+      await conn.execute(`/interface l2tp-server server set enabled=yes default-profile=l2tp-profile use-ipsec=yes ipsec-secret="${rosEscape(ipsecSecret)}"`);
       res.json({ success: true, message: 'L2TP/IPsec server enabled' });
     } else {
       await conn.execute('/interface l2tp-server server set enabled=no');
@@ -2742,7 +2768,8 @@ app.post('/api/vpn/l2tp/user/add', async (req, res) => {
     const { name, password, profile = 'l2tp-profile' } = req.body;
     if (!name || !password) return res.status(400).json({ error: 'name and password required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/ppp secret add name="${name}" password="${password}" service=l2tp profile=${profile}`);
+    const safeProfile = rosToken(profile) || 'l2tp-profile';
+    const out = await conn.execute(`/ppp secret add name="${rosEscape(name)}" password="${rosEscape(password)}" service=l2tp profile=${safeProfile}`);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] || 'Failed to add user' });
     res.json({ success: true, message: `L2TP user "${name}" added` });
   } catch (err) {
@@ -2771,7 +2798,7 @@ app.post('/api/vpn/ppp-secret/remove', async (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'name required' });
     const conn = getConnection(sessionId);
-    await conn.execute(`/ppp secret remove [find name="${name}"]`);
+    await conn.execute(`/ppp secret remove [find name="${rosEscape(name)}"]`);
     res.json({ success: true });
   } catch (err) {
     if (err.message.includes('Invalid or expired session')) return res.status(401).json({ error: err.message });
@@ -3276,10 +3303,10 @@ app.post('/api/nat/port-forward', async (req, res) => {
     if (isNaN(extPort) || extPort < 1 || extPort > 65535) return res.status(400).json({ error: 'External port must be 1–65535' });
     if (isNaN(intPort) || intPort < 1 || intPort > 65535) return res.status(400).json({ error: 'Internal port must be 1–65535' });
     const conn = getConnection(sessionId);
-    const label = comment || `port-forward-${externalPort}`;
+    const label = rosEscape(comment || `port-forward-${externalPort}`);
 
     let cmd = `/ip firewall nat add chain=dstnat protocol=${protocol} dst-port=${extPort} action=dst-nat to-addresses=${internalIp} to-ports=${intPort} comment="netforge-${label}"`;
-    if (wanInterface) cmd += ` in-interface="${wanInterface}"`;
+    if (wanInterface) cmd += ` in-interface="${rosEscape(wanInterface)}"`;
 
     const out = await conn.execute(cmd);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
@@ -3364,7 +3391,7 @@ app.post('/api/access/allowed-ip/add', async (req, res) => {
       return res.status(400).json({ error: 'Invalid IP/CIDR format' });
     }
     const conn = getConnection(sessionId);
-    const commentPart = comment ? ` comment="${comment}"` : '';
+    const commentPart = comment ? ` comment="${rosEscape(comment)}"` : '';
     const out = await conn.execute(`/ip firewall address-list add list=allowed_ips address=${address}${commentPart}`);
     if (rosError(out)) return res.status(500).json({ error: out.trim().split('\n')[0] });
     res.json({ success: true, message: `${address} added to allowed_ips` });
@@ -3545,7 +3572,7 @@ app.post('/api/vlans/add', async (req, res) => {
     if (!vid || vid < 1 || vid > 4094) return res.status(400).json({ error: 'VLAN ID must be 1-4094' });
     if (!iface) return res.status(400).json({ error: 'Interface required' });
     const conn = getConnection(sessionId);
-    const cmd = `/interface vlan add name="${name}" vlan-id=${vid} interface="${iface}"${comment ? ` comment="${comment}"` : ''}`;
+    const cmd = `/interface vlan add name="${rosEscape(name)}" vlan-id=${vid} interface="${rosEscape(iface)}"${comment ? ` comment="${rosEscape(comment)}"` : ''}`;
     const out = await conn.execute(cmd);
     if (rosError(out)) return res.status(400).json({ error: out.trim() });
     res.json({ success: true });
@@ -3562,7 +3589,7 @@ app.post('/api/vlans/remove', async (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/interface vlan remove [find name="${name}"]`);
+    const out = await conn.execute(`/interface vlan remove [find name="${rosEscape(name)}"]`);
     if (rosError(out)) return res.status(400).json({ error: out.trim() });
     res.json({ success: true });
   } catch (err) {
@@ -3635,8 +3662,10 @@ app.post('/api/address-lists/add', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const { list, address, comment = '' } = req.body;
     if (!list || !address) return res.status(400).json({ error: 'list and address required' });
+    // Validate address is a bare IP or CIDR — no command chars allowed
+    if (!/^[0-9a-fA-F.:\/]{1,50}$/.test(address)) return res.status(400).json({ error: 'Invalid address format' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/ip firewall address-list add list="${list}" address="${address}"${comment ? ` comment="${comment}"` : ''}`);
+    const out = await conn.execute(`/ip firewall address-list add list="${rosEscape(list)}" address="${rosEscape(address)}"${comment ? ` comment="${rosEscape(comment)}"` : ''}`);
     if (rosError(out)) return res.status(400).json({ error: out.trim() });
     res.json({ success: true });
   } catch (err) {
@@ -3651,8 +3680,10 @@ app.post('/api/address-lists/remove', async (req, res) => {
     if (!sessionId) return res.status(401).json({ error: 'No session' });
     const { id } = req.body;
     if (!id) return res.status(400).json({ error: 'id required' });
+    const numId = parseInt(id, 10);
+    if (!Number.isInteger(numId) || numId < 0) return res.status(400).json({ error: 'Invalid ID' });
     const conn = getConnection(sessionId);
-    const out = await conn.execute(`/ip firewall address-list remove numbers=${id}`);
+    const out = await conn.execute(`/ip firewall address-list remove numbers=${numId}`);
     if (rosError(out)) return res.status(400).json({ error: out.trim() });
     res.json({ success: true });
   } catch (err) {
