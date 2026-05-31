@@ -21,6 +21,7 @@
   <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -864,12 +865,13 @@ const ASidebar = ({ active, router, onNavigate, onLogout, alertCount }) => (
 
 // ========== ALERT SYSTEM ==========
 
-const ALERT_THRESHOLDS = {
-  cpu: { warn: 80, critical: 95 },
-  memory: { warn: 90, critical: 98 },
-  storage: { warn: 95, critical: 99 },
-  wan: { critical: 'down' }
-};
+const ALERT_THRESHOLDS = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('netforge_thresholds') || 'null');
+    if (saved) return saved;
+  } catch {}
+  return { cpu: { warn: 80, critical: 95 }, memory: { warn: 90, critical: 98 }, storage: { warn: 95, critical: 99 } };
+})();
 
 const AlertUtils = {
   MAX_HISTORY: 50,
